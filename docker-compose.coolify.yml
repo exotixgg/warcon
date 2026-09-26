@@ -20,8 +20,8 @@ x-warcon: &warcon
     RELAY_URL: http://worker:7700
     SETUP_TOKEN: ${SERVICE_PASSWORD_64_WARCON_SETUP}
     APP_NAME: EXOTIX Warcon
-    ALLOW_ORG_SIGNUP: "false"
-    ALLOW_DEMO_SERVER: "false"
+    ALLOW_ORG_SIGNUP: 'false'
+    ALLOW_DEMO_SERVER: 'false'
 
 services:
   migrate:
@@ -29,7 +29,7 @@ services:
     environment:
       <<: *warcon-env
       WARCON_ROLE: migrate
-    restart: "no"
+    restart: 'no'
     depends_on:
       db:
         condition: service_healthy
@@ -41,7 +41,7 @@ services:
       WARCON_ROLE: web
     restart: unless-stopped
     expose:
-      - "3000"
+      - '3000'
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -57,7 +57,7 @@ services:
     restart: unless-stopped
     stop_grace_period: 20s
     expose:
-      - "7700"
+      - '7700'
     depends_on:
       migrate:
         condition: service_completed_successfully
@@ -72,7 +72,7 @@ services:
     volumes:
       - warcon-db:/var/lib/postgresql
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U warcon -d warcon"]
+      test: ['CMD-SHELL', 'pg_isready -U warcon -d warcon']
       interval: 5s
       timeout: 5s
       retries: 20
