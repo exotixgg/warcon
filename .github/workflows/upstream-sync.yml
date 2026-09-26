@@ -1,0 +1,61 @@
+name: Propose upstream update
+
+on:
+  schedule:
+    - cron: "17 4 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: upstream-sync
+  cancel-in-progress: false
+
+jobs:
+  propose:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: exotix
+          fetch-depth: 0
+
+      - name: Fetch official Warcon
+        run: |
+          git remote add upstream https://github.com/warcon-app/warcon.git
+          git fetch upstream main
+
+      - name: Fast-forward the clean mirror
+        run: git push origin upstream/main:main
+
+      - name: Merge upstream into an update proposal
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git switch -C sync/upstream origin/exotix
+          git merge --no-edit upstream/main
+          git push --force-with-lease origin sync/upstream
+
+      - name: Open or update the review pull request
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if git diff --quiet origin/exotix...HEAD; then
+            echo "EXOTIX already contains the current upstream revision."
+            exit 0
+          fi
+
+          existing=$(gh pr list --base exotix --head sync/upstream --state open --json number --jq '.[0].number // empty')
+          if [ -z "$existing" ]; then
+            gh pr create \
+              --base exotix \
+              --head sync/upstream \
+              --title "Sync official Warcon updates" \
+              --body "Automated proposal merging the current official warcon-app/warcon main branch into the EXOTIX customization branch. CI and review are required before merge; this does not deploy production."
+          else
+            gh pr edit "$existing" \
+              --title "Sync official Warcon updates" \
+              --body "Automated proposal merging the current official warcon-app/warcon main branch into the EXOTIX customization branch. CI and review are required before merge; this does not deploy production."
+          fi

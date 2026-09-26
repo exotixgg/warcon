@@ -1,0 +1,81 @@
+# EXOTIX Coolify deployment overlay for Warcon.
+#
+# Coolify generates every SERVICE_* value independently for each resource. Production and
+# staging therefore receive separate credentials and database volumes without secrets in Git.
+x-warcon: &warcon
+  build: .
+  env_file: .env
+  environment: &warcon-env
+    PGHOST: db
+    PGPORT: 5432
+    PGUSER: warcon
+    PGPASSWORD: ${SERVICE_PASSWORD_64_WARCON_POSTGRES}
+    PGDATABASE: warcon
+    ORIGIN: ${SERVICE_URL_WARCON_3000}
+    ADDRESS_HEADER: x-forwarded-for
+    XFF_DEPTH: 1
+    BETTER_AUTH_SECRET: ${SERVICE_REALBASE64_32_WARCON_AUTH}
+    ENCRYPTION_KEY: ${SERVICE_REALBASE64_32_WARCON_ENCRYPTION}
+    RELAY_SECRET: ${SERVICE_PASSWORD_64_WARCON_RELAY}
+    RELAY_URL: http://worker:7700
+    SETUP_TOKEN: ${SERVICE_PASSWORD_64_WARCON_SETUP}
+    APP_NAME: EXOTIX Warcon
+    ALLOW_ORG_SIGNUP: "false"
+    ALLOW_DEMO_SERVER: "false"
+
+services:
+  migrate:
+    <<: *warcon
+    environment:
+      <<: *warcon-env
+      WARCON_ROLE: migrate
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  warcon:
+    <<: *warcon
+    environment:
+      <<: *warcon-env
+      WARCON_ROLE: web
+    restart: unless-stopped
+    expose:
+      - "3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      worker:
+        condition: service_started
+
+  worker:
+    <<: *warcon
+    environment:
+      <<: *warcon-env
+      WARCON_ROLE: worker
+      WORKER_PORT: 7700
+    restart: unless-stopped
+    stop_grace_period: 20s
+    expose:
+      - "7700"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+
+  db:
+    image: timescale/timescaledb:2.30.0-pg18
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: warcon
+      POSTGRES_PASSWORD: ${SERVICE_PASSWORD_64_WARCON_POSTGRES}
+      POSTGRES_DB: warcon
+    volumes:
+      - warcon-db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U warcon -d warcon"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  warcon-db:
