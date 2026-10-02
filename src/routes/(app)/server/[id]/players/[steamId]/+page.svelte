@@ -14,7 +14,7 @@
 	import { describeSync, STATE_TONE } from '$lib/lists';
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort } from '$lib/table.svelte';
-	import type { DossierView, ListSyncServer, ListSyncSummary } from '$lib/types';
+	import type { DossierView, ListSyncSummary } from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -29,7 +29,7 @@
 	let orgListsPath = $derived(`/api/orgs/${encodeURIComponent(data.server.orgId)}/lists`);
 
 	let busy = $state(false);
-	let banning = $state(false);
+	let banning = $state<'org' | 'server' | null>(null);
 
 	const serverSort = new TableSort<DossierView['perServer'][number]>({
 		server: { by: (s) => s.serverName },
@@ -124,23 +124,6 @@
 		await run(async () => {
 			const r = await rconPost<{ message?: string }>(id, action, params);
 			toast(r?.message || `${action} done.`, 'ok');
-		}, '');
-	}
-
-	// A ban goes on the server's own list, so the panel keeps the reason and who placed it.
-	async function banHere() {
-		const sure = await confirmDialog(`Ban ${d.name} (${d.steamId}) on ${data.server.name}?`, {
-			okLabel: 'Do it',
-			danger: true
-		});
-		if (!sure) return;
-		await run(async () => {
-			const res = await api<{ sync: ListSyncServer }>(
-				'POST',
-				`/api/servers/${encodeURIComponent(id)}/lists/ban/entries`,
-				{ steamId: d.steamId, reason: reason.trim() }
-			);
-			toast(describeSync({ servers: [res.sync] }, `Banned ${d.name}.`), 'ok', 8000);
 		}, '');
 	}
 
@@ -437,7 +420,7 @@
 					<input
 						class="input"
 						type="text"
-						placeholder="Reason (optional)…"
+						placeholder="Kick reason (optional)…"
 						maxlength="200"
 						bind:value={reason}
 					/>
@@ -448,7 +431,11 @@
 							act('kick', { steamId: d.steamId, reason: reason.trim() }, `Kick ${d.name}?`)}
 						>Kick</button
 					>
-					<button class="btn btn-danger" disabled={busy || !bans} onclick={banHere}>Ban</button>
+					<button
+						class="btn btn-danger"
+						disabled={busy || !bans}
+						onclick={() => (banning = 'server')}>Ban</button
+					>
 				</div>
 			</div>
 		{/if}
@@ -490,7 +477,7 @@
 								<button
 									class="ml-auto btn btn-sm btn-danger"
 									disabled={busy}
-									onclick={() => (banning = true)}>Ban org-wide</button
+									onclick={() => (banning = 'org')}>Ban org-wide</button
 								>
 							{/if}
 						</div>
@@ -708,8 +695,9 @@
 		orgName={data.server.orgName}
 		steamId={d.steamId}
 		name={d.name}
-		canOrg
-		onclose={() => (banning = false)}
+		server={banning === 'server' ? { id, name: data.server.name } : null}
+		canOrg={banning === 'org' && d.orgLists.canBan}
+		onclose={() => (banning = null)}
 		ondone={() => invalidateAll()}
 	/>
 {/if}
