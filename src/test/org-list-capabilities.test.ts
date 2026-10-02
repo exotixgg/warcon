@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
 import { and, eq, isNull, sql } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
-import { keyUser, listsRoleFor, userOrgs } from '$lib/server/access';
+import { keyUser, listsRoleFor, serverAccessFor, userOrgs } from '$lib/server/access';
 import { resolveBearer } from '$lib/server/apikeys';
 import { apiKeys, listEntries, orgRoles, serverGrants } from '$lib/server/db/schema';
 import { listOf } from '$lib/server/lists';
@@ -143,6 +143,30 @@ describe.skipIf(!hasTestDb)('one org list without the other', () => {
 		expect((await entries('owner', 'DELETE', 'reserve')).status).toBe(200);
 	});
 
+	test('a key held to some servers holds neither org list on those servers either', async () => {
+		// keyElsewhere carries every capability, held to the other server: a key the panel no
+		// longer mints, and one migration 0033 took the lists from.
+		const key = w.users.keyElsewhere!;
+		const access = await serverAccessFor(env, key, w.otherServer.id);
+		expect(access?.caps.has('lists.ban')).toBe(false);
+		expect(access?.caps.has('lists.reserve')).toBe(false);
+		expect(access?.caps.has('slots.manage')).toBe(true);
+		const post = async (path: string, body: unknown) => {
+			const mod = await import(join(ROUTES, path, '+server.ts'));
+			return callApi(mod.POST, key, { method: 'POST', params: { id: w.otherServer.id }, body });
+		};
+		const seed = (scope: string) => ({
+			kind: 'seed_reward',
+			config: { minutes: 60, scope }
+		});
+		// no org-wide slot through a rule, no org list sync through the server
+		expect((await post('servers/[id]/triggers', seed('org'))).status).toBe(403);
+		expect((await post('servers/[id]/triggers/dry-run', seed('org'))).status).toBe(403);
+		expect((await post('servers/[id]/lists/sync', {})).status).toBe(403);
+		// what is the server's own is still its to use
+		expect((await post('servers/[id]/triggers', seed('server'))).status).toBe(201);
+	});
+
 	test('migration 0033 gives both lists to every role and org-wide key that held Org lists', async () => {
 		const m = await seedWorld(env);
 		// Rows as they stood before the split: the built-in admin as migration 0012 seeded it, a
@@ -200,8 +224,10 @@ describe.skipIf(!hasTestDb)('one org list without the other', () => {
 			(await env.db.select().from(orgRoles).where(eq(orgRoles.id, id)))[0].capabilities as string[];
 		const key = async (id: string) =>
 			(await env.db.select().from(apiKeys).where(eq(apiKeys.id, id)))[0].capabilities as string[];
-		// the built-in admin comes out exactly as a new org's admin
-		expect((await role(m.roles.admin)).sort()).toEqual([...BUILTIN_CAPABILITIES.admin].sort());
+		// the built-in admin keeps everything else it held, and holds both lists for Org lists
+		expect((await role(m.roles.admin)).sort()).toEqual(
+			[...adminBefore.filter((c) => c !== 'lists.edit'), 'lists.ban', 'lists.reserve'].sort()
+		);
 		expect((await role(m.roles.orgBans)).sort()).toEqual([
 			'lists.ban',
 			'lists.reserve',

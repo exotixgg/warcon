@@ -485,7 +485,10 @@ export type TriggerKind =
 	| 'seed_reward'
 	| 'match_broadcast'
 	| 'name_filter'
-	| 'kill_rate';
+	| 'kill_rate'
+	| 'two_teams'
+	| 'kill_distance'
+	| 'afk_protection';
 
 export interface TriggerView {
 	id: string;
@@ -497,6 +500,8 @@ export interface TriggerView {
 	lastResult: string;
 	fireCount: number;
 	createdAt: string | null;
+	/** an AFK protection rule's standing: acting while the server seeds, or off since a match went live */
+	phase?: { on: boolean; since: string | null; why: string } | null;
 }
 
 export interface DryRunResult {

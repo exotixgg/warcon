@@ -7,6 +7,7 @@ import type { Env } from './env';
 import { decryptSecret } from './crypto';
 import { playerMarks, servers, webhooks, type AuditRow, type WebhookRow } from './db/schema';
 import { OWNERS_ROWS } from './audit-rows';
+import { escapeMarkdown } from './webhook-status-core';
 import { causeLabel } from '$lib/causes';
 import type { KillView } from '$lib/types';
 
@@ -123,6 +124,7 @@ const ACTION_TITLES: Record<string, string> = {
 	'rcon.unban': 'Unban',
 	'rcon.kill': 'Kill',
 	'rcon.whisper': 'Whisper',
+	'rcon.whisperMany': 'Group whisper',
 	'rcon.broadcast': 'Broadcast',
 	'rcon.changeTeam': 'Change team',
 	'rcon.changeMap': 'Change map',
@@ -145,6 +147,9 @@ const ACTION_TITLES: Record<string, string> = {
 	'trigger.match_broadcast': 'Trigger · match broadcast',
 	'trigger.name_filter': 'Trigger · name filter',
 	'trigger.kill_rate': 'Trigger · kill rate watch',
+	'trigger.two_teams': 'Trigger · two-team mode',
+	'trigger.kill_distance': 'Trigger · kill distance watch',
+	'trigger.afk_protection': 'Trigger · AFK protection',
 	'player.note': 'Player note',
 	'player.watch': 'Watchlist',
 	'list.add': 'Org list · added',
@@ -159,6 +164,15 @@ const ACTION_TITLES: Record<string, string> = {
 };
 
 const clip = (s: string, n: number) => (s.length > n ? s.slice(0, n - 1) + '…' : s);
+/** Text from outside (a player's name, a rule's result) as it reads: no link, markdown or mention,
+ *  on one line so nothing it holds starts a heading or a quote, and no address Discord would make
+ *  a link of (a zero-width space after the scheme's colon). */
+const plain = (s: string, n: number) =>
+	escapeMarkdown(clip(s.replace(/\s*[\r\n]+\s*/g, ' '), n))
+		.replace(/:\/\//g, ':\u200B//')
+		.replace(/^([#-])/, '\\$1');
+/** The same inside a code span, which no escape reaches: its own backtick would close the span. */
+const code = (s: string, n: number) => `\`${clip(s.replace(/`/g, 'ˋ'), n)}\``;
 
 export function buildEmbed(appName: string, row: AuditRow): Embed {
 	const title = ACTION_TITLES[row.action] || row.action;
@@ -168,12 +182,12 @@ export function buildEmbed(appName: string, row: AuditRow): Embed {
 	// where RCON listens and a refusal's message says what the host resolves to, and a channel is
 	// read by people the Audit trail would not show these rows to.
 	const bare = OWNERS_ROWS.includes(row.action);
-	const target = row.target && !bare ? ` → \`${clip(row.target, 120)}\`` : '';
-	lines.push(`**${clip(who, 60)}**${target}`);
-	if (row.serverName) lines.push(`Server: ${clip(row.serverName, 80)}`);
+	const target = row.target && !bare ? ` → ${code(row.target, 120)}` : '';
+	lines.push(`**${plain(who, 60)}**${target}`);
+	if (row.serverName) lines.push(`Server: ${plain(row.serverName, 80)}`);
 	if (row.outcome !== 'ok')
 		lines.push(`Outcome: **${row.outcome}**${row.status ? ` (${row.status})` : ''}`);
-	if (row.message && !bare) lines.push(clip(row.message, 600));
+	if (row.message && !bare) lines.push(plain(row.message, 600));
 	return {
 		title: clip(title, 200),
 		description: clip(lines.join('\n'), 2000),
@@ -183,9 +197,10 @@ export function buildEmbed(appName: string, row: AuditRow): Embed {
 	};
 }
 
-/** A Kill rate flag is a prompt to go and look: its post opens the player's page. */
+/** A Kill rate or Kill distance post is a prompt to go and look: it opens the player's page. */
+const DOSSIER_LINKED = new Set(['trigger.kill_rate', 'trigger.kill_distance']);
 function withDossierLink(env: Env, row: AuditRow, embed: Embed): Embed {
-	if (row.action !== 'trigger.kill_rate' || !row.serverId || !row.target) return embed;
+	if (!DOSSIER_LINKED.has(row.action) || !row.serverId || !row.target) return embed;
 	const url = dossierUrl(env.ORIGIN, row.serverId, row.target);
 	return url ? { ...embed, url } : embed;
 }
@@ -203,9 +218,9 @@ export function buildTeamKillEmbed(appName: string, serverName: string, k: KillV
 		.filter(Boolean)
 		.join(' · ');
 	const lines = [
-		`**${clip(k.killer?.name ?? '?', 60)}** → **${clip(k.victim.name, 60)}**${k.killer?.faction ? ` (${clip(k.killer.faction, 30)})` : ''}`,
+		`**${plain(k.killer?.name ?? '?', 60)}** → **${plain(k.victim.name, 60)}**${k.killer?.faction ? ` (${plain(k.killer.faction, 30)})` : ''}`,
 		how,
-		`Server: ${clip(serverName, 80)}${k.map ? ` · ${clip(k.map, 40)}` : ''}`
+		`Server: ${plain(serverName, 80)}${k.map ? ` · ${plain(k.map, 40)}` : ''}`
 	].filter(Boolean);
 	return {
 		title: 'Team kill',
@@ -233,9 +248,9 @@ export function buildWatchedJoinEmbed(
 	url?: string
 ): Embed {
 	const lines = [
-		`**${clip(p.name || p.steamId, 60)}** \`${p.steamId}\``,
-		p.reason ? clip(p.reason, 600) : '',
-		`Server: ${clip(serverName, 80)}`
+		`**${plain(p.name || p.steamId, 60)}** ${code(p.steamId, 20)}`,
+		p.reason ? plain(p.reason, 600) : '',
+		`Server: ${plain(serverName, 80)}`
 	].filter(Boolean);
 	return {
 		title: 'Watched player joined',
@@ -394,14 +409,16 @@ async function discordCall(
 	}
 }
 
-/** Posts a new message; the result carries its id. Never throws. */
+/**
+ * Posts a new message; the result carries its id. It names no one, so Discord shows the name and
+ * picture its owner gave the webhook there: a name sent here would take their place. Never throws.
+ */
 export function postDiscord(
 	env: Env,
 	hook: Pick<WebhookRow, 'urlEnc'>,
 	payload: DiscordPayload
 ): Promise<PostResult> {
 	return discordCall(env, hook, 'POST', '?wait=true', {
-		username: env.APP_NAME || 'Warcon',
 		allowed_mentions: { parse: [] },
 		...payload
 	});
@@ -444,11 +461,20 @@ export async function recordResult(env: Env, id: string, result: PostResult): Pr
 	}
 }
 
+/**
+ * Rules whose actions come by the hundred as a matter of course: a Team balance sort at every match
+ * start, an AFK protection round every few minutes while a server seeds. The audit trail keeps each
+ * one; Discord hears only of those that fail, so they neither flood a staff channel nor push another
+ * rule's card out of the webhook's queue.
+ */
+const QUIET_WHEN_OK = new Set(['trigger.two_teams', 'trigger.afk_protection']);
+
 /** Fans one audit row out to the org's webhooks that want its event class. Never throws. */
 export async function notifyWebhooks(env: Env, row: AuditRow): Promise<void> {
 	try {
 		const event = classify(row);
 		if (!event) return;
+		if (row.outcome === 'ok' && QUIET_WHEN_OK.has(row.action)) return;
 		const orgId = row.orgId ?? (row.serverId ? await orgOfServer(env, row.serverId) : null);
 		if (!orgId) return;
 		const hooks = await enabledWebhooks(env, orgId);
