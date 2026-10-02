@@ -669,7 +669,10 @@ export const triggers = pgTable(
 				'seed_reward',
 				'match_broadcast',
 				'name_filter',
-				'kill_rate'
+				'kill_rate',
+				'two_teams',
+				'kill_distance',
+				'afk_protection'
 			]
 		}).notNull(),
 		name: text('name').notNull(),

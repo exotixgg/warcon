@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily EXOTIX Warcon production backup
+
+[Timer]
+OnCalendar=*-*-* 02:15:00 UTC
+Persistent=true
+Unit=exotix-warcon-backup.service
+
+[Install]
+WantedBy=timers.target
