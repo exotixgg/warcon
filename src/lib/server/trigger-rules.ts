@@ -5,7 +5,13 @@ import { ApiError, int, str } from './http';
 import { accountAgeDays, assessRisk, RISK_HIGH, RISK_MEDIUM, type RiskPerformance } from './risk';
 import { validateNameFilter, type NameFilterConfig } from './name-filter';
 import { validateKillRate, type KillRateConfig } from './kill-rate';
+import { validateKillDistance, type KillDistanceConfig } from './kill-distance';
+import { validateTwoTeams, type TwoTeamsConfig } from './two-teams';
+import { validateAfkProtection, type AfkProtectionConfig } from './afk-protection';
+import { causeTags } from './cause-tags';
 import { RESTART_AFTER_HOURS, restartWindow } from '$lib/uptime';
+import { MAX_CHAT } from '$lib/chat';
+import { TEAM_KILL_NOT_COUNTED } from '$lib/causes';
 import type { SteamProfileRow } from './db/schema';
 import type { TriggerKind } from '$lib/types';
 
@@ -21,7 +27,10 @@ export const TRIGGER_KINDS: TriggerKind[] = [
 	'seed_reward',
 	'match_broadcast',
 	'name_filter',
-	'kill_rate'
+	'kill_rate',
+	'two_teams',
+	'kill_distance',
+	'afk_protection'
 ];
 export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	welcome: 'Welcome whisper',
@@ -35,7 +44,10 @@ export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	seed_reward: 'Seeding reward',
 	match_broadcast: 'Match broadcast',
 	name_filter: 'Name filter',
-	kill_rate: 'Kill rate watch'
+	kill_rate: 'Kill rate watch',
+	two_teams: 'Team balance',
+	kill_distance: 'Kill distance watch',
+	afk_protection: 'AFK protection'
 };
 
 export interface WelcomeConfig {
@@ -132,14 +144,18 @@ export interface RestartNoticeConfig {
 	minPlayers: number;
 }
 /**
- * Acts on team kills the kill feed reports, counted per killer within their current session:
- * a whisper from `warnAt` team kills on (0 = never), a kick at `kickAt` (0 = never).
+ * Acts on team kills the kill feed reports, counted per killer within each match: a whisper
+ * from `warnAt` team kills on (0 = never), a kick at `kickAt` (0 = never). Team kills by a cause
+ * in `notCounted` (feed tags, any case) are left out of the count and never acted on; they stay
+ * team kills everywhere else. A rule saved before the list existed has none and leaves out
+ * TEAM_KILL_NOT_COUNTED.
  */
 export interface TeamKillConfig {
 	warnAt: number;
 	warnMessage: string;
 	kickAt: number;
 	kickReason: string;
+	notCounted?: string[];
 }
 /** Where a Seeding reward's slot goes: this server's own list, or the organisation's (every server). */
 export type SeedScope = 'server' | 'org';
@@ -185,9 +201,13 @@ export type TriggerConfig =
 	| SeedRewardConfig
 	| MatchBroadcastConfig
 	| NameFilterConfig
-	| KillRateConfig;
+	| KillRateConfig
+	| TwoTeamsConfig
+	| KillDistanceConfig
+	| AfkProtectionConfig;
 
-const MAX_MESSAGE = 200;
+/** A kick reason: not chat, so not held to the game's chat cap. */
+export const MAX_REASON = 200;
 
 export const isTriggerKind = (v: unknown): v is TriggerKind =>
 	TRIGGER_KINDS.includes(v as TriggerKind);
@@ -210,19 +230,19 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 	const c = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
 	switch (kind) {
 		case 'welcome': {
-			const message = str(c.message, MAX_MESSAGE);
+			const message = str(c.message, MAX_CHAT);
 			if (!message) throw new ApiError(400, 'The welcome message is empty.');
 			return { message, onlyFirstVisit: !!c.onlyFirstVisit, afterFaction: !!c.afterFaction };
 		}
 		case 'faction_change': {
-			const message = str(c.message, MAX_MESSAGE);
+			const message = str(c.message, MAX_CHAT);
 			if (!message) throw new ApiError(400, 'The message is empty.');
 			return { message };
 		}
 		case 'broadcast': {
 			const list = Array.isArray(c.messages) ? c.messages : String(c.messages ?? '').split('\n');
 			const messages = list
-				.map((m) => str(m, MAX_MESSAGE))
+				.map((m) => str(m, MAX_CHAT))
 				.filter(Boolean)
 				.slice(0, 20);
 			if (!messages.length) throw new ApiError(400, 'Add at least one message to broadcast.');
@@ -269,7 +289,7 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 				kickAtScore: riskKickScore(c),
 				spareReserved: c.spareReserved === undefined ? true : !!c.spareReserved,
 				reason:
-					str(c.reason, MAX_MESSAGE) || 'Your account does not meet this server’s requirements.'
+					str(c.reason, MAX_REASON) || 'Your account does not meet this server’s requirements.'
 			};
 			if (
 				!cfg.vacBans &&
@@ -290,14 +310,14 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 			return {
 				maxPingMs,
 				durationSeconds,
-				reason: str(c.reason, MAX_MESSAGE) || 'Ping too high for too long.'
+				reason: str(c.reason, MAX_REASON) || 'Ping too high for too long.'
 			};
 		}
 		case 'restart_notice': {
-			const message = str(c.message, MAX_MESSAGE);
+			const message = str(c.message, MAX_CHAT);
 			if (!message) throw new ApiError(400, 'The restart message is empty.');
 			const leadMinutes = int(c.leadMinutes, 0, 0, RESTART_AFTER_HOURS * 60 - 1);
-			const leadMessage = str(c.leadMessage, MAX_MESSAGE);
+			const leadMessage = str(c.leadMessage, MAX_CHAT);
 			if (leadMinutes && !leadMessage)
 				throw new ApiError(400, 'Add the heads-up message, or set the heads-up to 0 minutes.');
 			return {
@@ -318,10 +338,14 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 			return {
 				warnAt,
 				warnMessage:
-					str(c.warnMessage, MAX_MESSAGE) ||
-					'Careful, {name}: that was a team kill ({count} this session).',
+					str(c.warnMessage, MAX_CHAT) ||
+					'Careful, {name}: that was a team kill ({count} this match).',
 				kickAt,
-				kickReason: str(c.kickReason, MAX_MESSAGE) || 'Team killing ({count} this session).'
+				kickReason: str(c.kickReason, MAX_REASON) || 'Team killing ({count} this match).',
+				notCounted:
+					c.notCounted === undefined || c.notCounted === null
+						? [...TEAM_KILL_NOT_COUNTED]
+						: causeTags(c.notCounted, 'cause', 'Id.Buildable.BarbedWire')
 			};
 		}
 		case 'seed_reward': {
@@ -348,12 +372,12 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 				minutes,
 				windowDays,
 				slotDays: int(c.slotDays, 7, 1, 365),
-				message: str(c.message, MAX_MESSAGE)
+				message: str(c.message, MAX_CHAT)
 			};
 		}
 		case 'match_broadcast': {
-			const endMessage = str(c.endMessage, MAX_MESSAGE);
-			const startMessage = str(c.startMessage, MAX_MESSAGE);
+			const endMessage = str(c.endMessage, MAX_CHAT);
+			const startMessage = str(c.startMessage, MAX_CHAT);
 			if (!endMessage && !startMessage)
 				throw new ApiError(
 					400,
@@ -365,6 +389,12 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 			return validateNameFilter(c);
 		case 'kill_rate':
 			return validateKillRate(c);
+		case 'two_teams':
+			return validateTwoTeams(c);
+		case 'kill_distance':
+			return validateKillDistance(c);
+		case 'afk_protection':
+			return validateAfkProtection(c);
 	}
 }
 
@@ -508,7 +538,21 @@ export function broadcastWanted(
 	return cfg.maxPlayers === null || cfg.maxPlayers === undefined || playerCount <= cfg.maxPlayers;
 }
 
-/** What a team-kill rule does once the killer's count this session has reached `count`. */
+/** The causes a team-kill rule leaves out of its count. */
+export const teamKillNotCounted = (cfg: Pick<TeamKillConfig, 'notCounted'>): readonly string[] =>
+	Array.isArray(cfg.notCounted) ? cfg.notCounted : TEAM_KILL_NOT_COUNTED;
+
+/** Whether a team-kill rule counts a team kill by this cause: one with no cause always counts. */
+export function countsForTeamKill(
+	cfg: Pick<TeamKillConfig, 'notCounted'>,
+	cause: string | null | undefined
+): boolean {
+	if (!cause) return true;
+	const lower = cause.toLowerCase();
+	return !teamKillNotCounted(cfg).some((c) => c.toLowerCase() === lower);
+}
+
+/** What a team-kill rule does once the killer's count this match has reached `count`. */
 export function teamKillStage(
 	cfg: Pick<TeamKillConfig, 'warnAt' | 'kickAt'>,
 	count: number
@@ -660,9 +704,9 @@ export function matchBroadcastMessages(
 	const all = { ...vars, ...matchVars(end, lines) };
 	const out: { stage: 'end' | 'start'; message: string }[] = [];
 	if (cfg.endMessage && end.leaders.length)
-		out.push({ stage: 'end', message: renderTemplate(cfg.endMessage, all) });
+		out.push({ stage: 'end', message: renderTemplate(cfg.endMessage, all, MAX_CHAT) });
 	if (cfg.startMessage)
-		out.push({ stage: 'start', message: renderTemplate(cfg.startMessage, all) });
+		out.push({ stage: 'start', message: renderTemplate(cfg.startMessage, all, MAX_CHAT) });
 	return out;
 }
 
@@ -760,13 +804,20 @@ export function welcomeTargets<P extends { steamId: string }>(
 export const factionChangeTargets = <P>(tick: { factioned: FactionPick<P>[] }): FactionPick<P>[] =>
 	tick.factioned.filter((f) => !!f.from);
 
-/** Fills {name}, {faction}, {previous}, {server}, {map}, {players}, {max} and the rest; unknown ones stay. */
-export function renderTemplate(text: string, vars: Record<string, string | number>): string {
+/**
+ * Fills {name}, {faction}, {previous}, {server}, {map}, {players}, {max} and the rest; unknown ones
+ * stay. The result is cut at `max`: MAX_CHAT for a whisper or broadcast, MAX_REASON for a kick.
+ */
+export function renderTemplate(
+	text: string,
+	vars: Record<string, string | number>,
+	max: number
+): string {
 	const lower: Record<string, string> = {};
 	for (const [k, v] of Object.entries(vars)) lower[k.toLowerCase()] = String(v);
 	return text
 		.replace(/\{([a-z_]+)\}/gi, (m, key: string) => lower[key.toLowerCase()] ?? m)
-		.slice(0, MAX_MESSAGE);
+		.slice(0, max);
 }
 
 export interface RiskKickSignals {

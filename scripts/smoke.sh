@@ -13,6 +13,8 @@ req() { local jar=$1 m=$2 p=$3 body=${4:-}
   else curl -s -m 30 -b "$jar" -c "$jar" -X "$m" -H 'X-Requested-With: warcon' "$B$p"; fi; }
 form() { local jar=$1 p=$2 data=$3; curl -s -m 30 -o /dev/null -w '%{http_code} %{redirect_url}' -b "$jar" -c "$jar" -H "Origin: $B" -H 'Accept: text/html' -H 'Content-Type: application/x-www-form-urlencoded' --data "$data" "$B$p"; }
 pagecode() { curl -s -m 30 -o /dev/null -w '%{http_code}' -b "$1" "$B$2"; }
+# the header's Orgs link, as a signed-in person's dashboard renders it
+navorgs() { curl -s -m 30 -b "$1" "$B/" | grep -o '<a href="[^"]*" class="nav-pill[^"]*">Orgs</a>'; }
 
 echo "== health & first run"
 check health '"ok":true' "$(curl -s $B/api/health)"
@@ -24,6 +26,8 @@ check setup-weak-pw '400' "$(form $J1 '/setup?/password' 'username=james&passwor
 check setup-ok "303 $B/" "$(form $J1 '/setup?/password' 'username=james&password=correct-horse-battery&displayName=James')"
 check setup-twice '303' "$(form $J2 '/setup?/password' 'username=x&password=correct-horse-battery')"
 check me-owner 'role:"owner"' "$(curl -s -b $J1 $B/ | grep -o 'role:"owner"' | head -1)"
+# the site owner keeps the Orgs list, even while the panel holds one org
+check nav-orgs-site-owner 'href="/orgs"' "$(navorgs $J1)"
 
 echo "== sign-in"
 check login-bad '401' "$(form $J2 '/sign-in?/password' 'username=james&password=wrong-password-1')"
@@ -70,10 +74,14 @@ check config-read 'ServerName=' "$(req $J1 GET /api/servers/$SID/rcon/config)"
 check serverlog '"entries"' "$(req $J1 GET "/api/servers/$SID/rcon/serverLog?limit=5")"
 check unknown-action 'Unknown action' "$(req $J1 GET /api/servers/$SID/rcon/nope)"
 check get-mutating-405 'must be POSTed' "$(req $J1 GET /api/servers/$SID/rcon/kick)"
-check actions-list '"kick":{"cap":"players.moderate"' "$(req $J1 GET /api/actions)"
+check actions-list '"kick":{"cap":"players.kick"' "$(req $J1 GET /api/actions)"
 
 echo "== rcon mutations"
 check broadcast 'Announcement sent' "$(req $J1 POST /api/servers/$SID/rcon/broadcast '{"message":"hello"}')"
+check whisper-faction 'players on Valkyra' "$(req $J1 POST /api/servers/$SID/rcon/whisperMany '{"faction":"Valkyra","message":"hold B"}')"
+check whisper-some '"absent":["76561198100000999"]' "$(req $J1 POST /api/servers/$SID/rcon/whisperMany '{"steamIds":["76561198100000103","76561198100000999"],"message":"hi"}')"
+check whisper-nobody 'no_recipients' "$(req $J1 POST /api/servers/$SID/rcon/whisperMany '{"faction":"Nobody","message":"hi"}')"
+check whisper-both '400' "$(curl -s -o /dev/null -w '%{http_code}' -b $J1 -X POST -H 'Content-Type: application/json' -H 'X-Requested-With: warcon' -d '{"faction":"Valkyra","steamIds":["76561198100000103"],"message":"hi"}' $B/api/servers/$SID/rcon/whisperMany)"
 check kick 'Kicked Ghostpepper' "$(req $J1 POST /api/servers/$SID/rcon/kick '{"steamId":"76561198100000101","reason":"test"}')"
 check kick-badid '17-digit' "$(req $J1 POST /api/servers/$SID/rcon/kick '{"steamId":"abc"}')"
 check ban 'Banned' "$(req $J1 POST /api/servers/$SID/rcon/ban '{"steamId":"76561198100000102","reason":"aimbot"}')"
@@ -114,6 +122,7 @@ UID_BOB=$(echo "$R" | sed -E 's/.*"id":"([^"]+)".*/\1/')
 check user-dup 'taken' "$(req $J1 POST /api/users '{"username":"bob","password":"bobs-long-password"}')"
 check user-list '"username":"bob"' "$(req $J1 GET /api/users)"
 check user-list-forbidden-anon 'Sign in required' "$(req $J3 GET /api/users)"
+check whisper-many-anon 'Sign in required' "$(req $J3 POST /api/servers/$SID/rcon/whisperMany '{"faction":"Valkyra","message":"hi"}')"
 check bob-login '303' "$(form $J3 '/sign-in?/password' 'username=bob&password=bobs-long-password')"
 check bob-no-servers '"servers":[]' "$(req $J3 GET /api/servers)"
 check bob-not-owner 'Owner access required' "$(req $J3 GET /api/users)"
@@ -125,12 +134,24 @@ check bob-sees-server '"roleName":"viewer"' "$(req $J3 GET /api/servers)"
 check bob-org-member '"username":"bob"' "$(req $J1 GET /api/orgs/$ORG/members)"
 check bob-status-ok '"scores"' "$(req $J3 GET /api/servers/$SID/rcon/status)"
 check bob-kick-denied "your role 'viewer' does not include it" "$(req $J3 POST /api/servers/$SID/rcon/kick '{"steamId":"76561198100000103"}')"
+check bob-group-whisper-denied "your role 'viewer' does not include it" "$(req $J3 POST /api/servers/$SID/rcon/whisperMany '{"faction":"Valkyra","message":"hi"}')"
+# Move alone: no kick, no kill, and no move to the side a player is on, which would only kill them
+check role-mover '"name":"Mover"' "$(req $J1 POST /api/orgs/$ORG/roles '{"name":"Mover","capabilities":["server.view","players.move"]}')"
+ROLES=$(req $J1 GET /api/orgs/$ORG/roles); RID_MOVER=$(roleid Mover)
+GB="{\"grants\":[{\"userId\":\"$UID_BOB\",\"roleId\":\"$RID_MOVER\"}]}"
+check grant-mover '"roleName":"Mover"' "$(req $J1 PUT /api/servers/$SID/grants "$GB")"
+check mover-kick-denied "your role 'Mover' does not include it" "$(req $J3 POST /api/servers/$SID/rcon/kick '{"steamId":"76561198100000106"}')"
+check mover-kill-denied "your role 'Mover' does not include it" "$(req $J3 POST /api/servers/$SID/rcon/kill '{"steamId":"76561198100000106"}')"
+check mover-same-side 'already on Lonestar' "$(req $J3 POST /api/servers/$SID/rcon/changeTeam '{"steamId":"76561198100000106","faction":"Lonestar"}')"
+check mover-move 'Moved' "$(req $J3 POST /api/servers/$SID/rcon/changeTeam '{"steamId":"76561198100000106","faction":"Manticore"}')"
 GB="{\"grants\":[{\"userId\":\"$UID_BOB\",\"roleId\":\"$RID_OPERATOR\"}]}"
 check server-grants-put '"roleName":"operator"' "$(req $J1 PUT /api/servers/$SID/grants "$GB")"
 check server-grants-get '"username":"bob"' "$(req $J1 GET /api/servers/$SID/grants)"
 check bob-kick-ok 'Kicked' "$(req $J3 POST /api/servers/$SID/rcon/kick '{"steamId":"76561198100000103"}')"
+check bob-group-whisper-ok '"sent":["76561198100000105"]' "$(req $J3 POST /api/servers/$SID/rcon/whisperMany '{"steamIds":["76561198100000105"],"message":"hi"}')"
 check bob-ban-denied "your role 'operator' does not include it" "$(req $J3 POST /api/servers/$SID/rcon/ban '{"steamId":"76561198100000106"}')"
 check bob-server-page '200' "$(pagecode $J3 /server/$SID)"
+check nav-orgs-no-list 'href="/orgs"' "$(navorgs $J3)"
 check bob-audit-own-only '0' "$(req $J3 GET '/api/audit' | grep -o '"actorName":"james"' | wc -l | tr -d ' ')"
 check bob-audit-has-own '"actorName":"bob"' "$(req $J3 GET '/api/audit')"
 check user-disable '"ok":true' "$(req $J1 PATCH /api/users/$UID_BOB '{"disabled":true}')"
@@ -143,6 +164,8 @@ check bob-forced-change 'must_change_password' "$(req $J3 GET /api/servers)"
 check bob-forced-redirect '/account?force=1' "$(curl -s -o /dev/null -w '%{redirect_url}' -b $J3 $B/)"
 check bob-change-pw "303 $B/" "$(form $J3 '/account?/password&force=1' 'current=another-long-password&next=bobs-final-password&again=bobs-final-password')"
 check bob-unlocked '"servers"' "$(req $J3 GET /api/servers)"
+check bob-org-owner '"ok":true' "$(req $J1 PATCH /api/orgs/$ORG/members/$UID_BOB '{"role":"owner"}')"
+check nav-orgs-owner "href=\"/orgs/$ORG\"" "$(navorgs $J3)"
 check demote-last-owner 'last owner' "$(req $J1 PATCH /api/users/$(req $J1 GET /api/users | grep -o '"id":"[^"]*","username":"james"' | sed -E 's/"id":"([^"]+)".*/\1/') '{"role":"member"}')"
 check user-delete '"ok":true' "$(req $J1 DELETE /api/users/$UID_BOB)"
 check bob-gone 'Sign in required' "$(req $J3 GET /api/servers)"
@@ -160,6 +183,8 @@ req $J1 POST /api/servers/$SID/rcon/raw '{"method":"POST","path":"/v1/broadcast"
 check audit-redacted '[redacted]' "$(req $J1 GET '/api/audit?action=rcon.raw&limit=5')"
 check audit-not-leaked '0' "$(req $J1 GET '/api/audit?action=rcon.raw&limit=5' | grep -c secret-value)"
 check audit-server-filter '"action":"rcon.broadcast"' "$(req $J1 GET "/api/audit?server=$SID&action=rcon.broadcast")"
+# a group whisper is one row, whoever it reached; its target is the faction
+check audit-group-whisper '"target":"Valkyra"' "$(req $J1 GET "/api/audit?server=$SID&action=rcon.whisperMany")"
 check audit-meta '"actors"' "$(req $J1 GET /api/audit/meta)"
 check audit-export-csv 'id,ts,actorName' "$(req $J1 GET '/api/audit/export?format=csv' | head -1)"
 check audit-export-json '"category"' "$(req $J1 GET '/api/audit/export?format=json' | head -40)"
@@ -248,6 +273,7 @@ check orgbans-no-reserve 'Org reserved slots' "$(req $J6 POST /api/orgs/$ORG/lis
 check page-orgbans-bans '200' "$(pagecode $J6 "/orgs/$ORG/bans")"
 check page-orgbans-reserved '403' "$(pagecode $J6 "/orgs/$ORG/reserved")"
 check orgbans-no-reserved-tab '0' "$(curl -s -b $J6 $B/orgs/$ORG/bans | grep -c "/orgs/$ORG/reserved")"
+check nav-orgs-one-list "href=\"/orgs/$ORG/bans\"" "$(navorgs $J6)"
 # the org's Players page offers each action to whoever may take it: dave bans, but keeps no notes,
 # so no Watch (wait for the worker to have seen players, or the table is empty for everyone)
 for i in $(seq 1 15); do R=$(curl -s -b $J1 "$B/orgs/$ORG/players"); [[ "$R" == *'Watch</button>'* ]] && break; sleep 2; done
