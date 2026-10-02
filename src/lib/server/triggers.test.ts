@@ -14,18 +14,21 @@ import {
 	riskKickVerdict,
 	seedRule,
 	seedReplay,
+	countsForTeamKill,
 	teamKillStage,
 	validateConfig,
 	welcomeTargets,
-	riskKickScore
+	riskKickScore,
+	MAX_REASON
 } from './trigger-rules';
 import type { MatchBroadcastConfig, RiskKickConfig } from './trigger-rules';
+import { MAX_CHAT } from '$lib/chat';
 
 describe('validateConfig', () => {
-	test('welcome needs a message and trims it to 200 characters', () => {
+	test('welcome needs a message and trims it to the 256 characters the game takes', () => {
 		expect(() => validateConfig('welcome', { message: '  ' })).toThrow('empty');
 		const c = validateConfig('welcome', { message: 'x'.repeat(300), onlyFirstVisit: 'yes' });
-		expect(c).toEqual({ message: 'x'.repeat(200), onlyFirstVisit: true, afterFaction: false });
+		expect(c).toEqual({ message: 'x'.repeat(256), onlyFirstVisit: true, afterFaction: false });
 		expect(validateConfig('welcome', { message: 'hi', afterFaction: 1 })).toMatchObject({
 			afterFaction: true
 		});
@@ -395,17 +398,16 @@ describe('welcomeTargets', () => {
 describe('renderTemplate', () => {
 	test('fills placeholders case-insensitively and leaves unknown ones', () => {
 		expect(
-			renderTemplate('Hi {NAME}, welcome to {server} ({players}/{max}) on {map} {nope}', {
-				name: 'Nomad',
-				server: 'EU #1',
-				players: 3,
-				max: 64,
-				map: 'Kavkazi'
-			})
+			renderTemplate(
+				'Hi {NAME}, welcome to {server} ({players}/{max}) on {map} {nope}',
+				{ name: 'Nomad', server: 'EU #1', players: 3, max: 64, map: 'Kavkazi' },
+				MAX_CHAT
+			)
 		).toBe('Hi Nomad, welcome to EU #1 (3/64) on Kavkazi {nope}');
 	});
-	test('clips to 200 characters', () => {
-		expect(renderTemplate('{name}', { name: 'y'.repeat(500) })).toHaveLength(200);
+	test('clips to the length it is given: chat or a kick reason', () => {
+		expect(renderTemplate('{name}', { name: 'y'.repeat(500) }, MAX_CHAT)).toHaveLength(256);
+		expect(renderTemplate('{name}', { name: 'y'.repeat(500) }, MAX_REASON)).toHaveLength(200);
 	});
 });
 
@@ -699,15 +701,59 @@ describe('team_kill', () => {
 		expect(() => validateConfig('team_kill', { warnAt: 3, kickAt: 2 })).toThrow(/below/);
 		expect(validateConfig('team_kill', { warnAt: 2, kickAt: 4 })).toEqual({
 			warnAt: 2,
-			warnMessage: 'Careful, {name}: that was a team kill ({count} this session).',
+			warnMessage: 'Careful, {name}: that was a team kill ({count} this match).',
 			kickAt: 4,
-			kickReason: 'Team killing ({count} this session).'
+			kickReason: 'Team killing ({count} this match).',
+			notCounted: ['Id.Buildable.BarbedWire']
 		});
 		expect(validateConfig('team_kill', { kickAt: 3, kickReason: 'Out.' })).toMatchObject({
 			warnAt: 0,
 			kickAt: 3,
 			kickReason: 'Out.'
 		});
+		// The whisper is chat, held to the game's chat cap; the kick reason keeps its own.
+		const long = validateConfig('team_kill', {
+			warnAt: 1,
+			kickAt: 2,
+			warnMessage: 'w'.repeat(400),
+			kickReason: 'k'.repeat(400)
+		}) as { warnMessage: string; kickReason: string };
+		expect([long.warnMessage.length, long.kickReason.length]).toEqual([256, 200]);
+	});
+
+	test('validateConfig: barbed wire is not counted unless the list is sent, each tag once in any case', () => {
+		const notCounted = (v: unknown) =>
+			(validateConfig('team_kill', { kickAt: 3, notCounted: v }) as { notCounted: string[] })
+				.notCounted;
+		expect(notCounted(undefined)).toEqual(['Id.Buildable.BarbedWire']);
+		expect(notCounted(null)).toEqual(['Id.Buildable.BarbedWire']);
+		expect(notCounted([])).toEqual([]);
+		expect(notCounted('')).toEqual([]);
+		expect(
+			notCounted(['id.buildable.barbedwire', 'Id.Buildable.BarbedWire', ' Id.Item.Claymore ', ''])
+		).toEqual(['id.buildable.barbedwire', 'Id.Item.Claymore']);
+		expect(notCounted('Id.Item.ATMine\nId.Item.Claymore')).toEqual([
+			'Id.Item.ATMine',
+			'Id.Item.Claymore'
+		]);
+		expect(() => notCounted(['Barbed <b>wire</b>'])).toThrow('kill feed tag');
+		expect(() => notCounted(Array.from({ length: 41 }, (_, i) => `Id.Item.W${i}`))).toThrow(
+			'at most 40'
+		);
+	});
+
+	test('countsForTeamKill: any cause but those left out, in any case; an older rule leaves out barbed wire', () => {
+		const wire = 'Id.Buildable.BarbedWire';
+		// saved before the list existed
+		expect(countsForTeamKill({}, wire)).toBe(false);
+		expect(countsForTeamKill({}, 'ID.BUILDABLE.BARBEDWIRE')).toBe(false);
+		expect(countsForTeamKill({}, 'Id.Item.AK74M')).toBe(true);
+		expect(countsForTeamKill({}, null)).toBe(true);
+		// a list, even an empty one, is what the rule says
+		expect(countsForTeamKill({ notCounted: [] }, wire)).toBe(true);
+		expect(countsForTeamKill({ notCounted: ['Id.Item.Claymore'] }, wire)).toBe(true);
+		expect(countsForTeamKill({ notCounted: ['Id.Item.Claymore'] }, 'id.item.claymore')).toBe(false);
+		expect(countsForTeamKill({ notCounted: [wire] }, null)).toBe(true);
 	});
 
 	test('teamKillStage: a whisper from warnAt on, a kick from kickAt on', () => {

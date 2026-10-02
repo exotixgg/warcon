@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { invalidateAll } from '$app/navigation';
 	import { api, errorMessage, rconPost } from '$lib/api';
+	import { MAX_CHAT } from '$lib/chat';
 	import { fmtNum, fmtTime } from '$lib/format';
 	import { causeLabel } from '$lib/causes';
 	import { can } from '$lib/capabilities';
@@ -19,7 +20,7 @@
 	let { data }: PageProps = $props();
 	let d = $derived<DossierView>(data.dossier);
 	let id = $derived(data.server.id);
-	let moderate = $derived(can(data.server.caps, 'players.moderate'));
+	let canKick = $derived(can(data.server.caps, 'players.kick'));
 	let chat = $derived(can(data.server.caps, 'chat.send'));
 	let bans = $derived(can(data.server.caps, 'bans.manage'));
 	let notes = $derived(can(data.server.caps, 'players.notes'));
@@ -412,7 +413,7 @@
 	</div>
 
 	<div class="space-y-4 self-start">
-		{#if onThisServer && (moderate || chat)}
+		{#if onThisServer && (canKick || chat)}
 			<div class="panel border-accent/40">
 				<span class="label-sm">Quick actions (online here)</span>
 				<div class="join w-full">
@@ -420,7 +421,7 @@
 						class="input"
 						type="text"
 						placeholder="Private message…"
-						maxlength="200"
+						maxlength={MAX_CHAT}
 						bind:value={whisper}
 					/>
 					<button
@@ -442,7 +443,7 @@
 					/>
 					<button
 						class="btn btn-danger"
-						disabled={busy || !moderate}
+						disabled={busy || !canKick}
 						onclick={() =>
 							act('kick', { steamId: d.steamId, reason: reason.trim() }, `Kick ${d.name}?`)}
 						>Kick</button
