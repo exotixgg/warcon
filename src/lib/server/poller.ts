@@ -38,7 +38,7 @@ import {
 import { phaseOffset, pickDue, withHold } from './poller-schedule';
 import { rollupSamples } from './rollups';
 import { liveView } from './live';
-import { feedDemoKills } from './feed-events';
+import { feedDemoKills, forgetKillDistance } from './feed-events';
 import { publicMessage } from './http';
 import * as metrics from './metrics';
 import type { LiveView } from '$lib/types';
@@ -145,7 +145,8 @@ export async function stopPoller(): Promise<void> {
 	globalThis.__warconPoller = undefined;
 	if (globalThis.__warconRenew) clearInterval(globalThis.__warconRenew);
 	globalThis.__warconRenew = undefined;
-	stopDelivery();
+	// A pass caught claiming puts its rows back, which needs the lease: before it is given up.
+	await stopDelivery();
 	stopJsonWebhookPosts();
 	stopStatusMirror();
 	if (unregisterMetrics) unregisterMetrics();
@@ -234,6 +235,7 @@ async function beat(env: Env): Promise<void> {
 			// A new ownership period: anything remembered may be stale against another worker's writes.
 			s.epoch = period;
 			forgetRemembered();
+			forgetKillDistance();
 		}
 		if (now - s.settingsAt >= SETTINGS_MS) {
 			s.settingsAt = now;
@@ -279,7 +281,10 @@ async function refreshRoster(env: Env, s: Scheduler, now: number): Promise<void>
 		return m;
 	});
 	for (const m of allMemory())
-		if (!present.has(m.server.id) && m.inFlight === null) forgetMemory(m.server.id);
+		if (!present.has(m.server.id) && m.inFlight === null) {
+			forgetMemory(m.server.id);
+			forgetKillDistance(m.server.id);
+		}
 	if (now - s.expiryAt >= EXPIRY_MS) {
 		s.expiryAt = now;
 		const expired = await expireEntries(env).catch((err) => {

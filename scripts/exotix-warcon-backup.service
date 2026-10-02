@@ -1,0 +1,10 @@
+[Unit]
+Description=Back up the isolated EXOTIX Warcon production database
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/exotix-warcon-backup daily
+UMask=0077
+TimeoutStartSec=1800

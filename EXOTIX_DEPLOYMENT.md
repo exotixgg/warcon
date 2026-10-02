@@ -36,3 +36,26 @@ Before production promotion:
 Application rollback and database restoration are separate decisions. A code rollback may not
 be compatible with a schema migration, so keep the pre-deployment dump until the release is
 verified.
+
+## Production database backups
+
+The host backup helper is `scripts/exotix-warcon-backup.sh`, installed as
+`/usr/local/sbin/exotix-warcon-backup` (root-only). Its systemd service and timer are alongside
+the helper in `scripts/`. It resolves the running database by the production Coolify resource
+prefix, so deployments may replace containers without invalidating the schedule.
+
+- Daily backup: 02:15 UTC, with persistent catch-up after downtime and 14-day retention.
+- Before upgrading: run `exotix-warcon-backup pre-upgrade`; these snapshots are not pruned.
+- Destination: `/data/warcon-backups/production`, mode 700; all backup files are mode 600.
+- Each snapshot includes a custom-format `pg_dump`, a validated archive listing, SHA-256
+  checksums, and the Coolify `.env` file needed to recover encryption/authentication keys.
+- Check the schedule and last result with `systemctl list-timers exotix-warcon-backup.timer`
+  and `systemctl status exotix-warcon-backup.service`.
+
+These copies are on the same VPS. They protect an application upgrade but do not protect against
+loss of the host. No off-host Warcon backup destination has been verified.
+
+A restore rehearsal must use a separate database/container, the same PostgreSQL/TimescaleDB
+version, and TimescaleDB's `timescaledb_pre_restore()` / `timescaledb_post_restore()` procedure.
+Never point a rehearsal worker at live game servers. Verify archive restoration and row counts,
+then apply the pending migrations to that restored copy before production deployment.
