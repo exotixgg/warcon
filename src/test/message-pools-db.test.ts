@@ -368,23 +368,42 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 		});
 	});
 
-	test('exact weapon tags advance whisper, kick, and timed ban thresholds', async () => {
+	test('mounted-gun kills advance thresholds, but roadkills and vehicle explosions do not', async () => {
 		const world = await seedWorld(env);
 		const server = await serverOf(world.server.id);
 		const before = await poolConfigOf(env.db, world.org.id);
+		const weaponTag = 'Id.Vehicle.WeaponExtension.WHL_05.RingMinigun';
 		await env.db.transaction((tx) =>
 			savePoolConfig(
 				tx,
 				world.org.id,
 				{
 					pools: [
-						pool('grenade-rule', 'weapon', {
+						pool('mounted-gun-rule', 'weapon', {
 							messages: ['{player_name}: {weapon} kill #{count}'],
-							weaponTags: ['Id.Item.GrenadeLauncher'],
+							weaponTags: [weaponTag],
 							thresholds: [
-								{ count: 1, action: 'whisper', days: 0, scope: 'server' },
-								{ count: 2, action: 'kick', days: 0, scope: 'server' },
-								{ count: 3, action: 'ban', days: 7, scope: 'server' }
+								{
+									count: 1,
+									action: 'whisper',
+									days: 0,
+									scope: 'server',
+									message: 'Warning: {weapon} is banned.'
+								},
+								{
+									count: 2,
+									action: 'kick',
+									days: 0,
+									scope: 'server',
+									message: 'Kicked for using {weapon}.'
+								},
+								{
+									count: 3,
+									action: 'ban',
+									days: 7,
+									scope: 'server',
+									message: 'Banned for using {weapon} again.'
+								}
 							]
 						})
 					]
@@ -392,6 +411,43 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 				before.version
 			)
 		);
+		for (const [n, tag] of ['RoadKill', 'VehicleExplosion'].entries()) {
+			const now = new Date();
+			const eventId = `pool-vehicle-${world.server.id}-${n}`;
+			const event: KillView = {
+				eventId,
+				ts: now.toISOString(),
+				map: 'Kavkazi',
+				eventTime: n,
+				killer: { steamId: STEAM, name: 'Test Player', faction: 'A' },
+				victim: { steamId: `7656119800000077${n}`, name: `Vehicle victim ${n}`, faction: 'B' },
+				cause: weaponTag,
+				distanceM: null,
+				headshot: false,
+				suicide: false,
+				teamKill: false,
+				tags: [tag]
+			};
+			await env.db.insert(kills).values({
+				ts: now,
+				serverId: world.server.id,
+				eventId,
+				instanceId: 'pool-test',
+				matchId: 'one',
+				eventTime: n,
+				map: event.map,
+				killerSteamId: STEAM,
+				killerName: 'Test Player',
+				killerFaction: 'A',
+				victimSteamId: event.victim.steamId,
+				victimName: event.victim.name,
+				victimFaction: 'B',
+				cause: event.cause,
+				distanceM: null,
+				tags: event.tags
+			});
+			expect(await env.db.transaction((tx) => queueWeaponPools(tx, server, [event]))).toBe(0);
+		}
 		for (let n = 1; n <= 3; n++) {
 			const now = new Date();
 			const eventId = `pool-test-${world.server.id}-${n}`;
@@ -402,7 +458,7 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 				eventTime: n,
 				killer: { steamId: STEAM, name: 'Test Player', faction: 'A' },
 				victim: { steamId: `7656119800000078${n}`, name: `Victim ${n}`, faction: 'B' },
-				cause: 'Id.Item.GrenadeLauncher',
+				cause: weaponTag,
 				distanceM: 20,
 				headshot: false,
 				suicide: false,
@@ -432,9 +488,102 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 		const rows = await env.db
 			.select()
 			.from(outbox)
-			.where(and(eq(outbox.serverId, world.server.id), eq(outbox.triggerName, 'grenade-rule')))
+			.where(and(eq(outbox.serverId, world.server.id), eq(outbox.triggerName, 'mounted-gun-rule')))
 			.orderBy(asc(outbox.id));
 		expect(rows.map((row) => row.action)).toEqual(['whisper', 'kick', PANEL_BAN]);
+		expect(
+			rows.map(
+				(row) =>
+					(row.params as { message?: string; reason?: string }).message ??
+					(row.params as { reason?: string }).reason
+			)
+		).toEqual([
+			'Warning: Id.Vehicle.WeaponExtension.WHL_05.RingMinigun is banned.',
+			'Kicked for using Id.Vehicle.WeaponExtension.WHL_05.RingMinigun.',
+			'Banned for using Id.Vehicle.WeaponExtension.WHL_05.RingMinigun again.'
+		]);
 		expect(rows[2].params).toMatchObject({ days: 7, scope: 'server', steamId: STEAM });
+	});
+
+	test('persistent weapon counts carry a private warning into later matches and repeat the ban', async () => {
+		const world = await seedWorld(env);
+		const server = await serverOf(world.server.id);
+		const secondServer = await serverOf(world.otherServer.id);
+		const old = await poolConfigOf(env.db, world.org.id);
+		const rule = pool('persistent-mmgl', 'weapon', {
+			allServers: false,
+			serverIds: [server.id, secondServer.id],
+			weaponTags: ['Id.Item.MMGL'],
+			persistentCounts: true,
+			thresholds: [
+				{ count: 1, action: 'whisper', days: 0, scope: 'org', message: 'Private warning.' },
+				{ count: 2, action: 'ban', days: 7, scope: 'org', message: 'Seven-day ban.' }
+			]
+		});
+		const saved = await env.db.transaction((tx) =>
+			savePoolConfig(tx, world.org.id, { pools: [rule] }, old.version)
+		);
+		expect(saved.pools[0].trackingSince).toBeTruthy();
+		const edited = await env.db.transaction((tx) =>
+			savePoolConfig(
+				tx,
+				world.org.id,
+				{ pools: [{ ...saved.pools[0], name: 'Edited rule text' }] },
+				saved.version
+			)
+		);
+		expect(edited.pools[0].trackingSince).toBe(saved.pools[0].trackingSince);
+		const receive = async (n: number, on: typeof server, tags: string[] = []) => {
+			const now = new Date();
+			const eventId = `persistent-${on.id}-${n}`;
+			const event: KillView = {
+				eventId,
+				ts: now.toISOString(),
+				map: 'Kavkazi',
+				eventTime: n,
+				killer: { steamId: STEAM, name: 'Test Player', faction: 'A' },
+				victim: { steamId: `7656119800000060${n}`, name: `Victim ${n}`, faction: 'B' },
+				cause: 'Id.Item.MMGL',
+				distanceM: 25,
+				headshot: false,
+				suicide: false,
+				teamKill: false,
+				tags
+			};
+			await env.db.insert(kills).values({
+				ts: now,
+				serverId: on.id,
+				eventId,
+				instanceId: 'persistent-test',
+				matchId: `match-${n}`,
+				eventTime: n,
+				map: event.map,
+				killerSteamId: STEAM,
+				killerName: 'Test Player',
+				killerFaction: 'A',
+				victimSteamId: event.victim.steamId,
+				victimName: event.victim.name,
+				victimFaction: 'B',
+				cause: event.cause,
+				distanceM: event.distanceM,
+				tags
+			});
+			return env.db.transaction((tx) => queueWeaponPools(tx, on, [event]));
+		};
+		expect(await receive(1, server)).toBe(1);
+		expect(await receive(2, secondServer, ['RoadKill'])).toBe(0);
+		expect(await receive(3, secondServer)).toBe(1);
+		expect(await receive(4, secondServer)).toBe(1);
+		const rows = await env.db
+			.select()
+			.from(outbox)
+			.where(eq(outbox.triggerName, 'Edited rule text'))
+			.orderBy(asc(outbox.id));
+		expect(rows.map((row) => row.action)).toEqual(['whisper', PANEL_BAN, PANEL_BAN]);
+		expect(rows.map((row) => row.params)).toMatchObject([
+			{ message: 'Private warning.', steamId: STEAM },
+			{ reason: 'Seven-day ban.', days: 7, scope: 'org', steamId: STEAM },
+			{ reason: 'Seven-day ban.', days: 7, scope: 'org', steamId: STEAM }
+		]);
 	});
 });

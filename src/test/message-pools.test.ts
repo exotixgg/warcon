@@ -83,6 +83,30 @@ describe('message pools', () => {
 		expect(
 			validateMessagePools({ pools: [weapon] }).pools[0].thresholds.map((step) => step.action)
 		).toEqual(['whisper', 'kick', 'ban']);
+		expect(
+			validateMessagePools({ pools: [weapon] }).pools[0].thresholds[0].message
+		).toBeUndefined();
+		const distinctSteps = {
+			...weapon,
+			thresholds: [
+				{ ...weapon.thresholds[0], message: 'Warning: {weapon} is banned.' },
+				{ ...weapon.thresholds[1], message: 'Kicked for using {weapon}.' },
+				{ ...weapon.thresholds[2], message: 'Banned for using {weapon} twice.' }
+			]
+		};
+		expect(validateMessagePools({ pools: [distinctSteps] }).pools[0].thresholds).toEqual(
+			distinctSteps.thresholds
+		);
+		expect(() =>
+			validateMessagePools({
+				pools: [
+					{
+						...distinctSteps,
+						thresholds: [{ ...distinctSteps.thresholds[0], message: '{ban_reason}' }]
+					}
+				]
+			})
+		).toThrow('placeholders');
 	});
 
 	test('overlapping assignments and malformed weapon rules are refused', () => {

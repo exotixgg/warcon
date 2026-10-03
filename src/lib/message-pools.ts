@@ -11,6 +11,8 @@ export interface WeaponThreshold {
 	action: WeaponAction;
 	days: number;
 	scope: 'server' | 'org';
+	/** Text for this step; older rules fall back to the pool's shared messages. */
+	message?: string;
 }
 
 export interface MessagePool {
@@ -34,6 +36,10 @@ export interface MessagePool {
 	/** Weapon pools only: exact, case-insensitive kill-feed cause tags. */
 	weaponTags: string[];
 	teamKillsOnly: boolean;
+	/** Count qualifying kills across the selected servers and all matches. */
+	persistentCounts?: boolean;
+	/** First receipt time counted by a persistent weapon rule; set by the server. */
+	trackingSince?: string;
 	thresholds: WeaponThreshold[];
 	/** Timer pools only. */
 	everyMinutes: number;
@@ -130,6 +136,16 @@ const distinct = (raw: unknown, field: string, maxItems: number, maxLength: numb
 	return out;
 };
 
+function validateTemplate(name: string, action: PoolAction, message: string): void {
+	if (/[\r\n]/.test(message)) throw new Error(`${name}: each message must be one line.`);
+	const tokens = [...message.matchAll(/\{([^{}]+)\}/g)].map((m) => m[1].toLowerCase());
+	if (
+		/[{}]/.test(message.replace(/\{([^{}]+)\}/g, '')) ||
+		tokens.some((key) => !POOL_VARIABLES[action].includes(key))
+	)
+		throw new Error(`${name}: use only the placeholders listed for ${action.replace('_', ' ')}.`);
+}
+
 export function validateMessagePools(raw: unknown): MessagePoolConfig {
 	if (!isRecord(raw) || !Array.isArray(raw.pools) || raw.pools.length > 100)
 		throw new Error('Provide at most 100 message pools.');
@@ -150,15 +166,7 @@ export function validateMessagePools(raw: unknown): MessagePoolConfig {
 		const maxMessage = a === 'weapon' ? 200 : MAX_CHAT;
 		const messages = distinct(item.messages, 'Messages', 50, maxMessage);
 		if (!messages.length) throw new Error(`${name}: add at least one message.`);
-		for (const message of messages) {
-			if (/[\r\n]/.test(message)) throw new Error(`${name}: each message must be one line.`);
-			const tokens = [...message.matchAll(/\{([^{}]+)\}/g)].map((m) => m[1].toLowerCase());
-			if (
-				/[{}]/.test(message.replace(/\{([^{}]+)\}/g, '')) ||
-				tokens.some((key) => !POOL_VARIABLES[a].includes(key))
-			)
-				throw new Error(`${name}: use only the placeholders listed for ${a.replace('_', ' ')}.`);
-		}
+		for (const message of messages) validateTemplate(name, a, message);
 		const sendCount = whole(item.sendCount, 'Messages per event', 1, 5);
 		if (sendCount > messages.length)
 			throw new Error(`${name}: messages per event exceeds pool size.`);
@@ -187,6 +195,15 @@ export function validateMessagePools(raw: unknown): MessagePoolConfig {
 			throw new Error(`${name}: add at least one kill-feed weapon tag.`);
 		if (weaponTags.some((tag) => !/^[A-Za-z0-9_.-]+$/.test(tag)))
 			throw new Error(`${name}: weapon tags must match the kill feed exactly.`);
+		const persistentCounts = bool(item.persistentCounts ?? false, 'Persistent weapon counts');
+		const trackingSince = item.trackingSince;
+		if (
+			trackingSince !== undefined &&
+			(typeof trackingSince !== 'string' ||
+				!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(trackingSince) ||
+				!Number.isFinite(Date.parse(trackingSince)))
+		)
+			throw new Error(`${name}: invalid persistent count start.`);
 		const rawThresholds = item.thresholds ?? [];
 		if (!Array.isArray(rawThresholds) || rawThresholds.length > 5)
 			throw new Error(`${name}: use at most five thresholds.`);
@@ -194,11 +211,15 @@ export function validateMessagePools(raw: unknown): MessagePoolConfig {
 			if (!isRecord(v) || !['whisper', 'kick', 'ban'].includes(String(v.action)))
 				throw new Error(`${name}: choose whisper, kick or ban for each threshold.`);
 			if (v.scope !== 'server' && v.scope !== 'org') throw new Error(`${name}: invalid ban scope.`);
+			const message =
+				v.message === undefined ? undefined : string(v.message, 'Threshold message', 200);
+			if (message !== undefined) validateTemplate(name, 'weapon', message);
 			return {
 				count: whole(v.count, 'Kill threshold', 1, 100),
 				action: v.action as WeaponAction,
 				days: whole(v.days, 'Ban days', 0, 3650),
-				scope: v.scope
+				scope: v.scope,
+				...(message === undefined ? {} : { message })
 			};
 		});
 		if (a === 'weapon' && !thresholds.length) throw new Error(`${name}: add a threshold.`);
@@ -228,6 +249,8 @@ export function validateMessagePools(raw: unknown): MessagePoolConfig {
 			banSources,
 			weaponTags,
 			teamKillsOnly: bool(item.teamKillsOnly ?? false, 'Team kills only'),
+			...(a === 'weapon' && persistentCounts ? { persistentCounts: true } : {}),
+			...(a === 'weapon' && persistentCounts && trackingSince ? { trackingSince } : {}),
 			thresholds,
 			everyMinutes,
 			minPlayers,
