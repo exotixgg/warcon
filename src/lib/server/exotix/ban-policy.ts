@@ -85,8 +85,9 @@ export async function automaticCase(
 		days,
 		presetDays: days,
 		appealText: policy.appealText,
+		messageTemplate: policy.messageTemplate,
 		description: `Automated ban. Source: ${rule}. Rule reason: ${reason}. Duration: ${days ? `${days} days` : 'permanent'}. Review the trigger and audit history for evidence.`,
-		message: banCaseMessage(category, days, reference, policy.appealText)
+		message: banCaseMessage(category, days, reference, policy.appealText, policy.messageTemplate)
 	};
 }
 export async function resolveReview(db: DbOrTx, entryId: string): Promise<void> {
@@ -120,6 +121,6 @@ export async function refreshCaseDuration(
 		...(c.extensions ?? []),
 		{ at: new Date().toISOString(), rule, reason, expiresAt: expiresAt?.toISOString() ?? null }
 	];
-	c.message = banCaseMessage(c.category, c.days, c.reference, c.appealText);
+	c.message = banCaseMessage(c.category, c.days, c.reference, c.appealText, c.messageTemplate);
 	await writeCase(db, entryId, c);
 }

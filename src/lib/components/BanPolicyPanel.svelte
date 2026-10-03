@@ -3,15 +3,47 @@
 	import { toast } from '$lib/toast.svelte';
 	import {
 		DEFAULT_BAN_POLICY,
+		DEFAULT_POLICY_MESSAGE,
+		POLICY_MESSAGE_VARS,
+		banCaseMessage,
 		durationLabel,
 		validateBanPolicy,
 		type BanPolicyView
 	} from '$lib/exotix/ban-policy';
-	let { orgId, owner }: { orgId: string; owner: boolean } = $props();
+	let { orgId, owner = false }: { orgId: string; owner?: boolean } = $props();
 	let policy = $state<BanPolicyView | null>(null);
 	let problem = $state('');
 	let editing = $state(false);
 	let busy = $state(false);
+	let messageField = $state<HTMLInputElement>();
+	function insert(name: string) {
+		if (!messageField) return;
+		const at = messageField.selectionStart ?? messageField.value.length;
+		messageField.setRangeText(`{${name}}`, at, messageField.selectionEnd ?? at, 'end');
+		messageField.dispatchEvent(new Event('input', { bubbles: true }));
+		messageField.focus();
+	}
+	let samples = $derived.by(() => {
+		if (!policy) return [];
+		const reason = policy.categories[0]?.label ?? 'Rule violation';
+		return [
+			['Manual ticket', 7, 't-12345'],
+			['Automated case', 0, 'a-0000001']
+		].map(([label, days, reference]) => {
+			try {
+				const message = banCaseMessage(
+					reason,
+					Number(days),
+					String(reference),
+					policy!.appealText,
+					policy!.messageTemplate
+				);
+				return { label: String(label), message, error: false };
+			} catch (e) {
+				return { label: String(label), message: errorMessage(e), error: true };
+			}
+		});
+	});
 	let path = $derived(`/api/orgs/${encodeURIComponent(orgId)}/ban-policy`);
 	async function load() {
 		try {
@@ -68,7 +100,7 @@
 		{#if owner && !editing}<button class="mb-3 btn" onclick={() => (editing = true)}
 				>Configure policy</button
 			>{/if}
-		{#if editing}
+		{#if owner && editing}
 			<label class="mb-4 flex gap-2"
 				><input type="checkbox" bind:checked={policy.enabled} /> Require policy, TicketID and internal
 				description for new manual bans</label
@@ -80,11 +112,57 @@
 					bind:value={policy.appealText}
 				/></label
 			>
+			<label class="mb-2 block">
+				<span class="field-label">Player message template</span>
+				<input
+					class="input font-mono"
+					maxlength="200"
+					bind:this={messageField}
+					bind:value={policy.messageTemplate}
+				/>
+			</label>
+			<div class="flex flex-wrap items-center gap-1">
+				<span class="note mr-1">Insert</span>
+				{#each POLICY_MESSAGE_VARS as name (name)}
+					<button
+						class="chip cursor-pointer"
+						title="Insert {'{' + name + '}'} at the caret"
+						onclick={() => insert(name)}>{'{' + name + '}'}</button
+					>
+				{/each}
+				<button
+					class="btn btn-sm"
+					onclick={() => {
+						if (policy) policy.messageTemplate = DEFAULT_POLICY_MESSAGE;
+					}}>Reset template</button
+				>
+			</div>
+		{/if}
+		{#if owner}
+			<p class="note mt-3">
+				<span class="font-mono">{'{reference}'}</span> is the ticket or automation reference: t-12345
+				for manual bans, a-0000001 for automated bans. All four placeholders are required. Internal descriptions
+				are never available as placeholders.
+			</p>
+			<div class="my-3 space-y-2 rounded-ctl border border-black bg-ink-950 p-3">
+				{#each samples as sample (sample.label)}
+					<div>
+						<span class="field-label">{sample.label}</span>
+						<div class="font-mono text-sm break-words" class:text-danger={sample.error}>
+							{sample.message}
+						</div>
+					</div>
+				{/each}
+			</div>
+		{:else}
+			<p class="note">
+				Policy configuration is managed in Admin settings or by organisation owners in Settings.
+			</p>
 		{/if}
 		<div class="space-y-4">
 			{#each policy.categories as c, i (c.id)}
 				<div class="border-t border-white/10 pt-3">
-					{#if editing}
+					{#if owner && editing}
 						<label
 							><span class="field-label">Reason</span><input
 								class="input"
@@ -161,7 +239,7 @@
 				</div>
 			{/each}
 		</div>
-		{#if editing}<div class="mt-4 flex flex-wrap gap-2">
+		{#if owner && editing}<div class="mt-4 flex flex-wrap gap-2">
 				<button class="btn" disabled={busy || policy.categories.length >= 12} onclick={addCategory}
 					>Add category</button
 				><button

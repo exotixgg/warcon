@@ -10,6 +10,7 @@ export const BAN_MESSAGE_VARS = [
 	'expires',
 	'banned',
 	'uid',
+	'reference',
 	'admin'
 ] as const;
 export type BanMessageVar = (typeof BAN_MESSAGE_VARS)[number];
@@ -24,6 +25,8 @@ export interface BanFacts {
 	addedByName: string;
 	addedAt: Date;
 	expiresAt: Date | null;
+	/** Policy ticket (t-12345) or automation case (a-0000001); absent on legacy bans. */
+	reference?: string;
 }
 
 /** A short id for a ban, stable for the life of its entry: enough to find it on the ban list. */
@@ -56,6 +59,7 @@ export function banMessageVars(f: BanFacts): Record<BanMessageVar, string> {
 		expires: f.expiresAt ? stamp(f.expiresAt) : 'never',
 		banned: stamp(f.addedAt),
 		uid: banUid(f.entryId),
+		reference: f.reference ?? '',
 		admin: f.addedByName
 	};
 }
@@ -69,14 +73,18 @@ export const unknownBanVars = (template: string): string[] => [
 	)
 ];
 
+/** One pass: inserted values are literal text, never interpreted as more placeholders. */
+export function substituteBanVariables(template: string, vars: Record<string, string>): string {
+	return template.replace(/\{([^{}]+)\}/g, (m, key: string) => vars[key.toLowerCase()] ?? m);
+}
+
 /**
  * The text for one ban. Separators left dangling by an empty value (a ban with no reason) are
  * trimmed off the ends, so "{reason} | Expires {expires}" does not open with a bar.
  */
 export function renderBanMessage(template: string, f: BanFacts): string {
 	const vars: Record<string, string> = banMessageVars(f);
-	return (template || DEFAULT_BAN_MESSAGE)
-		.replace(/\{([a-z_]+)\}/gi, (m, key: string) => vars[key.toLowerCase()] ?? m)
+	return substituteBanVariables(template || DEFAULT_BAN_MESSAGE, vars)
 		.replace(/^[\s|·:,;-]+|[\s|·:,;-]+$/g, '')
 		.slice(0, MAX_BAN_MESSAGE);
 }
