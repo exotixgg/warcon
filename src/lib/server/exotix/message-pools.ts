@@ -62,6 +62,24 @@ export async function savePoolConfig(
 	for (const pool of config.pools)
 		if (pool.action === 'ban' && pool.categoryId !== 'general' && !categoryIds.has(pool.categoryId))
 			throw new ApiError(400, `${pool.name}: the ban category no longer exists.`);
+	// A persistent rule starts counting when it is enabled, never retroactively. Text edits keep
+	// its count; changing the weapons or servers starts a new rule history.
+	for (const pool of config.pools) {
+		if (pool.action !== 'weapon' || !pool.persistentCounts) continue;
+		const old = current.pools.find((candidate) => candidate.id === pool.id);
+		const sameScope =
+			old?.action === 'weapon' &&
+			old.persistentCounts &&
+			old.enabled &&
+			pool.enabled &&
+			old.allServers === pool.allServers &&
+			old.teamKillsOnly === pool.teamKillsOnly &&
+			JSON.stringify([...old.serverIds].sort()) === JSON.stringify([...pool.serverIds].sort()) &&
+			JSON.stringify(old.weaponTags.map((tag) => tag.toLowerCase()).sort()) ===
+				JSON.stringify(pool.weaponTags.map((tag) => tag.toLowerCase()).sort());
+		pool.trackingSince =
+			sameScope && old?.trackingSince ? old.trackingSince : new Date().toISOString();
+	}
 	await db.execute(sql`
 		INSERT INTO exotix.message_pool_configs (org_id, config)
 		VALUES (${orgId}, ${JSON.stringify(config)}::text::jsonb)
@@ -489,6 +507,7 @@ export async function queueWeaponPools(
 	const matchRow = stamp?.matchRow ?? null;
 	let queued = 0;
 	for (const pool of pools) {
+		if (pool.persistentCounts && !pool.trackingSince) continue;
 		const tags = new Set(pool.weaponTags.map((v) => v.toLowerCase()));
 		const vehicleTagSql = sql.join(
 			VEHICLE_TAGS.map((tag) => sql`${tag}`),
@@ -500,6 +519,7 @@ export async function queueWeaponPools(
 					k.killer &&
 					!k.suicide &&
 					!k.tags.some((tag) => VEHICLE_TAGS.includes(tag)) &&
+					(!pool.persistentCounts || Date.parse(k.ts) >= Date.parse(pool.trackingSince!)) &&
 					k.cause &&
 					tags.has(k.cause.toLowerCase()) &&
 					(!pool.teamKillsOnly || k.teamKill)
@@ -511,22 +531,41 @@ export async function queueWeaponPools(
 			const id = hit.killer!.steamId;
 			(byKiller.get(id) ?? byKiller.set(id, []).get(id)!).push(hit);
 		}
-		for (const [steamId, events] of byKiller) {
+		for (const [steamId, events] of [...byKiller].sort(([a], [b]) => a.localeCompare(b))) {
+			if (pool.persistentCounts)
+				await db.execute(
+					sql`SELECT pg_advisory_xact_lock(hashtextextended(${`weapon-count:${server.orgId}:${pool.id}:${steamId}`}, 179090))`
+				);
 			const tagSql = sql.join(
 				pool.weaponTags.map((tag) => sql`${tag.toLowerCase()}`),
 				sql`, `
 			);
+			const selectedServers = pool.allServers
+				? sql`EXISTS (SELECT 1 FROM public.servers s WHERE s.id = k.server_id AND s.org_id = ${server.orgId})`
+				: sql`k.server_id IN (${sql.join(
+						pool.serverIds.map((id) => sql`${id}`),
+						sql`, `
+					)})`;
 			const [row] = await db.execute<{ n: string }>(sql`
 				SELECT COUNT(*)::text AS n FROM public.kills
-				 WHERE server_id = ${server.id} AND killer_steam_id = ${steamId}
-				 AND ${matchRow === null ? sql`match_row IS NULL AND ts >= ${new Date(Date.parse(batch[0].ts) - 3600_000)}` : sql`match_row = ${matchRow}`}
-				 AND lower(cause) IN (${tagSql})
-				 AND NOT (tags ?| ARRAY[${vehicleTagSql}]::text[])
-				 ${pool.teamKillsOnly ? sql`AND team_kill = true` : sql``}`);
+				 AS k WHERE k.killer_steam_id = ${steamId}
+				 AND ${
+						pool.persistentCounts
+							? sql`${selectedServers} AND k.ts >= ${new Date(pool.trackingSince!)}`
+							: sql`k.server_id = ${server.id} AND ${matchRow === null ? sql`k.match_row IS NULL AND k.ts >= ${new Date(Date.parse(batch[0].ts) - 3600_000)}` : sql`k.match_row = ${matchRow}`}`
+					}
+				 AND lower(k.cause) IN (${tagSql})
+				 AND NOT (k.tags ?| ARRAY[${vehicleTagSql}]::text[])
+				 ${pool.teamKillsOnly ? sql`AND k.team_kill = true` : sql``}`);
 			let count = Math.max(0, Number(row?.n ?? 0) - events.length);
 			for (const event of events) {
 				count++;
-				const threshold = pool.thresholds.find((step) => step.count === count);
+				const last = pool.thresholds.at(-1);
+				const threshold =
+					pool.thresholds.find((step) => step.count === count) ??
+					(pool.persistentCounts && last?.action === 'ban' && count > last.count
+						? last
+						: undefined);
 				if (!threshold) continue;
 				queued += await queuePoolEvent(db, server.orgId, server.id, pool, {
 					eventKey: `weapon:${event.eventId}:${threshold.count}`,
