@@ -12,6 +12,7 @@ import { assertRate } from './ratelimit';
 import { noteLocalEdit } from './lists-sync';
 import type { Kind } from './lists-plan';
 import { policyOf } from './exotix/ban-policy';
+import { queueDirectBanAnnouncement } from './exotix/message-pools';
 import { gamePath } from './hostpolicy';
 
 function safe<T>(fn: () => T, fallback: T): T {
@@ -141,6 +142,13 @@ export async function runAction(
 				typeof params?.reason === 'string' ? params.reason.slice(0, 200) : ''
 			).catch((err) => console.error('[warcon] list mirror', err));
 		}
+		if (name === 'ban' && /^\d{17}$/.test(target))
+			await queueDirectBanAnnouncement(
+				env.db,
+				server,
+				target,
+				typeof params.reason === 'string' ? params.reason : ''
+			).catch((err) => console.error('[warcon] ban announcement', err));
 		if (def.mutating) gateway().observeSoon(server.id, { lists: !!listEdit });
 		// A new document may change MaxReservedSlots, which the worker otherwise re-reads hourly.
 		if (name === 'configApply') gateway().identityChanged(server.id);

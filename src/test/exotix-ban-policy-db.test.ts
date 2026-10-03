@@ -100,7 +100,7 @@ describe.skipIf(!hasTestDb)('EXOTIX structured bans on a real database', () => {
 			const journal = await isolated.db.execute(
 				sql`SELECT * FROM drizzle.__drizzle_migrations ORDER BY id`
 			);
-			expect(await pendingExotixMigrations(isolated.db)).toBe(1);
+			expect(await pendingExotixMigrations(isolated.db)).toBe(2);
 			await runExotixMigrations(isolated.db);
 			expect(await counts()).toEqual(before);
 			expect(

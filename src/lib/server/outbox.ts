@@ -35,6 +35,7 @@ import { KILL_RATE_FLAG } from './kill-rate';
 import { KILL_DISTANCE_FLAG } from './kill-distance';
 import { writeAudit } from './audit';
 import { PANEL_BAN, type PanelBanParams } from './rule-ban';
+import { poolStillHolds } from './exotix/message-pools';
 import { queueEvent } from './json-webhook-queue';
 import { seedRewardGranted } from './json-webhook-events';
 import {
@@ -289,7 +290,12 @@ type Outcome = 'delivered' | 'failed' | 'skipped' | 'unknown';
 /** Why a row must not be sent right now, or null. Checked again inside the lane, right before sending. */
 function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | null {
 	if (!m) return 'Server no longer polled.';
-	const age = Date.now() - new Date(row.createdAt).getTime();
+	// Delayed pool lines age from when they became due, not from the event that scheduled them.
+	const age =
+		Date.now() -
+		(row.triggerKind === 'message_pool'
+			? new Date(row.notBefore).getTime()
+			: new Date(row.createdAt).getTime());
 	if (age > settings().outboxMaxAgeMs) return `Stale (${Math.round(age / 1000)}s old).`;
 	if (
 		row.steamId &&
@@ -406,6 +412,14 @@ function holdsFor(
  * table could not be read: the row waits, and the error goes to the log, never to the row.
  */
 async function stillHolds(env: Env, row: OutboxRow): Promise<boolean | null> {
+	if (row.triggerKind === 'message_pool') {
+		try {
+			return await poolStillHolds(env.db, row.serverId, row.params);
+		} catch (err) {
+			console.error('[warcon] message pool check', forLog(err));
+			return null;
+		}
+	}
 	if (!SETTINGS_KEYS[row.triggerKind]) return true;
 	if (!row.triggerId) return false;
 	let rule: { enabled: boolean; config: unknown; state: unknown } | undefined;
@@ -662,7 +676,9 @@ async function deliverPanelBan(env: Env, row: OutboxRow): Promise<void> {
 						.where(eq(triggers.id, row.triggerId))
 						.for('share')
 				: [];
-			if (!holdsFor(row, rule)) return null;
+			if (row.triggerKind === 'message_pool') {
+				if (!(await poolStillHolds(tx, row.serverId, row.params))) return null;
+			} else if (!holdsFor(row, rule)) return null;
 			return grantEntry(
 				env,
 				list,

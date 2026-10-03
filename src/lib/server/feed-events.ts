@@ -46,6 +46,7 @@ import { isDemoServer } from './env';
 import { drainMockFeed } from './mockgame';
 import { ingestBatch } from './feed';
 import { servers, type ServerRow } from './db/schema';
+import { queueWeaponPools } from './exotix/message-pools';
 import type { KillView } from '$lib/types';
 
 export async function onKillsIngested(
@@ -66,6 +67,18 @@ export async function onKillsIngested(
 	} catch (err) {
 		if (!(err instanceof LostOwnership))
 			console.warn(`[warcon] kill-distance rules on ${serverId}:`, publicMessage(err));
+	}
+	try {
+		const server =
+			memoryOf(serverId)?.server ??
+			(await env.db.select().from(servers).where(eq(servers.id, serverId)).limit(1))[0];
+		if (server) {
+			const queued = await withOwnedTransaction(env, (tx) => queueWeaponPools(tx, server, kills));
+			if (queued) wakeDelivery();
+		}
+	} catch (err) {
+		if (!(err instanceof LostOwnership))
+			console.warn(`[warcon] weapon pools on ${serverId}:`, publicMessage(err));
 	}
 	const teamKills = kills.filter((k) => k.teamKill && k.killer);
 	if (!teamKills.length) return;
