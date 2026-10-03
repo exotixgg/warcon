@@ -10,6 +10,13 @@ const migrations = [
 			`CREATE SEQUENCE exotix.ban_case_number MAXVALUE 9999999 NO CYCLE`,
 			`CREATE TABLE exotix.ban_cases (entry_id text PRIMARY KEY REFERENCES public.list_entries(id) ON DELETE CASCADE, record jsonb NOT NULL, created_at timestamptz NOT NULL DEFAULT now(), updated_at timestamptz NOT NULL DEFAULT now())`
 		]
+	},
+	{
+		id: '002_message_pools',
+		statements: [
+			`CREATE TABLE exotix.message_pool_configs (org_id text PRIMARY KEY REFERENCES public.organizations(id) ON DELETE CASCADE, config jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT clock_timestamp())`,
+			`CREATE TABLE exotix.message_pool_state (org_id text NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE, server_id text NOT NULL REFERENCES public.servers(id) ON DELETE CASCADE, pool_id text NOT NULL, cursor integer NOT NULL DEFAULT 0, last_index integer NOT NULL DEFAULT -1, last_at timestamptz, PRIMARY KEY (org_id, server_id, pool_id))`
+		]
 	}
 ];
 export async function pendingExotixMigrations(db: Db): Promise<number> {
