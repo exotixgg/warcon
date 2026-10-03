@@ -344,6 +344,73 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 		expect(JSON.stringify(privateCaseRows)).not.toContain(caseRecord.description);
 	});
 
+	test('a pending player review uses only its own neutral announcement pool', async () => {
+		const world = await seedWorld(env);
+		const before = await poolConfigOf(env.db, world.org.id);
+		const general = pool('general-ban', 'ban', {
+			messages: ['{player_name} was banned for a rule violation.']
+		});
+		const review = pool('player-review', 'ban', {
+			categoryId: 'player-review',
+			banSources: ['policy'],
+			messages: ['{player_name} is restricted pending staff review; no decision has been made.']
+		});
+		const saved = await env.db.transaction((tx) =>
+			savePoolConfig(tx, world.org.id, { pools: [general, review] }, before.version)
+		);
+		const lastSeen = new Date(Date.now() - 3 * 60_000);
+		await env.db.insert(playerSessions).values({
+			serverId: world.server.id,
+			steamId: STEAM,
+			name: 'Player Under Review',
+			joinedAt: new Date(lastSeen.getTime() - 20 * 60_000),
+			lastSeen,
+			leftAt: lastSeen
+		});
+		const list = await listOf(env, world.org.id, 'ban');
+		const caseRecord = {
+			categoryId: 'player-review',
+			category: 'Player review',
+			reference: 't-12345',
+			source: 'manual',
+			reviewStatus: 'pending',
+			description: 'PRIVATE CASE NOTES'
+		};
+		const entry = {
+			id: 'pending-review-1',
+			steamId: STEAM,
+			reason: 'Player review',
+			expiresAt: null,
+			automatic: false
+		};
+		expect(
+			await env.db.transaction((tx) => queueBanAnnouncements(tx, list, entry, caseRecord))
+		).toBe(1);
+		const announcements = await env.db
+			.select()
+			.from(outbox)
+			.where(eq(outbox.triggerName, 'player-review'));
+		expect(announcements).toHaveLength(1);
+		expect(announcements[0]).toMatchObject({
+			serverId: world.server.id,
+			triggerName: 'player-review',
+			action: 'broadcast',
+			params: {
+				message:
+					'Player Under Review is restricted pending staff review; no decision has been made.'
+			}
+		});
+		expect(JSON.stringify(announcements)).not.toContain(caseRecord.description);
+		await env.db.transaction((tx) =>
+			savePoolConfig(tx, world.org.id, { pools: [general] }, saved.version)
+		);
+		expect(
+			await env.db.transaction((tx) =>
+				queueBanAnnouncements(tx, list, { ...entry, id: 'pending-review-2' }, caseRecord)
+			)
+		).toBe(0);
+	});
+
 	test('a direct game ban requires a recent session on that server', async () => {
 		const world = await seedWorld(env);
 		const server = await serverOf(world.server.id);

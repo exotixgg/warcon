@@ -415,7 +415,7 @@ export async function queueBanAnnouncements(
 		reviewStatus?: string;
 	} | null
 ): Promise<number> {
-	if (list.kind !== 'ban' || caseRecord?.reviewStatus === 'pending') return 0;
+	if (list.kind !== 'ban') return 0;
 	const config = await poolConfigOf(db, list.orgId);
 	const targets = await db
 		.select({ id: servers.id, name: servers.name })
@@ -441,9 +441,14 @@ export async function queueBanAnnouncements(
 		const playerName = recent.get(server.id);
 		if (!playerName) continue;
 		const pools = effectivePools(config, server.id).filter((p) => p.action === 'ban');
+		const specific = pools.find((p) => p.categoryId === category && p.banSources.includes(source));
+		// A pending review has no verdict. Only its own neutral pool may announce it;
+		// General ban wording could otherwise present the review as a confirmed offence.
 		const pool =
-			pools.find((p) => p.categoryId === category && p.banSources.includes(source)) ??
-			pools.find((p) => p.categoryId === 'general' && p.banSources.includes(source));
+			caseRecord?.reviewStatus === 'pending'
+				? specific
+				: (specific ??
+					pools.find((p) => p.categoryId === 'general' && p.banSources.includes(source)));
 		if (!pool) continue;
 		queued += await queuePoolEvent(db, list.orgId, server.id, pool, {
 			eventKey: `ban:${entry.id}`,
