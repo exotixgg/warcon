@@ -10,6 +10,8 @@
 	import { isSteamId, steamProfiles, type SteamProfile } from '$lib/steam-profiles';
 	import type { ListSyncServer, ListSyncSummary } from '$lib/types';
 	import Modal from './Modal.svelte';
+	import BanPolicyFields from './BanPolicyFields.svelte';
+	import { manualBanCase, type BanPolicyView } from '$lib/exotix/ban-policy';
 	import SteamName from './SteamName.svelte';
 
 	let {
@@ -45,6 +47,23 @@
 	let custom = $state('');
 	let scope = $state<'org' | 'server'>(untrack(() => (canOrg ? 'org' : 'server')));
 	let busy = $state(false);
+	let policy = $state<BanPolicyView | null>(null);
+	let policyError = $state('');
+	let categoryId = $state('');
+	let levelId = $state('');
+	let ticketId = $state('');
+	let description = $state('');
+	$effect(() => {
+		const policyPath = `/api/orgs/${encodeURIComponent(orgId)}/ban-policy${server && !canOrg ? `?serverId=${encodeURIComponent(server.id)}` : ''}`;
+		void api<{ policy: BanPolicyView }>('GET', policyPath)
+			.then((r) => {
+				policy = r.policy;
+				policyError = '';
+			})
+			.catch((e) => {
+				policyError = errorMessage(e);
+			});
+	});
 
 	// What the player will be shown, once the org wraps the reason in more than the reason. The
 	// uid comes from the entry, which does not exist yet.
@@ -74,6 +93,22 @@
 	});
 
 	async function submit() {
+		if (!policy || policyError) return;
+		const moderation = {
+			policyVersion: policy.version,
+			categoryId,
+			levelId,
+			ticketId,
+			description
+		};
+		if (policy.enabled) {
+			try {
+				manualBanCase(policy, moderation);
+			} catch (e) {
+				toast(errorMessage(e), 'err');
+				return;
+			}
+		}
 		const target = id.trim();
 		if (!/^\d{17}$/.test(target)) {
 			toast('Enter a 17-digit SteamID64.', 'err');
@@ -85,14 +120,18 @@
 				const res = await api<{ sync: ListSyncSummary }>(
 					'POST',
 					`/api/orgs/${encodeURIComponent(orgId)}/lists/ban/entries`,
-					{ steamId: target, reason: reason.trim(), expiresAt: expiryIso(expiry, custom) }
+					policy.enabled
+						? { steamId: target, moderation }
+						: { steamId: target, reason: reason.trim(), expiresAt: expiryIso(expiry, custom) }
 				);
 				toast(describeSync(res.sync, `Banned ${target} across ${orgName}.`), 'ok', 8000);
 			} else if (server) {
 				const res = await api<{ sync: ListSyncServer }>(
 					'POST',
 					`/api/servers/${encodeURIComponent(server.id)}/lists/ban/entries`,
-					{ steamId: target, reason: reason.trim(), expiresAt: expiryIso(expiry, custom) }
+					policy.enabled
+						? { steamId: target, moderation }
+						: { steamId: target, reason: reason.trim(), expiresAt: expiryIso(expiry, custom) }
 				);
 				// The game only bans a connected player; the list keeps the ban for when they join.
 				toast(
@@ -171,60 +210,75 @@
 			</p>
 		{/if}
 
-		<label class="block"
-			><span class="field-label">Reason</span><input
-				class="input"
-				type="text"
-				placeholder="Optional, shown in the server's ban list"
-				maxlength="200"
-				bind:value={reason}
-			/></label
-		>
-		<div class="flex flex-wrap gap-1.5">
-			{#each REASON_PRESETS as preset (preset)}
-				<button
-					type="button"
-					class="chip cursor-pointer hover:bg-white/12 {reason === preset ? 'text-accent' : ''}"
-					onclick={() => (reason = preset)}>{preset}</button
-				>
-			{/each}
-		</div>
-
-		<div class="flex flex-wrap gap-3">
-			<label class="block sm:w-48"
-				><span class="field-label">Expires</span><select class="input" bind:value={expiry}>
-					{#each EXPIRY_OPTIONS as [value, label] (value)}
-						<option {value}>{label}</option>
-					{/each}
-				</select></label
+		{#if policyError}<p class="text-danger">
+				Cannot load ban policy: {policyError}. Close and reopen this form to retry.
+			</p>
+		{:else if !policy}<p class="note">Loading ban policy…</p>
+		{:else if policy.enabled}<BanPolicyFields
+				{policy}
+				bind:categoryId
+				bind:levelId
+				bind:ticketId
+				bind:description
+			/>
+		{:else}
+			<label class="block"
+				><span class="field-label">Reason</span><input
+					class="input"
+					type="text"
+					placeholder="Optional, shown in the server's ban list"
+					maxlength="200"
+					bind:value={reason}
+				/></label
 			>
-			{#if expiry === 'custom'}
-				<label class="block sm:flex-1"
-					><span class="field-label">Until (local time)</span><input
-						class="input"
-						type="datetime-local"
-						bind:value={custom}
-						required
-					/></label
-				>
-			{/if}
-		</div>
-
-		{#if shown}
-			<div>
-				<span class="field-label">The player is shown</span>
-				<div
-					class="rounded-ctl border border-black bg-ink-950 px-3.5 py-2.5 font-mono text-[12.5px] leading-relaxed break-words"
-				>
-					{shown}
-				</div>
-				<p class="note">From {orgName}'s ban message.</p>
+			<div class="flex flex-wrap gap-1.5">
+				{#each REASON_PRESETS as preset (preset)}
+					<button
+						type="button"
+						class="chip cursor-pointer hover:bg-white/12 {reason === preset ? 'text-accent' : ''}"
+						onclick={() => (reason = preset)}>{preset}</button
+					>
+				{/each}
 			</div>
+
+			<div class="flex flex-wrap gap-3">
+				<label class="block sm:w-48"
+					><span class="field-label">Expires</span><select class="input" bind:value={expiry}>
+						{#each EXPIRY_OPTIONS as [value, label] (value)}
+							<option {value}>{label}</option>
+						{/each}
+					</select></label
+				>
+				{#if expiry === 'custom'}
+					<label class="block sm:flex-1"
+						><span class="field-label">Until (local time)</span><input
+							class="input"
+							type="datetime-local"
+							bind:value={custom}
+							required
+						/></label
+					>
+				{/if}
+			</div>
+
+			{#if shown}
+				<div>
+					<span class="field-label">The player is shown</span>
+					<div
+						class="rounded-ctl border border-black bg-ink-950 px-3.5 py-2.5 font-mono text-[12.5px] leading-relaxed break-words"
+					>
+						{shown}
+					</div>
+					<p class="note">From {orgName}'s ban message.</p>
+				</div>
+			{/if}
 		{/if}
 
 		<div class="flex justify-end gap-2 pt-2">
 			<button type="button" class="btn" data-close onclick={onclose}>Cancel</button>
-			<button type="submit" class="btn btn-danger" disabled={busy}>Ban</button>
+			<button type="submit" class="btn btn-danger" disabled={busy || !policy || !!policyError}
+				>Ban</button
+			>
 		</div>
 	</form>
 </Modal>

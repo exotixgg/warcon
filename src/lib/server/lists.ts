@@ -39,6 +39,18 @@ import { DEFAULT_BAN_MESSAGE } from '$lib/ban-message';
 import { requireSteamId } from './steam';
 import { desiredFor, memberSlots, summaryOf } from './lists-sync';
 import { gateway } from './gateway';
+import type { BanCaseView } from '$lib/exotix/ban-policy';
+import {
+	prepareManualBan,
+	automaticCase,
+	writeCase,
+	caseOf,
+	casesOf,
+	changeDescription,
+	refreshCaseDuration,
+	policyOf,
+	resolveReview
+} from './exotix/ban-policy';
 import type {
 	ImportCandidate,
 	ListEntryState,
@@ -393,6 +405,13 @@ export async function entriesView(
 	const out = rows.map((r) =>
 		shapeEntry(r, kind, names.get(r.steamId) ?? null, r.removedAt ? [] : perServer(r.steamId), now)
 	);
+	if (kind === 'ban') {
+		const metadata = await casesOf(
+			env.db,
+			rows.map((r) => r.id)
+		);
+		for (const entry of out) entry.moderation = metadata.get(entry.id) ?? null;
+	}
 	for (const m of members)
 		out.push({
 			id: `member:${m.userId}`,
@@ -440,6 +459,7 @@ interface NewEntry {
 	expiresAt: Date | null;
 	addedBy: string | null;
 	addedByName: string;
+	moderation?: BanCaseView | null;
 }
 
 /** Inserts an active entry; `added` is false when the player is already on the list. */
@@ -466,6 +486,15 @@ async function insertInto(
 	lengthen = false
 ): Promise<{ id: string; added: boolean; lengthened: boolean }> {
 	const id = newId();
+	if (list.kind === 'ban' && entry.addedBy !== null) {
+		// Share the policy editor's lock: enabling/changing policy cannot race a manual insert.
+		await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${list.orgId}, 179088))`);
+		const policy = await policyOf(tx, list.orgId);
+		if (policy.enabled && (!entry.moderation || entry.moderation.policyVersion !== policy.version))
+			throw new ApiError(409, 'The ban policy changed. Reopen the ban form.');
+		if (!policy.enabled && entry.moderation)
+			throw new ApiError(409, 'The ban policy was disabled. Reopen the ban form.');
+	}
 	// Serialise adds to one list so two writers cannot race past the duplicate check; the
 	// partial unique index on (list_id, steam_id) where removed_at is null is the backstop.
 	await tx.execute(sql`SELECT 1 FROM ${lists} WHERE ${lists.id} = ${list.id} FOR UPDATE`);
@@ -494,9 +523,25 @@ async function insertInto(
 			.set({ expiresAt: entry.expiresAt })
 			.where(eq(listEntries.id, dup.id));
 		await touch(tx, list.id);
+		await refreshCaseDuration(tx, dup.id, entry.expiresAt, entry.addedByName, entry.reason);
 		return { id: dup.id, added: false, lengthened: true };
 	}
-	await tx.insert(listEntries).values({ id, listId: list.id, ...entry });
+	const { moderation, ...values } = entry;
+	await tx.insert(listEntries).values({ id, listId: list.id, ...values });
+	const record =
+		moderation ??
+		(list.kind === 'ban' && entry.addedBy === null
+			? await automaticCase(
+					tx,
+					list.orgId,
+					entry.reason,
+					entry.expiresAt
+						? Math.max(1, Math.round((entry.expiresAt.getTime() - Date.now()) / 86400000))
+						: 0,
+					entry.addedByName
+				)
+			: null);
+	if (record) await writeCase(tx, id, record);
 	await touch(tx, list.id);
 	return { id, added: true, lengthened: false };
 }
@@ -529,15 +574,21 @@ export async function addEntry(
 	body: Record<string, unknown>
 ): Promise<{ entry: ListEntryView; sync: ListSyncSummary }> {
 	const steamId = requireSteamId(body.steamId);
-	const reason = str(body.reason, 200);
-	const expiresAt = parseExpiry(body.expiresAt);
+	const moderation = kind === 'ban' ? await prepareManualBan(env.db, org.id, body) : null;
+	const reason = moderation?.category ?? str(body.reason, 200);
+	const expiresAt = moderation
+		? moderation.days
+			? new Date(Date.now() + moderation.days * 86400000)
+			: null
+		: parseExpiry(body.expiresAt);
 	const list = await listOf(env, org.id, kind);
 	const { id, added } = await insertEntry(env, list, {
 		steamId,
 		reason,
 		expiresAt,
 		addedBy: actor.id,
-		addedByName: actor.username
+		addedByName: actor.username,
+		moderation
 	});
 	if (!added)
 		throw new ApiError(409, `${steamId} is already on the ${KIND_LABEL[kind]}.`, 'duplicate');
@@ -593,6 +644,7 @@ export async function removeEntry(
 		)
 		.returning({ id: listEntries.id, reason: listEntries.reason });
 	if (!row) throw new ApiError(404, `${steamId} is not on the ${KIND_LABEL[kind]}.`, 'not_found');
+	if (kind === 'ban') await resolveReview(env.db, row.id);
 	await touch(env.db, list.id);
 	await writeAudit(env, req, {
 		actor,
@@ -627,15 +679,21 @@ export async function addServerEntry(
 	body: Record<string, unknown>
 ): Promise<{ sync: ListSyncServer }> {
 	const steamId = requireSteamId(body.steamId);
-	const reason = str(body.reason, 200);
-	const expiresAt = parseExpiry(body.expiresAt);
+	const moderation = kind === 'ban' ? await prepareManualBan(env.db, org.id, body) : null;
+	const reason = moderation?.category ?? str(body.reason, 200);
+	const expiresAt = moderation
+		? moderation.days
+			? new Date(Date.now() + moderation.days * 86400000)
+			: null
+		: parseExpiry(body.expiresAt);
 	const list = await serverListOf(env, server, kind);
 	const { added } = await insertEntry(env, list, {
 		steamId,
 		reason,
 		expiresAt,
 		addedBy: actor.id,
-		addedByName: actor.username
+		addedByName: actor.username,
+		moderation
 	});
 	if (!added)
 		throw new ApiError(
@@ -699,6 +757,7 @@ export async function removeServerEntry(
 				: `${steamId} holds no reserved slot of ${server.name}'s own.`,
 			'not_found'
 		);
+	if (kind === 'ban') await resolveReview(env.db, row.id);
 	await touch(env.db, list.id);
 	await writeAudit(env, req, {
 		actor,
@@ -732,6 +791,51 @@ export async function updateEntry(
 	body: Record<string, unknown>
 ): Promise<{ entry: { steamId: string; reason: string; expiresAt: string | null } }> {
 	const steamId = requireSteamId(steamIdIn);
+	const targetList = server
+		? await serverListOf(env, server, kind)
+		: await listOf(env, org.id, kind);
+	const [target] = await env.db
+		.select({ id: listEntries.id, reason: listEntries.reason, expiresAt: listEntries.expiresAt })
+		.from(listEntries)
+		.where(
+			and(
+				eq(listEntries.listId, targetList.id),
+				eq(listEntries.steamId, steamId),
+				isNull(listEntries.removedAt)
+			)
+		)
+		.limit(1);
+	if (kind === 'ban' && target && (await caseOf(env.db, target.id))) {
+		if ('reason' in body || 'expiresAt' in body)
+			throw new ApiError(
+				400,
+				'A policy ban keeps its reason and fixed duration. Only its internal description can be edited.'
+			);
+		if (!('description' in body)) throw new ApiError(400, 'Internal description is required.');
+		await env.db.transaction(async (tx) => {
+			const [active] = await tx
+				.select({ id: listEntries.id })
+				.from(listEntries)
+				.where(and(eq(listEntries.id, target.id), isNull(listEntries.removedAt)))
+				.for('update');
+			if (!active) throw new ApiError(409, 'This ban has been removed.');
+			await changeDescription(tx, target.id, body.description);
+		});
+		await writeAudit(env, req, {
+			actor,
+			orgId: org.id,
+			...(server ? { server: { id: server.id, name: server.name } } : {}),
+			category: server ? 'server' : 'org',
+			action: 'ban.description',
+			target: steamId,
+			outcome: 'ok',
+			message: 'Internal ban description updated',
+			detail: { entryId: target.id }
+		});
+		return { entry: { steamId, reason: target.reason, expiresAt: iso(target.expiresAt) } };
+	}
+	if ('description' in body)
+		throw new ApiError(400, 'This legacy ban has no structured case record.');
 	const set: { reason?: string; expiresAt?: Date | null } = {};
 	if ('reason' in body) set.reason = str(body.reason, 200);
 	if ('expiresAt' in body) set.expiresAt = parseExpiry(body.expiresAt);
@@ -1021,6 +1125,7 @@ export async function serverListsState(
 		const sourceOf = new Map(desired.bans.map((d) => [d.steamId, d.listId]));
 		const entries = await env.db
 			.select({
+				id: listEntries.id,
 				listId: listEntries.listId,
 				steamId: listEntries.steamId,
 				reason: listEntries.reason,
@@ -1036,6 +1141,12 @@ export async function serverListsState(
 					isNull(listEntries.removedAt)
 				)
 			);
+		const metadata = staff
+			? await casesOf(
+					env.db,
+					entries.map((e) => e.id)
+				)
+			: new Map<string, BanCaseView>();
 		for (const e of entries) {
 			if (sourceOf.get(e.steamId) !== e.listId) continue;
 			const b = out.bans[e.steamId];
@@ -1044,6 +1155,7 @@ export async function serverListsState(
 			b.addedAt = iso(e.addedAt);
 			b.reason = e.reason;
 			if (staff) b.addedByName = e.addedByName;
+			if (staff) b.moderation = metadata.get(e.id) ?? null;
 		}
 	}
 	for (const d of desired.reserved) {

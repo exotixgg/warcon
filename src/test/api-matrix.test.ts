@@ -98,6 +98,8 @@ const MATRIX: Record<string, Policy | typeof PER_LIST> = {
 
 	// its ban and reserved-slot lists
 	'GET api/orgs/[id]/lists': 'lists',
+	'GET api/orgs/[id]/ban-policy': 'lists:ban',
+	'PATCH api/orgs/[id]/ban-policy': 'orgOwner',
 	'GET api/orgs/[id]/lists/[kind]/entries': PER_LIST,
 	'POST api/orgs/[id]/lists/[kind]/entries': PER_LIST,
 	'PATCH api/orgs/[id]/lists/[kind]/entries/[steamId]': PER_LIST,
@@ -194,7 +196,7 @@ function routeFiles(dir: string): string[] {
 }
 
 const onDisk = routeFiles(ROUTES).flatMap((file) => {
-	const path = relative(ROUTES, join(file, '..'));
+	const path = relative(ROUTES, join(file, '..')).replaceAll('\\', '/');
 	const methods = readFileSync(file, 'utf8').matchAll(
 		/^export const (GET|POST|PUT|PATCH|DELETE)\b/gm
 	);

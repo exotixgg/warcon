@@ -5,6 +5,7 @@ import { sql } from 'drizzle-orm';
 import { drizzle } from 'drizzle-orm/bun-sql';
 import { migrate } from 'drizzle-orm/bun-sql/migrator';
 import * as schema from './schema';
+import { runExotixMigrations, pendingExotixMigrations } from '../exotix/migrations';
 
 export { schema };
 
@@ -33,6 +34,7 @@ export type DbOrTx = Db | Tx;
 
 export async function runMigrations(db: Db, migrationsFolder: string): Promise<void> {
 	await migrate(db, { migrationsFolder });
+	await runExotixMigrations(db);
 }
 
 /** How many migrations in the folder's journal the database has not applied yet. */
@@ -49,7 +51,7 @@ export async function pendingMigrations(db: Db, migrationsFolder: string): Promi
 	} catch {
 		applied = 0; // no migrations table yet
 	}
-	return Math.max(0, journal.entries.length - applied);
+	return Math.max(0, journal.entries.length - applied) + (await pendingExotixMigrations(db));
 }
 
 /** True when the timescaledb extension is installed in this database. */
