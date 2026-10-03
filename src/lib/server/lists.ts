@@ -459,6 +459,8 @@ interface NewEntry {
 	reason: string;
 	/** Explicitly approved text for the player's policy kick message. Other automation reasons stay internal. */
 	playerReason?: string;
+	/** A weapon rule sends its own public pool after the ban is saved. */
+	suppressBanAnnouncement?: boolean;
 	expiresAt: Date | null;
 	addedBy: string | null;
 	addedByName: string;
@@ -529,7 +531,7 @@ async function insertInto(
 		await refreshCaseDuration(tx, dup.id, entry.expiresAt, entry.addedByName, entry.reason);
 		return { id: dup.id, added: false, lengthened: true };
 	}
-	const { moderation, playerReason, ...values } = entry;
+	const { moderation, playerReason, suppressBanAnnouncement, ...values } = entry;
 	await tx.insert(listEntries).values({ id, listId: list.id, ...values });
 	const record =
 		moderation ??
@@ -547,7 +549,7 @@ async function insertInto(
 				)
 			: null);
 	if (record) await writeCase(tx, id, record);
-	if (list.kind === 'ban')
+	if (list.kind === 'ban' && !entry.suppressBanAnnouncement)
 		await queueBanAnnouncements(
 			tx,
 			list,
@@ -578,6 +580,7 @@ export async function grantEntry(
 		steamId: string;
 		reason: string;
 		playerReason?: string;
+		suppressBanAnnouncement?: boolean;
 		expiresAt: Date | null;
 		addedByName: string;
 	},
