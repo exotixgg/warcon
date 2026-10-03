@@ -1,11 +1,12 @@
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { and, asc, eq } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
-import { kills, outbox, servers } from '$lib/server/db/schema';
+import { kills, outbox, playerSessions, servers } from '$lib/server/db/schema';
 import {
 	poolConfigOf,
 	poolStillHolds,
 	queueBanAnnouncements,
+	queueDirectBanAnnouncement,
 	queueObservationPools,
 	queueWeaponPools,
 	savePoolConfig
@@ -149,7 +150,7 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 		]);
 	});
 
-	test('an automatic ban announces on all organisation servers without private notes', async () => {
+	test('an organisation ban announces only where the player played in the last hour', async () => {
 		const world = await seedWorld(env);
 		const before = await poolConfigOf(env.db, world.org.id);
 		expect(before.pools).toMatchObject([
@@ -175,6 +176,35 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 				before.version
 			)
 		);
+		const now = new Date();
+		const recent = new Date(now.getTime() - 25 * 60_000);
+		const old = new Date(now.getTime() - 61 * 60_000);
+		await env.db.insert(playerSessions).values([
+			{
+				serverId: world.server.id,
+				steamId: STEAM,
+				name: 'Recent Player',
+				joinedAt: new Date(recent.getTime() - 5 * 60_000),
+				lastSeen: recent,
+				leftAt: recent
+			},
+			{
+				serverId: world.otherServer.id,
+				steamId: STEAM,
+				name: 'Stale Player',
+				joinedAt: new Date(old.getTime() - 5 * 60_000),
+				lastSeen: old,
+				leftAt: old
+			},
+			{
+				serverId: world.otherOrgServer.id,
+				steamId: STEAM,
+				name: 'Recent Elsewhere',
+				joinedAt: new Date(recent.getTime() - 5 * 60_000),
+				lastSeen: recent,
+				leftAt: recent
+			}
+		]);
 		const list = await listOf(env, world.org.id, 'ban');
 		const result = await grantEntry(env, list, {
 			steamId: STEAM,
@@ -188,7 +218,11 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 			.from(outbox)
 			.where(and(eq(outbox.triggerKind, 'message_pool'), eq(outbox.triggerName, 'general-ban')));
 		const inOrg = announcements.filter((row) => row.dedupeKey.includes(`ban:${result.id}`));
-		expect(inOrg.length).toBeGreaterThanOrEqual(2);
+		expect(inOrg).toHaveLength(1);
+		expect(inOrg[0].serverId).toBe(world.server.id);
+		expect(inOrg[0].params).toMatchObject({
+			message: 'Recent Player banned for Rule violation (Permanent).'
+		});
 		expect(inOrg.every((row) => row.action === 'broadcast')).toBe(true);
 		const caseRecord = {
 			categoryId: 'cheating',
@@ -216,6 +250,32 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 			.from(outbox)
 			.where(eq(outbox.triggerName, 'general-ban'));
 		expect(JSON.stringify(privateCaseRows)).not.toContain(caseRecord.description);
+	});
+
+	test('a direct game ban requires a recent session on that server', async () => {
+		const world = await seedWorld(env);
+		const server = await serverOf(world.server.id);
+		const recent = new Date(Date.now() - 25 * 60_000);
+		await env.db.insert(playerSessions).values({
+			serverId: server.id,
+			steamId: STEAM,
+			name: 'Recent Player',
+			joinedAt: new Date(recent.getTime() - 5 * 60_000),
+			lastSeen: recent,
+			leftAt: recent
+		});
+		expect(
+			await queueDirectBanAnnouncement(env.db, server, '76561198000000888', 'Rule violation')
+		).toBe(0);
+		expect(await queueDirectBanAnnouncement(env.db, server, STEAM, 'Rule violation')).toBe(1);
+		const rows = await env.db
+			.select()
+			.from(outbox)
+			.where(and(eq(outbox.serverId, server.id), eq(outbox.triggerKind, 'message_pool')));
+		expect(rows).toHaveLength(1);
+		expect(rows[0].params).toMatchObject({
+			message: `Recent Player was banned from ${server.name} (Permanent).`
+		});
 	});
 
 	test('exact weapon tags advance whisper, kick, and timed ban thresholds', async () => {
