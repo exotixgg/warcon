@@ -600,7 +600,10 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	const s = settings();
 	const poolCheck =
 		!!m.status &&
-		(joined.length > 0 || !!matchEnd || started - (poolCheckedAt.get(server.id) ?? 0) >= 30_000);
+		(joined.length > 0 ||
+			factioned.length > 0 ||
+			!!matchEnd ||
+			started - (poolCheckedAt.get(server.id) ?? 0) >= 30_000);
 	const heartbeatDue = started - m.presence.heartbeatAt >= s.sessionHeartbeatMs;
 	const liveKey = liveKeyOf(m);
 	const liveDue = liveKey !== m.liveKey || started - m.liveWrittenAt >= LIVE_HEARTBEAT_MS;
@@ -713,6 +716,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 						server,
 						m.status,
 						joined,
+						factioned,
 						firstVisit,
 						matchEnd,
 						matchLines,
