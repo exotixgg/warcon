@@ -4,6 +4,7 @@ import type { DbOrTx } from '../db';
 import { kills, outbox, playerSessions, servers, type ListRow, type ServerRow } from '../db/schema';
 import { ApiError } from '../http';
 import { MAX_CHAT } from '$lib/chat';
+import { VEHICLE_TAGS } from '$lib/kills';
 import {
 	chooseMessageIndexes,
 	eligibleMessageIndexes,
@@ -110,13 +111,17 @@ export async function queuePoolEvent(
 		 WHERE org_id = ${orgId} AND server_id = ${serverId} AND pool_id = ${pool.id}`);
 	const cursor = Number(state?.cursor ?? 0);
 	const lastIndex = Number(state?.last_index ?? -1);
-	const eligible = eligibleMessageIndexes(pool, event.values);
+	const messageSource =
+		pool.action === 'weapon' && event.threshold?.message
+			? { ...pool, messages: [event.threshold.message], sendCount: 1 }
+			: pool;
+	const eligible = eligibleMessageIndexes(messageSource, event.values);
 	if (!eligible.length) return 0;
 	const eligiblePool = {
-		...pool,
-		messages: eligible.map((index) => pool.messages[index]),
+		...messageSource,
+		messages: eligible.map((index) => messageSource.messages[index]),
 		sendCount: Math.min(
-			pool.action === 'weapon' && event.action !== 'whisper' ? 1 : pool.sendCount,
+			pool.action === 'weapon' && event.action !== 'whisper' ? 1 : messageSource.sendCount,
 			eligible.length
 		)
 	};
@@ -130,7 +135,7 @@ export async function queuePoolEvent(
 				? PANEL_BAN
 				: (event.action ?? (pool.action === 'join' ? 'whisper' : 'broadcast'));
 		const cap = action === PANEL_BAN || action === 'kick' ? 200 : MAX_CHAT;
-		const message = renderPoolMessage(pool.messages[index], event.values).slice(0, cap);
+		const message = renderPoolMessage(messageSource.messages[index], event.values).slice(0, cap);
 		const due = new Date(
 			now.getTime() + (pool.initialDelaySeconds + position * pool.spacingSeconds) * 1000
 		);
@@ -485,11 +490,16 @@ export async function queueWeaponPools(
 	let queued = 0;
 	for (const pool of pools) {
 		const tags = new Set(pool.weaponTags.map((v) => v.toLowerCase()));
+		const vehicleTagSql = sql.join(
+			VEHICLE_TAGS.map((tag) => sql`${tag}`),
+			sql`, `
+		);
 		const hits = [...batch]
 			.filter(
 				(k) =>
 					k.killer &&
 					!k.suicide &&
+					!k.tags.some((tag) => VEHICLE_TAGS.includes(tag)) &&
 					k.cause &&
 					tags.has(k.cause.toLowerCase()) &&
 					(!pool.teamKillsOnly || k.teamKill)
@@ -511,6 +521,7 @@ export async function queueWeaponPools(
 				 WHERE server_id = ${server.id} AND killer_steam_id = ${steamId}
 				 AND ${matchRow === null ? sql`match_row IS NULL AND ts >= ${new Date(Date.parse(batch[0].ts) - 3600_000)}` : sql`match_row = ${matchRow}`}
 				 AND lower(cause) IN (${tagSql})
+				 AND NOT (tags ?| ARRAY[${vehicleTagSql}]::text[])
 				 ${pool.teamKillsOnly ? sql`AND team_kill = true` : sql``}`);
 			let count = Math.max(0, Number(row?.n ?? 0) - events.length);
 			for (const event of events) {
