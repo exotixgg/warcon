@@ -9,6 +9,7 @@ import {
 	queueBanAnnouncements,
 	queueDirectBanAnnouncement,
 	queueObservationPools,
+	queuePoolEvent,
 	queueWeaponPools,
 	savePoolConfig
 } from '$lib/server/exotix/message-pools';
@@ -19,6 +20,8 @@ import type { MessagePool } from '$lib/message-pools';
 import type { KillView, Player, Status } from '$lib/types';
 import { hasTestDb, testEnv } from './db';
 import { seedWorld } from './world';
+import { callApi } from './call';
+import { POST as simulateWeaponKill } from '../routes/api/orgs/[id]/message-pools/test-weapon/+server';
 
 const STEAM = '76561198000000777';
 const pool = (
@@ -572,6 +575,134 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 			'Banned for using Id.Vehicle.WeaponExtension.WHL_05.RingMinigun again.'
 		]);
 		expect(rows[2].params).toMatchObject({ days: 7, scope: 'server', steamId: STEAM });
+	});
+
+	test('weapon ban reason stays private and its public message pool names the mounted gun', async () => {
+		const world = await seedWorld(env);
+		const server = await serverOf(world.server.id);
+		const old = await poolConfigOf(env.db, world.org.id);
+		const rule = pool('infantry-mounted-rule', 'weapon', {
+			weaponTags: ['Id.Vehicle.WeaponExtension.WHL_05.RingTurret'],
+			messages: ['Legacy fallback'],
+			thresholds: [
+				{ count: 1, action: 'whisper', days: 0, scope: 'org', message: 'Private warning.' },
+				{
+					count: 2,
+					action: 'ban',
+					days: 7,
+					scope: 'org',
+					message: 'Private ban reason.',
+					announcementMessages: [
+						'{player_name} was banned for using {weapon_type}.',
+						'Ban: {player_name} used {weapon_type}.'
+					]
+				}
+			]
+		});
+		await env.db.transaction((tx) =>
+			savePoolConfig(tx, world.org.id, { pools: [rule, pool('general-ban', 'ban')] }, old.version)
+		);
+		const values = {
+			server_name: server.name,
+			map: '',
+			players: 0,
+			max_players: 0,
+			player_name: 'Test Player',
+			victim_name: 'Test Victim',
+			weapon: 'Id.Vehicle.WeaponExtension.WHL_05.RingTurret',
+			weapon_type: 'Humvee M249',
+			count: 2
+		};
+		await env.db.transaction((tx) =>
+			queuePoolEvent(tx, world.org.id, server.id, rule, {
+				eventKey: 'mounted-ban-step',
+				values,
+				steamId: STEAM,
+				action: 'ban',
+				threshold: rule.thresholds[1]
+			})
+		);
+		const banAction = (
+			await env.db.select().from(outbox).where(eq(outbox.triggerName, rule.name))
+		)[0];
+		expect(banAction.params).toMatchObject({
+			reason: 'Private ban reason.',
+			weaponType: 'Humvee M249',
+			thresholdCount: 2
+		});
+		const list = await listOf(env, world.org.id, 'ban');
+		const written = await grantEntry(env, list, {
+			steamId: STEAM,
+			reason: 'Private ban reason.',
+			playerReason: 'Private ban reason.',
+			expiresAt: new Date(Date.now() + 7 * 86400_000),
+			addedByName: 'trigger: infantry-mounted-rule',
+			suppressBanAnnouncement: true
+		});
+		expect(written.added).toBe(true);
+		await env.db.transaction((tx) =>
+			queuePoolEvent(tx, world.org.id, server.id, rule, {
+				eventKey: `weapon-ban:${written.id}`,
+				values,
+				announcementMessages: rule.thresholds[1].announcementMessages
+			})
+		);
+		const rows = await env.db
+			.select()
+			.from(outbox)
+			.where(eq(outbox.serverId, server.id))
+			.orderBy(asc(outbox.id));
+		expect(rows.map((row) => row.action)).toEqual([PANEL_BAN, 'broadcast']);
+		expect(rows[1].params).toMatchObject({
+			message: 'Test Player was banned for using Humvee M249.'
+		});
+		expect(JSON.stringify(rows[1])).not.toContain('Private ban reason.');
+	});
+
+	test('one test click queues the warning and the second queues a ban without adding kill stats', async () => {
+		const world = await seedWorld(env);
+		const before = await poolConfigOf(env.db, world.org.id);
+		const rule = pool('test-infantry-rule', 'weapon', {
+			allServers: false,
+			serverIds: [world.server.id],
+			weaponTags: ['Id.Vehicle.WeaponExtension.WHL_05.RingTurret'],
+			persistentCounts: true,
+			thresholds: [
+				{ count: 1, action: 'whisper', days: 0, scope: 'org', message: 'First kill warning.' },
+				{ count: 2, action: 'ban', days: 7, scope: 'org', message: 'Second kill ban.' }
+			]
+		});
+		await env.db.transaction((tx) =>
+			savePoolConfig(tx, world.org.id, { pools: [rule] }, before.version)
+		);
+		const input = {
+			method: 'POST',
+			params: { id: world.org.id },
+			body: {
+				poolId: rule.id,
+				serverId: world.server.id,
+				weaponTag: rule.weaponTags[0],
+				steamId: STEAM
+			}
+		};
+		const denied = await callApi(simulateWeaponKill, world.users.member, input);
+		expect(denied.status).toBe(403);
+		const first = await callApi(simulateWeaponKill, world.users.site, input);
+		expect(first.status).toBe(200);
+		expect(first.body).toMatchObject({ count: 1, action: 'whisper', queued: 1 });
+		const second = await callApi(simulateWeaponKill, world.users.site, input);
+		expect(second.status).toBe(200);
+		expect(second.body).toMatchObject({ count: 2, action: 'ban', queued: 1 });
+		const rows = await env.db
+			.select()
+			.from(outbox)
+			.where(eq(outbox.triggerName, rule.name))
+			.orderBy(asc(outbox.id));
+		expect(rows.map((row) => row.action)).toEqual(['whisper', PANEL_BAN]);
+		expect(rows[1].params).toMatchObject({ reason: 'Second kill ban.', weaponType: 'Humvee M249' });
+		expect(
+			await env.db.select().from(kills).where(eq(kills.serverId, world.server.id))
+		).toHaveLength(0);
 	});
 
 	test('persistent weapon counts carry a private warning into later matches and repeat the ban', async () => {
