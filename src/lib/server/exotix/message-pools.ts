@@ -6,6 +6,7 @@ import { ApiError } from '../http';
 import { MAX_CHAT } from '$lib/chat';
 import {
 	chooseMessageIndexes,
+	eligibleMessageIndexes,
 	effectivePools,
 	DEFAULT_MESSAGE_POOLS,
 	renderPoolMessage,
@@ -109,10 +110,18 @@ export async function queuePoolEvent(
 		 WHERE org_id = ${orgId} AND server_id = ${serverId} AND pool_id = ${pool.id}`);
 	const cursor = Number(state?.cursor ?? 0);
 	const lastIndex = Number(state?.last_index ?? -1);
-	const indexes = chooseMessageIndexes(
-		pool.action === 'weapon' && event.action !== 'whisper' ? { ...pool, sendCount: 1 } : pool,
-		cursor,
-		lastIndex
+	const eligible = eligibleMessageIndexes(pool, event.values);
+	if (!eligible.length) return 0;
+	const eligiblePool = {
+		...pool,
+		messages: eligible.map((index) => pool.messages[index]),
+		sendCount: Math.min(
+			pool.action === 'weapon' && event.action !== 'whisper' ? 1 : pool.sendCount,
+			eligible.length
+		)
+	};
+	const indexes = chooseMessageIndexes(eligiblePool, cursor, eligible.indexOf(lastIndex)).map(
+		(index) => eligible[index]
 	);
 	const now = event.at ?? new Date();
 	const rows = indexes.map((index, position) => {
@@ -170,6 +179,82 @@ export async function queuePoolEvent(
 	return inserted.length;
 }
 
+const connectedTime = (seconds: number): string => {
+	const minutes = Math.max(0, Math.floor(seconds / 60));
+	const hours = Math.floor(minutes / 60);
+	return hours ? `${hours}h ${minutes % 60}m` : `${minutes}m`;
+};
+
+async function joinHistory(
+	db: DbOrTx,
+	orgId: string,
+	serverId: string,
+	joined: Player[],
+	at: Date
+): Promise<Map<string, Record<string, string | number>>> {
+	if (!joined.length) return new Map();
+	const ids = [...new Set(joined.map((player) => player.steamId))];
+	const rows = await db.execute<{
+		steam_id: string;
+		server_visits: string;
+		exotix_visits: string;
+		server_seconds: string;
+		exotix_seconds: string;
+	}>(sql`
+		SELECT ps.steam_id,
+		       COUNT(*) FILTER (WHERE ps.server_id = ${serverId})::text AS server_visits,
+		       COUNT(*)::text AS exotix_visits,
+		       COALESCE(SUM(GREATEST(0, EXTRACT(EPOCH FROM
+		         (LEAST(COALESCE(ps.left_at, ps.last_seen), ${at}) - ps.joined_at))))
+		         FILTER (WHERE ps.server_id = ${serverId}), 0)::text AS server_seconds,
+		       COALESCE(SUM(GREATEST(0, EXTRACT(EPOCH FROM
+		         (LEAST(COALESCE(ps.left_at, ps.last_seen), ${at}) - ps.joined_at)))), 0)::text AS exotix_seconds
+		  FROM public.player_sessions ps
+		  JOIN public.servers s ON s.id = ps.server_id
+		 WHERE s.org_id = ${orgId} AND ps.steam_id IN (${sql.join(
+				ids.map((id) => sql`${id}`),
+				sql`, `
+			)})
+		   AND ps.joined_at <= ${at}
+		 GROUP BY ps.steam_id`);
+	return new Map(
+		rows.map((row) => [
+			row.steam_id,
+			{
+				welcome_phrase: Number(row.exotix_visits) > 1 ? 'Welcome back' : 'Welcome',
+				server_visit_count: Number(row.server_visits),
+				exotix_visit_count: Number(row.exotix_visits),
+				server_connected_time: connectedTime(Number(row.server_seconds)),
+				exotix_connected_time: connectedTime(Number(row.exotix_seconds))
+			}
+		])
+	);
+}
+
+function roundAwards(lines: MatchLineVars[]): Record<string, string | number> {
+	const byKills = [...lines]
+		.filter((line) => line.kills > 0)
+		.sort((a, b) => b.kills - a.kills || a.name.localeCompare(b.name))[0];
+	const byCash = [...lines]
+		.filter((line) => (line.cashDelta ?? 0) > 0)
+		.sort((a, b) => (b.cashDelta ?? 0) - (a.cashDelta ?? 0) || a.name.localeCompare(b.name))[0];
+	const byKd = [...lines]
+		.filter((line) => line.kills >= 10 && line.deaths !== undefined)
+		.sort(
+			(a, b) =>
+				b.kills / Math.max(1, b.deaths ?? 0) - a.kills / Math.max(1, a.deaths ?? 0) ||
+				a.name.localeCompare(b.name)
+		)[0];
+	return {
+		top_kills_name: byKills?.name ?? '',
+		top_kills_count: byKills?.kills ?? '',
+		top_cash_name: byCash?.name ?? '',
+		top_cash_gain: byCash?.cashDelta ?? '',
+		best_kd_name: byKd?.name ?? '',
+		best_kd_value: byKd ? (byKd.kills / Math.max(1, byKd.deaths ?? 0)).toFixed(2) : ''
+	};
+}
+
 export async function poolStillHolds(db: DbOrTx, serverId: string, raw: unknown): Promise<boolean> {
 	const params = raw as { poolId?: unknown; poolKey?: unknown } | null;
 	if (typeof params?.poolId !== 'string' || typeof params.poolKey !== 'string') return false;
@@ -198,13 +283,27 @@ export async function queueObservationPools(
 	const pools = effectivePools(config, server.id);
 	let queued = 0;
 	const base = valuesFor(server, status);
+	const history = pools.some((pool) => pool.action === 'join')
+		? await joinHistory(db, server.orgId, server.id, joined, at)
+		: new Map();
 	for (const pool of pools) {
 		if (pool.action === 'join') {
 			for (const player of joined) {
 				if (pool.onlyFirstVisit && !firstVisit.has(player.steamId)) continue;
 				queued += await queuePoolEvent(db, server.orgId, server.id, pool, {
 					eventKey: `join:${player.steamId}:${at.getTime()}`,
-					values: { ...base, player_name: player.name, faction: player.faction ?? '' },
+					values: {
+						...base,
+						player_name: player.name,
+						faction: player.faction ?? '',
+						...(history.get(player.steamId) ?? {
+							welcome_phrase: 'Welcome',
+							server_visit_count: 1,
+							exotix_visit_count: 1,
+							server_connected_time: '0m',
+							exotix_connected_time: '0m'
+						})
+					},
 					steamId: player.steamId,
 					at
 				});
@@ -215,6 +314,7 @@ export async function queueObservationPools(
 				values: {
 					...base,
 					...matchVars(matchEnd, matchLines),
+					...(pool.action === 'round_end' ? roundAwards(matchLines) : {}),
 					winner: matchEnd.winner || matchEnd.leaders.join(' and '),
 					previous_map: matchEnd.map
 				},
