@@ -1,14 +1,80 @@
 <script lang="ts">
 	import { watchLive } from '$lib/live';
+	import { rconPost, errorMessage } from '$lib/api';
+	import { MAX_CHAT } from '$lib/chat';
+	import { toast } from '$lib/toast.svelte';
 	import { fmtNum, mapName } from '$lib/format';
 	import { setHealth } from '$lib/health.svelte';
 	import MapArt from '$lib/components/MapArt.svelte';
+	import Modal from '$lib/components/Modal.svelte';
 	import Pulse from '$lib/components/Pulse.svelte';
 	import RoleBadge from '$lib/components/RoleBadge.svelte';
-	import type { LiveView, Status } from '$lib/types';
+	import type { LiveView, ServerInfo, Status } from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
+	let news = $state('');
+	let newsConfirmation = $state<{ message: string; targets: ServerInfo[] } | null>(null);
+	let sendingNews = $state(false);
+	let newsReport = $state<{
+		message: string;
+		sentIds: string[];
+		failed: { id: string; name: string; error: string }[];
+	} | null>(null);
+	let canBroadcastAll = $derived(
+		data.servers.length > 0 && data.servers.every((s) => s.caps.includes('chat.send'))
+	);
+	let retryingNews = $derived(
+		newsReport !== null && newsReport.message === news.trim() && newsReport.failed.length > 0
+	);
+
+	function reviewNews() {
+		const message = news.trim();
+		if (!message || message.length > MAX_CHAT || !canBroadcastAll || sendingNews) return;
+		const failed = retryingNews ? new Set(newsReport!.failed.map((s) => s.id)) : null;
+		const targets = data.servers.filter((s) => !failed || failed.has(s.id));
+		if (targets.length) newsConfirmation = { message, targets };
+	}
+
+	async function sendNews() {
+		const confirmed = newsConfirmation;
+		if (!confirmed || sendingNews) return;
+		newsConfirmation = null;
+		sendingNews = true;
+		const sentIds = retryingNews ? [...newsReport!.sentIds] : [];
+		const failed: { id: string; name: string; error: string }[] = [];
+		try {
+			// A few requests at a time keeps the dashboard responsive without flooding the game listeners.
+			for (let i = 0; i < confirmed.targets.length; i += 4) {
+				const group = confirmed.targets.slice(i, i + 4);
+				const results = await Promise.allSettled(
+					group.map((s) => rconPost(s.id, 'broadcast', { message: confirmed.message }))
+				);
+				results.forEach((result, index) => {
+					const server = group[index];
+					if (result.status === 'fulfilled') sentIds.push(server.id);
+					else
+						failed.push({ id: server.id, name: server.name, error: errorMessage(result.reason) });
+				});
+			}
+			if (failed.length) {
+				newsReport = { message: confirmed.message, sentIds, failed };
+				toast(
+					`Server news sent to ${sentIds.length} of ${sentIds.length + failed.length} servers.`,
+					'err'
+				);
+			} else {
+				newsReport = null;
+				news = '';
+				toast(
+					`Server news sent to ${sentIds.length} server${sentIds.length === 1 ? '' : 's'}.`,
+					'ok'
+				);
+			}
+		} finally {
+			sendingNews = false;
+		}
+	}
 
 	type Summary =
 		{ ok: true; status: Status; reservedSlots: number | null } | { ok: false; error: string };
@@ -151,42 +217,86 @@
 		{/if}
 	</div>
 {:else}
-	{#if data.servers.length > 1}
+	{#if data.servers.length > 1 || canBroadcastAll}
 		<div class="mb-4 flex flex-wrap items-center gap-2">
-			<input
-				class="input sm:w-64"
-				type="search"
-				placeholder="Search name, host, map…"
-				bind:value={q}
-				aria-label="Search servers"
-			/>
-			<select class="input w-auto pr-[30px]" bind:value={show} aria-label="Show">
-				<option value="all">All servers</option>
-				<option value="online">Online</option>
-				<option value="populated">With players</option>
-				<option value="offline">Offline</option>
-			</select>
-			{#if orgs.length > 1}
-				<select
-					class="input w-auto pr-[30px] sm:max-w-56"
-					bind:value={orgFilter}
-					aria-label="Organisation"
-				>
-					<option value="">All organisations</option>
-					{#each orgs as o (o.id)}<option value={o.id}>{o.name}</option>{/each}
+			{#if data.servers.length > 1}
+				<input
+					class="input sm:w-64"
+					type="search"
+					placeholder="Search name, host, map…"
+					bind:value={q}
+					aria-label="Search servers"
+				/>
+				<select class="input w-auto pr-[30px]" bind:value={show} aria-label="Show">
+					<option value="all">All servers</option>
+					<option value="online">Online</option>
+					<option value="populated">With players</option>
+					<option value="offline">Offline</option>
 				</select>
+				{#if orgs.length > 1}
+					<select
+						class="input w-auto pr-[30px] sm:max-w-56"
+						bind:value={orgFilter}
+						aria-label="Organisation"
+					>
+						<option value="">All organisations</option>
+						{#each orgs as o (o.id)}<option value={o.id}>{o.name}</option>{/each}
+					</select>
+				{/if}
 			{/if}
-			<select class="input w-auto pr-[30px] sm:ml-auto" bind:value={sort} aria-label="Sort by">
-				<option value="default">Sort: default</option>
-				<option value="name">Sort: name</option>
-				<option value="players">Sort: most players</option>
-				<option value="fill">Sort: fullest</option>
-				<option value="map">Sort: map</option>
-				<option value="problems">Sort: problems first</option>
-			</select>
-			{#if filtering}
-				<span class="text-[12.5px] text-mist-400">{shown.length} of {data.servers.length}</span>
+			{#if canBroadcastAll}
+				<form
+					class="flex min-w-0 flex-1 items-center gap-2 sm:min-w-72"
+					onsubmit={(event) => {
+						event.preventDefault();
+						reviewNews();
+					}}
+				>
+					<input
+						class="input min-w-0 flex-1"
+						type="text"
+						maxlength={MAX_CHAT}
+						aria-label="Server news to all servers"
+						placeholder="Server news to all servers…"
+						bind:value={news}
+						disabled={sendingNews}
+					/>
+					<button
+						class="btn shrink-0 btn-primary"
+						type="submit"
+						disabled={!news.trim() || sendingNews}
+						>{sendingNews ? 'Sending…' : retryingNews ? 'Retry failed' : 'Send'}</button
+					>
+				</form>
 			{/if}
+			{#if data.servers.length > 1}
+				<select class="input w-auto pr-[30px] sm:ml-auto" bind:value={sort} aria-label="Sort by">
+					<option value="default">Sort: default</option>
+					<option value="name">Sort: name</option>
+					<option value="players">Sort: most players</option>
+					<option value="fill">Sort: fullest</option>
+					<option value="map">Sort: map</option>
+					<option value="problems">Sort: problems first</option>
+				</select>
+				{#if filtering}
+					<span class="text-[12.5px] text-mist-400">{shown.length} of {data.servers.length}</span>
+				{/if}
+			{/if}
+		</div>
+	{/if}
+	{#if newsReport?.failed.length && retryingNews}
+		<div class="callout mb-4 border-l-danger" role="status">
+			<b
+				>Not sent to {newsReport.failed.length} server{newsReport.failed.length === 1
+					? ''
+					: 's'}:</b
+			>
+			{#each newsReport.failed as failure (failure.id)}
+				<div>{failure.name}: {failure.error}</div>
+			{/each}
+			<p class="note mt-2">
+				Retry failed sends only, or change the message to start a new broadcast.
+			</p>
 		</div>
 	{/if}
 
@@ -250,4 +360,27 @@
 			{/each}
 		</div>
 	{/if}
+{/if}
+
+{#if newsConfirmation}
+	{@const review = newsConfirmation}
+	<Modal title="Confirm server news" onclose={() => (newsConfirmation = null)}>
+		<p>
+			Broadcast this message to {review.targets.length} server{review.targets.length === 1
+				? ''
+				: 's'} in {data.scope?.name ?? 'all organisations'}?
+		</p>
+		<div class="mt-3 rounded border border-white/10 bg-white/5 p-3 break-words whitespace-pre-wrap">
+			{review.message}
+		</div>
+		<p class="note mt-3">Servers: {review.targets.map((s) => s.name).join(', ')}</p>
+		{#snippet actions()}
+			<button type="button" class="btn" data-close onclick={() => (newsConfirmation = null)}
+				>Cancel</button
+			>
+			<button type="button" class="btn btn-primary" onclick={sendNews}
+				>Broadcast to {review.targets.length} servers</button
+			>
+		{/snippet}
+	</Modal>
 {/if}
