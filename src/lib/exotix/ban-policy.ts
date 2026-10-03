@@ -1,7 +1,16 @@
 // Internal descriptions are stored separately and never passed to the message formatter.
-import { substituteBanVariables } from '$lib/ban-message';
-export const POLICY_MESSAGE_VARS = ['reason', 'duration', 'reference', 'appeal'] as const;
+import { formatBanExpiry, substituteBanVariables } from '$lib/ban-message';
+export const POLICY_MESSAGE_VARS = [
+	'reason',
+	'duration',
+	'reference',
+	'appeal',
+	'unban_at'
+] as const;
+const REQUIRED_POLICY_MESSAGE_VARS = ['reason', 'duration', 'reference', 'appeal'] as const;
 export const DEFAULT_POLICY_MESSAGE = '{reason} | {duration} | {reference} | {appeal}';
+export const EXPIRY_POLICY_MESSAGE =
+	'{reason} | {duration} | Unban: {unban_at} | {reference} | {appeal}';
 export interface BanLevel {
 	id: string;
 	label: string;
@@ -39,6 +48,8 @@ export interface BanCaseView {
 	message: string;
 	messageTemplate?: string;
 	reviewStatus?: 'pending' | 'resolved';
+	/** Exact list-entry expiry, snapshotted with new cases; absent on historical cases. */
+	expiresAt?: string | null;
 }
 const levels = (): BanLevel[] => [
 	{ id: 'standard', label: 'Standard', days: 7 },
@@ -114,8 +125,10 @@ export function validatePolicyMessage(template: string): string {
 		/[{}]/.test(value.replace(/\{([^{}]+)\}/g, '')) ||
 		keys.some((k) => !(POLICY_MESSAGE_VARS as readonly string[]).includes(k))
 	)
-		throw new Error('Use only {reason}, {duration}, {reference} and {appeal} placeholders.');
-	if (POLICY_MESSAGE_VARS.some((k) => !keys.includes(k)))
+		throw new Error(
+			'Use only {reason}, {duration}, {reference}, {appeal} and {unban_at} placeholders.'
+		);
+	if (REQUIRED_POLICY_MESSAGE_VARS.some((k) => !keys.includes(k)))
 		throw new Error(
 			'Include {reason}, {duration}, {reference} and {appeal} in the player message.'
 		);
@@ -126,7 +139,8 @@ export function banCaseMessage(
 	days: number,
 	reference: string,
 	appealText: string,
-	messageTemplate = DEFAULT_POLICY_MESSAGE
+	messageTemplate = DEFAULT_POLICY_MESSAGE,
+	expiresAt?: Date | null
 ): string {
 	if (
 		!reason.trim() ||
@@ -138,11 +152,14 @@ export function banCaseMessage(
 		/[|\r\n]/.test(appealText)
 	)
 		throw new Error('Invalid ban message fields.');
+	if (days > 0 && /\{unban_at\}/i.test(messageTemplate) && !expiresAt)
+		throw new Error('An exact expiry is required for {unban_at} on temporary bans.');
 	const message = substituteBanVariables(validatePolicyMessage(messageTemplate), {
 		reason: reason.trim(),
 		duration: durationLabel(days),
 		reference,
-		appeal: appealText.trim()
+		appeal: appealText.trim(),
+		unban_at: formatBanExpiry(days === 0 ? null : (expiresAt ?? null))
 	});
 	if (message.length > 200)
 		throw new Error(
@@ -197,14 +214,25 @@ export function validateBanPolicy(value: unknown): BanPolicy {
 			if ((c.action === 'review' || id === 'cheating') && l.days !== 0)
 				throw new Error('Cheating and pending review require a permanent duration.');
 			// Automation durations may differ from presets; reserve their largest supported label.
-			banCaseMessage(label, 3650, 'a-0000001', appealText, messageTemplate);
+			banCaseMessage(
+				label,
+				3650,
+				'a-0000001',
+				appealText,
+				messageTemplate,
+				new Date('2036-10-23T17:30:00Z')
+			);
 			return { id: lid, label: text(l.label, 'Severity', 100), days: Number(l.days) };
 		});
 		return { id, label, description, action: c.action, levels: ls };
 	});
 	return { enabled: p.enabled, appealText, messageTemplate, categories };
 }
-export function manualBanCase(policy: BanPolicyView, body: Record<string, unknown>): BanCaseView {
+export function manualBanCase(
+	policy: BanPolicyView,
+	body: Record<string, unknown>,
+	now = new Date()
+): BanCaseView {
 	if (body.policyVersion !== policy.version)
 		throw new Error('The ban policy changed. Reopen the ban form.');
 	const category = policy.categories.find((c) => c.id === body.categoryId);
@@ -215,6 +243,7 @@ export function manualBanCase(policy: BanPolicyView, body: Record<string, unknow
 		throw new Error('TicketID must be exactly five digits.');
 	const reference = `t-${body.ticketId}`,
 		description = text(body.description, 'Internal description', 10000);
+	const expiresAt = level.days ? new Date(now.getTime() + level.days * 86400000) : null;
 	return {
 		policyVersion: policy.version,
 		source: 'manual',
@@ -224,6 +253,7 @@ export function manualBanCase(policy: BanPolicyView, body: Record<string, unknow
 		severity: level.label,
 		days: level.days,
 		presetDays: level.days,
+		expiresAt: expiresAt?.toISOString() ?? null,
 		description,
 		appealText: policy.appealText,
 		messageTemplate: policy.messageTemplate ?? DEFAULT_POLICY_MESSAGE,
@@ -232,7 +262,8 @@ export function manualBanCase(policy: BanPolicyView, body: Record<string, unknow
 			level.days,
 			reference,
 			policy.appealText,
-			policy.messageTemplate
+			policy.messageTemplate,
+			expiresAt
 		),
 		...(category.action === 'review' ? { reviewStatus: 'pending' as const } : {})
 	};
