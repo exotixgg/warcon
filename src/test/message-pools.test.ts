@@ -124,6 +124,19 @@ describe('message pools', () => {
 				]
 			})
 		).toThrow('weapon tags');
+		for (const tag of ['RoadKill', 'vehicleexplosion']) {
+			expect(() =>
+				validateMessagePools({
+					pools: [
+						pool('vehicle-tag', {
+							action: 'weapon',
+							weaponTags: [tag],
+							thresholds: [{ count: 1, action: 'ban', days: 1, scope: 'server' }]
+						})
+					]
+				})
+			).toThrow('roadkill and vehicle explosion');
+		}
 	});
 
 	test('placeholder values containing braces stay literal', () => {

@@ -5,6 +5,7 @@ import { kills, outbox, playerSessions, servers, type ListRow, type ServerRow } 
 import { ApiError } from '../http';
 import { MAX_CHAT } from '$lib/chat';
 import { VEHICLE_TAGS } from '$lib/kills';
+import { causeLabel } from '$lib/causes';
 import {
 	chooseMessageIndexes,
 	eligibleMessageIndexes,
@@ -89,6 +90,14 @@ export async function savePoolConfig(
 
 const fingerprint = (pool: MessagePool): string =>
 	createHash('sha256').update(JSON.stringify(pool)).digest('hex');
+export const weaponRuleTestKey = fingerprint;
+export function weaponThresholdFor(pool: MessagePool, count: number): WeaponThreshold | undefined {
+	const last = pool.thresholds.at(-1);
+	return (
+		pool.thresholds.find((step) => step.count === count) ??
+		(pool.persistentCounts && last?.action === 'ban' && count > last.count ? last : undefined)
+	);
+}
 const valuesFor = (server: { name: string }, status?: Status | null) => ({
 	server_name: status?.serverName || server.name,
 	map: status?.map || '',
@@ -102,6 +111,8 @@ type PoolDelivery = {
 	steamId?: string;
 	action?: 'whisper' | 'kick' | 'ban';
 	threshold?: WeaponThreshold;
+	/** A ban step chooses from its public messages after the list entry is saved. */
+	announcementMessages?: string[];
 	/** The event occurred at this time; timer sends use the worker's current time. */
 	at?: Date;
 };
@@ -116,6 +127,7 @@ export async function queuePoolEvent(
 ): Promise<number> {
 	const lock = `message-pool:${orgId}:${serverId}:${pool.id}`;
 	await db.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${lock}))`);
+	const statePoolId = event.announcementMessages?.length ? `${pool.id}:ban-announcement` : pool.id;
 	const firstKey = `pool:${serverId}:${pool.id}:${event.eventKey}:0`;
 	const existing = await db.execute<{ id: number }>(sql`
 		SELECT id FROM public.outbox WHERE dedupe_key = ${firstKey} LIMIT 1`);
@@ -126,11 +138,12 @@ export async function queuePoolEvent(
 		last_at: Date | null;
 	}>(sql`
 		SELECT cursor, last_index, last_at FROM exotix.message_pool_state
-		 WHERE org_id = ${orgId} AND server_id = ${serverId} AND pool_id = ${pool.id}`);
+		 WHERE org_id = ${orgId} AND server_id = ${serverId} AND pool_id = ${statePoolId}`);
 	const cursor = Number(state?.cursor ?? 0);
 	const lastIndex = Number(state?.last_index ?? -1);
-	const messageSource =
-		pool.action === 'weapon' && event.threshold?.message
+	const messageSource = event.announcementMessages?.length
+		? { ...pool, messages: event.announcementMessages, sendCount: 1 }
+		: pool.action === 'weapon' && event.threshold?.message
 			? { ...pool, messages: [event.threshold.message], sendCount: 1 }
 			: pool;
 	const eligible = eligibleMessageIndexes(messageSource, event.values);
@@ -163,7 +176,13 @@ export async function queuePoolEvent(
 						steamId: event.steamId,
 						reason: message,
 						days: event.threshold?.days ?? 0,
-						scope: event.threshold?.scope ?? 'server'
+						scope: event.threshold?.scope ?? 'server',
+						weaponTag: event.values.weapon,
+						weaponType: event.values.weapon_type,
+						playerName: event.values.player_name,
+						victimName: event.values.victim_name,
+						count: event.values.count,
+						thresholdCount: event.threshold?.count
 					}
 				: action === 'kick'
 					? { steamId: event.steamId, reason: message }
@@ -195,7 +214,7 @@ export async function queuePoolEvent(
 	if (inserted.length) {
 		await db.execute(sql`
 			INSERT INTO exotix.message_pool_state (org_id, server_id, pool_id, cursor, last_index, last_at)
-			VALUES (${orgId}, ${serverId}, ${pool.id}, ${cursor + indexes.length}, ${indexes.at(-1) ?? -1}, ${now})
+			VALUES (${orgId}, ${serverId}, ${statePoolId}, ${cursor + indexes.length}, ${indexes.at(-1) ?? -1}, ${now})
 			ON CONFLICT (org_id, server_id, pool_id) DO UPDATE
 			SET cursor = excluded.cursor, last_index = excluded.last_index, last_at = excluded.last_at`);
 	}
@@ -565,12 +584,7 @@ export async function queueWeaponPools(
 			let count = Math.max(0, Number(row?.n ?? 0) - events.length);
 			for (const event of events) {
 				count++;
-				const last = pool.thresholds.at(-1);
-				const threshold =
-					pool.thresholds.find((step) => step.count === count) ??
-					(pool.persistentCounts && last?.action === 'ban' && count > last.count
-						? last
-						: undefined);
+				const threshold = weaponThresholdFor(pool, count);
 				if (!threshold) continue;
 				queued += await queuePoolEvent(db, server.orgId, server.id, pool, {
 					eventKey: `weapon:${event.eventId}:${threshold.count}`,
@@ -580,6 +594,7 @@ export async function queueWeaponPools(
 						player_name: event.killer!.name,
 						victim_name: event.victim.name,
 						weapon: event.cause || '',
+						weapon_type: causeLabel(event.cause),
 						count
 					},
 					steamId,
