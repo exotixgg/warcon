@@ -198,7 +198,12 @@ export function validateMessagePools(raw: unknown): MessagePoolConfig {
 			throw new Error(`${name}: add at least one kill-feed weapon tag.`);
 		if (weaponTags.some((tag) => !/^[A-Za-z0-9_.-]+$/.test(tag)))
 			throw new Error(`${name}: weapon tags must match the kill feed exactly.`);
-		if (a === 'weapon' && weaponTags.some((tag) => VEHICLE_TAGS.some((vehicleTag) => vehicleTag.toLowerCase() === tag.toLowerCase())))
+		if (
+			a === 'weapon' &&
+			weaponTags.some((tag) =>
+				VEHICLE_TAGS.some((vehicleTag) => vehicleTag.toLowerCase() === tag.toLowerCase())
+			)
+		)
 			throw new Error(`${name}: roadkill and vehicle explosion tags cannot be weapon rules.`);
 		const persistentCounts = bool(item.persistentCounts ?? false, 'Persistent weapon counts');
 		const trackingSince = item.trackingSince;
