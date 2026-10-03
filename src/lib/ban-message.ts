@@ -8,6 +8,7 @@ export const BAN_MESSAGE_VARS = [
 	'reason',
 	'duration',
 	'expires',
+	'unban_at',
 	'banned',
 	'uid',
 	'reference',
@@ -39,6 +40,13 @@ export const banUid = (entryId: string): string =>
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const two = (n: number) => String(n).padStart(2, '0');
 
+/** Compact and timezone-independent player-facing expiry; no expiry means permanent. */
+export function formatBanExpiry(expiresAt: Date | null): string {
+	if (!expiresAt) return 'Permanent';
+	if (!Number.isFinite(expiresAt.getTime())) throw new Error('Invalid ban expiry.');
+	return `${two(expiresAt.getUTCDate())}.${two(expiresAt.getUTCMonth() + 1)}.${two(expiresAt.getUTCFullYear() % 100)} ${two(expiresAt.getUTCHours())}:${two(expiresAt.getUTCMinutes())} UTC`;
+}
+
 /** 26 Sep 2026 09:12 UTC: the game shows the text to anyone anywhere, so no local time. */
 const stamp = (d: Date): string =>
 	`${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()} ${two(d.getUTCHours())}:${two(d.getUTCMinutes())} UTC`;
@@ -57,6 +65,7 @@ export function banMessageVars(f: BanFacts): Record<BanMessageVar, string> {
 		reason: f.reason,
 		duration: duration(f.addedAt, f.expiresAt),
 		expires: f.expiresAt ? stamp(f.expiresAt) : 'never',
+		unban_at: formatBanExpiry(f.expiresAt),
 		banned: stamp(f.addedAt),
 		uid: banUid(f.entryId),
 		reference: f.reference ?? '',
