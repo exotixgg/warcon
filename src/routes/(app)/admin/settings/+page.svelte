@@ -4,6 +4,7 @@
 	import { toast } from '$lib/toast.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import BanSettings from '$lib/components/BanSettings.svelte';
+	import MessagePoolSettings from '$lib/components/MessagePoolSettings.svelte';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -101,6 +102,20 @@
 		<details class="mb-3 panel p-4">
 			<summary class="cursor-pointer font-semibold">{org.name}</summary>
 			<div class="mt-4"><BanSettings {org} /></div>
+		</details>
+	{/each}
+</section>
+
+<section class="mb-6">
+	<h2 class="text-lg font-semibold">Automation message pools</h2>
+	<p class="note mb-3">
+		Create rotating messages and weapon rules per organisation. Choose all servers or specific
+		servers for each pool.
+	</p>
+	{#each data.banOrganizations as org (org.id)}
+		<details class="mb-3 panel p-4">
+			<summary class="cursor-pointer font-semibold">{org.name}</summary>
+			<div class="mt-4"><MessagePoolSettings {org} /></div>
 		</details>
 	{/each}
 </section>
