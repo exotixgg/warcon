@@ -19,6 +19,13 @@ export interface PanelBanParams {
 	/** how long the ban lasts; 0 is for good */
 	days: number;
 	scope: BanScope;
+	/** Weapon rule context for its public announcement after the ban is saved. */
+	weaponTag?: string;
+	weaponType?: string;
+	playerName?: string;
+	victimName?: string;
+	count?: number;
+	thresholdCount?: number;
 }
 
 /** What a rule that bans needs of whoever saves it: what a ban by hand on that list needs. */

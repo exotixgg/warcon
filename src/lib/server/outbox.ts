@@ -35,7 +35,8 @@ import { KILL_RATE_FLAG } from './kill-rate';
 import { KILL_DISTANCE_FLAG } from './kill-distance';
 import { writeAudit } from './audit';
 import { PANEL_BAN, type PanelBanParams } from './rule-ban';
-import { poolStillHolds } from './exotix/message-pools';
+import { poolConfigOf, poolStillHolds, queuePoolEvent } from './exotix/message-pools';
+import { effectivePools } from '$lib/message-pools';
 import { queueEvent } from './json-webhook-queue';
 import { seedRewardGranted } from './json-webhook-events';
 import {
@@ -679,18 +680,45 @@ async function deliverPanelBan(env: Env, row: OutboxRow): Promise<void> {
 			if (row.triggerKind === 'message_pool') {
 				if (!(await poolStillHolds(tx, row.serverId, row.params))) return null;
 			} else if (!holdsFor(row, rule)) return null;
-			return grantEntry(
+			const pool =
+				row.triggerKind === 'message_pool' && p.weaponTag
+					? effectivePools(await poolConfigOf(tx, server.orgId), server.id).find(
+							(candidate) => candidate.id === (row.params as { poolId?: string }).poolId
+						)
+					: undefined;
+			const announcementMessages = pool?.thresholds.find(
+				(step) => step.count === p.thresholdCount && step.action === 'ban'
+			)?.announcementMessages;
+			const written = await grantEntry(
 				env,
 				list,
 				{
 					steamId: p.steamId,
 					reason: p.reason,
 					playerReason: row.triggerKind === 'message_pool' ? p.reason : undefined,
+					suppressBanAnnouncement: !!announcementMessages?.length,
 					expiresAt: p.days ? new Date(Date.now() + p.days * 86400_000) : null,
 					addedByName: `trigger: ${row.triggerName}`
 				},
 				{ tx, lengthen: true }
 			);
+			if (written.added && pool && announcementMessages?.length)
+				await queuePoolEvent(tx, server.orgId, server.id, pool, {
+					eventKey: `weapon-ban:${written.id}`,
+					values: {
+						server_name: server.name,
+						map: '',
+						players: 0,
+						max_players: 0,
+						player_name: p.playerName || p.steamId,
+						victim_name: p.victimName || '',
+						weapon: p.weaponTag || '',
+						weapon_type: p.weaponType || p.weaponTag || '',
+						count: p.count || 0
+					},
+					announcementMessages
+				});
+			return written;
 		});
 		if (!written) return await finish(env, row, 'skipped', CHANGED);
 		if (!written.added && !written.lengthened)

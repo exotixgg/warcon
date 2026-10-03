@@ -17,6 +17,12 @@ const migrations = [
 			`CREATE TABLE exotix.message_pool_configs (org_id text PRIMARY KEY REFERENCES public.organizations(id) ON DELETE CASCADE, config jsonb NOT NULL, updated_at timestamptz NOT NULL DEFAULT clock_timestamp())`,
 			`CREATE TABLE exotix.message_pool_state (org_id text NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE, server_id text NOT NULL REFERENCES public.servers(id) ON DELETE CASCADE, pool_id text NOT NULL, cursor integer NOT NULL DEFAULT 0, last_index integer NOT NULL DEFAULT -1, last_at timestamptz, PRIMARY KEY (org_id, server_id, pool_id))`
 		]
+	},
+	{
+		id: '003_weapon_rule_tests',
+		statements: [
+			`CREATE TABLE exotix.weapon_rule_tests (org_id text NOT NULL REFERENCES public.organizations(id) ON DELETE CASCADE, pool_id text NOT NULL, steam_id text NOT NULL, config_key text NOT NULL, count integer NOT NULL DEFAULT 0, updated_at timestamptz NOT NULL DEFAULT now(), PRIMARY KEY (org_id, pool_id, steam_id))`
+		]
 	}
 ];
 export async function pendingExotixMigrations(db: Db): Promise<number> {

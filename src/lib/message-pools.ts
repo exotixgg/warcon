@@ -13,6 +13,8 @@ export interface WeaponThreshold {
 	scope: 'server' | 'org';
 	/** Text for this step; older rules fall back to the pool's shared messages. */
 	message?: string;
+	/** Public messages chosen only after this step successfully adds a ban. */
+	announcementMessages?: string[];
 }
 
 export interface MessagePool {
@@ -107,7 +109,7 @@ export const POOL_VARIABLES: Record<PoolAction, readonly string[]> = {
 		'best_kd_value'
 	],
 	ban: [...BASE, 'player_name', 'ban_category', 'ban_reason', 'ban_duration', 'ban_reference'],
-	weapon: [...BASE, 'player_name', 'victim_name', 'weapon', 'count'],
+	weapon: [...BASE, 'player_name', 'victim_name', 'weapon', 'weapon_type', 'count'],
 	timer: BASE
 };
 
@@ -214,12 +216,23 @@ export function validateMessagePools(raw: unknown): MessagePoolConfig {
 			const message =
 				v.message === undefined ? undefined : string(v.message, 'Threshold message', 200);
 			if (message !== undefined) validateTemplate(name, 'weapon', message);
+			const announcementMessages = distinct(
+				v.announcementMessages ?? [],
+				'Public ban announcements',
+				50,
+				MAX_CHAT
+			);
+			if (announcementMessages.length && v.action !== 'ban')
+				throw new Error(`${name}: public ban announcements require a ban step.`);
+			for (const announcement of announcementMessages)
+				validateTemplate(name, 'weapon', announcement);
 			return {
 				count: whole(v.count, 'Kill threshold', 1, 100),
 				action: v.action as WeaponAction,
 				days: whole(v.days, 'Ban days', 0, 3650),
 				scope: v.scope,
-				...(message === undefined ? {} : { message })
+				...(message === undefined ? {} : { message }),
+				...(announcementMessages.length ? { announcementMessages } : {})
 			};
 		});
 		if (a === 'weapon' && !thresholds.length) throw new Error(`${name}: add a threshold.`);
