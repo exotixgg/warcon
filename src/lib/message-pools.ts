@@ -36,6 +36,10 @@ export interface MessagePool {
 	/** Weapon pools only: exact, case-insensitive kill-feed cause tags. */
 	weaponTags: string[];
 	teamKillsOnly: boolean;
+	/** Count qualifying kills across the selected servers and all matches. */
+	persistentCounts?: boolean;
+	/** First receipt time counted by a persistent weapon rule; set by the server. */
+	trackingSince?: string;
 	thresholds: WeaponThreshold[];
 	/** Timer pools only. */
 	everyMinutes: number;
@@ -191,6 +195,15 @@ export function validateMessagePools(raw: unknown): MessagePoolConfig {
 			throw new Error(`${name}: add at least one kill-feed weapon tag.`);
 		if (weaponTags.some((tag) => !/^[A-Za-z0-9_.-]+$/.test(tag)))
 			throw new Error(`${name}: weapon tags must match the kill feed exactly.`);
+		const persistentCounts = bool(item.persistentCounts ?? false, 'Persistent weapon counts');
+		const trackingSince = item.trackingSince;
+		if (
+			trackingSince !== undefined &&
+			(typeof trackingSince !== 'string' ||
+				!/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(trackingSince) ||
+				!Number.isFinite(Date.parse(trackingSince)))
+		)
+			throw new Error(`${name}: invalid persistent count start.`);
 		const rawThresholds = item.thresholds ?? [];
 		if (!Array.isArray(rawThresholds) || rawThresholds.length > 5)
 			throw new Error(`${name}: use at most five thresholds.`);
@@ -236,6 +249,8 @@ export function validateMessagePools(raw: unknown): MessagePoolConfig {
 			banSources,
 			weaponTags,
 			teamKillsOnly: bool(item.teamKillsOnly ?? false, 'Team kills only'),
+			...(a === 'weapon' && persistentCounts ? { persistentCounts: true } : {}),
+			...(a === 'weapon' && persistentCounts && trackingSince ? { trackingSince } : {}),
 			thresholds,
 			everyMinutes,
 			minPlayers,
