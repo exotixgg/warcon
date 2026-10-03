@@ -36,6 +36,7 @@ import type { KillView } from '$lib/types';
 import { VEHICLE_TAGS, type KillFilter } from '$lib/kills';
 import type { SessionUser } from './access';
 import { FEED_TOKEN_PREFIX, isTeamKill, parseBatch, type ParsedKill } from './feed-core';
+import { queueWeaponPools } from './exotix/message-pools';
 
 const hashToken = (token: string): string =>
 	createHash('sha256').update(token, 'utf8').digest('hex');
@@ -278,6 +279,10 @@ export async function ingestBatch(
 				)
 				.returning();
 			written = rows.map(killView);
+			// Weapon sanctions must be committed with the kills. The web-to-worker relay is
+			// best effort; a lost notification must not silently lose a warning or ban.
+			const [server] = await db.select().from(servers).where(eq(servers.id, serverId)).limit(1);
+			if (server) await queueWeaponPools(db, server, written);
 		});
 	// The liveness stamp, at most every ten seconds per server: the worker's upsert of the row
 	// leaves this column alone, so the two never fight.
