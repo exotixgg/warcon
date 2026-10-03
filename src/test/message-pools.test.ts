@@ -21,6 +21,7 @@ const pool = (id: string, extra: Partial<MessagePool> = {}): MessagePool => ({
 	allServers: true,
 	serverIds: [],
 	onlyFirstVisit: false,
+	afterFaction: false,
 	categoryId: '',
 	banSources: ['policy', 'legacy', 'automatic'],
 	weaponTags: [],
@@ -33,6 +34,14 @@ const pool = (id: string, extra: Partial<MessagePool> = {}): MessagePool => ({
 });
 
 describe('message pools', () => {
+	test('older saved join pools default to on-join delivery', () => {
+		const { afterFaction: _ignored, ...legacy } = pool('legacy');
+		expect(validateMessagePools({ pools: [legacy] }).pools[0].afterFaction).toBe(false);
+		expect(
+			validateMessagePools({ pools: [pool('faction', { afterFaction: true })] }).pools[0]
+				.afterFaction
+		).toBe(true);
+	});
 	test('all-server defaults include future servers; a named-server pool overrides them', () => {
 		const all = pool('all');
 		const infantry = pool('infantry', { allServers: false, serverIds: ['infantry'] });
