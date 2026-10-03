@@ -288,8 +288,16 @@ describe.skipIf(!hasTestDb)('EXOTIX structured bans on a real database', () => {
 			]
 		] as const) {
 			expect(
-				(await call(w, route, 'POST', { steamId: PLAYER, moderation: form(p) }, 'owner', params))
-					.status
+				(
+					await call(
+						w,
+						route,
+						'POST',
+						{ steamId: PLAYER, moderation: form(await policyOf(env.db, w.org.id)) },
+						'owner',
+						params
+					)
+				).status
 			).toBe(201);
 			const [entry] = await env.db
 				.select()
