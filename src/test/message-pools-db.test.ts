@@ -150,6 +150,96 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 		]);
 	});
 
+	test('join history counts only organisation sessions and fills round awards', async () => {
+		const world = await seedWorld(env);
+		const server = await serverOf(world.server.id);
+		const before = await poolConfigOf(env.db, world.org.id);
+		await env.db.transaction((tx) =>
+			savePoolConfig(
+				tx,
+				world.org.id,
+				{
+					pools: [
+						pool('history', 'join', {
+							messages: [
+								'{welcome_phrase} {player_name}: visit {server_visit_count}/{exotix_visit_count}, time {server_connected_time}/{exotix_connected_time}'
+							]
+						}),
+						pool('awards', 'round_end', {
+							messages: [
+								'Kills {top_kills_name} {top_kills_count}',
+								'Cash {top_cash_name} {top_cash_gain}',
+								'GG on {previous_map}'
+							],
+							sendCount: 2
+						})
+					]
+				},
+				before.version
+			)
+		);
+		const now = new Date('2026-10-03T12:00:00Z');
+		const player = { steamId: STEAM, name: 'Test Player', faction: 'A' } as Player;
+		await env.db.insert(playerSessions).values([
+			{
+				serverId: world.server.id,
+				steamId: STEAM,
+				name: player.name,
+				joinedAt: new Date(now.getTime() - 3_600_000),
+				lastSeen: new Date(now.getTime() - 1_800_000),
+				leftAt: new Date(now.getTime() - 1_800_000)
+			},
+			{
+				serverId: world.otherServer.id,
+				steamId: STEAM,
+				name: player.name,
+				joinedAt: new Date(now.getTime() - 7_200_000),
+				lastSeen: new Date(now.getTime() - 5_400_000),
+				leftAt: new Date(now.getTime() - 5_400_000)
+			},
+			{
+				serverId: world.otherOrgServer.id,
+				steamId: STEAM,
+				name: player.name,
+				joinedAt: new Date(now.getTime() - 10_800_000),
+				lastSeen: new Date(now.getTime() - 9_000_000),
+				leftAt: new Date(now.getTime() - 9_000_000)
+			},
+			{ serverId: world.server.id, steamId: STEAM, name: player.name, joinedAt: now, lastSeen: now }
+		]);
+		const status = {
+			serverName: server.name,
+			map: 'New Map',
+			playerCount: 12,
+			maxPlayers: 100
+		} as Status;
+		const queued = await env.db.transaction((tx) =>
+			queueObservationPools(
+				tx,
+				server,
+				status,
+				[player],
+				new Set(),
+				{ map: 'Old Map', scores: [], winner: null, leaders: [] },
+				[
+					{ name: 'Ace', kills: 14, deaths: 2, cashDelta: 500 },
+					{ name: 'Banker', kills: 0, deaths: 0, cashDelta: 800 }
+				],
+				now
+			)
+		);
+		expect(queued).toBe(3);
+		const rows = await env.db
+			.select({ params: outbox.params })
+			.from(outbox)
+			.where(and(eq(outbox.serverId, world.server.id), eq(outbox.triggerKind, 'message_pool')));
+		expect(rows.map((row) => row.params)).toMatchObject([
+			{ message: 'Welcome back Test Player: visit 2/3, time 30m/1h 0m' },
+			{ message: 'Kills Ace 14' },
+			{ message: 'Cash Banker 800' }
+		]);
+	});
+
 	test('an organisation ban announces only where the player played in the last hour', async () => {
 		const world = await seedWorld(env);
 		const before = await poolConfigOf(env.db, world.org.id);

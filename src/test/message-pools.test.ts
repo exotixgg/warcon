@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
 	chooseMessageIndexes,
+	eligibleMessageIndexes,
 	effectivePools,
 	renderPoolMessage,
 	validateMessagePools,
@@ -108,5 +109,26 @@ describe('message pools', () => {
 				server_name: 'WARDOGS'
 			})
 		).toBe('Hello {ban_reason} on WARDOGS');
+	});
+
+	test('a pool accepts 50 messages and skips round awards without a recorded winner', () => {
+		const messages = Array.from({ length: 50 }, (_, index) => `Line ${index + 1}`);
+		expect(
+			validateMessagePools({ pools: [pool('fifty', { messages, sendCount: 1 })] }).pools[0].messages
+		).toHaveLength(50);
+		expect(() =>
+			validateMessagePools({
+				pools: [pool('too-many', { messages: [...messages, 'Line 51'], sendCount: 1 })]
+			})
+		).toThrow('50');
+		expect(
+			eligibleMessageIndexes(
+				{ action: 'round_end', messages: ['Top {top_kills_name}: {top_kills_count}', 'GG'] },
+				{
+					top_kills_name: '',
+					top_kills_count: ''
+				}
+			)
+		).toEqual([1]);
 	});
 });
