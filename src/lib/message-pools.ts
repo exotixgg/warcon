@@ -51,7 +51,7 @@ export interface MessagePoolConfig {
 	pools: MessagePool[];
 }
 
-/** The General pool covers every ban category until the owner saves more specific pools. */
+/** The General pool covers ban categories without a specific pool, except pending reviews. */
 export const DEFAULT_MESSAGE_POOLS: MessagePoolConfig = {
 	pools: [
 		{
