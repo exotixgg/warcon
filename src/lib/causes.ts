@@ -18,6 +18,7 @@ const LABELS: Record<string, string> = {
 	'Id.Item.A91': 'A-91',
 	'Id.Item.SV98': 'SV-98',
 	'Id.Item.RPG7': 'RPG-7',
+	'Id.Item.MMGL': 'Grenade launcher (MMGL)',
 	'Id.Item.MK22': 'MK 22',
 	'Id.Item.Glock17': 'Glock 17',
 	'Id.Item.CombatBow': 'Combat bow',
