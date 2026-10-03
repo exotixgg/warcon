@@ -1,15 +1,7 @@
-import { and, desc, eq, sql } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import { createHash, randomUUID } from 'node:crypto';
 import type { DbOrTx } from '../db';
-import {
-	kills,
-	outbox,
-	playerSessions,
-	servers,
-	steamProfiles,
-	type ListRow,
-	type ServerRow
-} from '../db/schema';
+import { kills, outbox, playerSessions, servers, type ListRow, type ServerRow } from '../db/schema';
 import { ApiError } from '../http';
 import { MAX_CHAT } from '$lib/chat';
 import {
@@ -252,7 +244,36 @@ export async function queueObservationPools(
 	return queued;
 }
 
-/** A new list entry gets its public announcement on every affected server, once per entry. */
+/** Recent play identifies the server(s) relevant to a ban, including a player who just left. */
+const BAN_ANNOUNCEMENT_WINDOW_MS = 60 * 60_000;
+
+async function recentBanPlayers(
+	db: DbOrTx,
+	steamId: string,
+	serverIds: string[]
+): Promise<Map<string, string>> {
+	if (!serverIds.length) return new Map();
+	const rows = await db
+		.select({
+			serverId: playerSessions.serverId,
+			name: playerSessions.name
+		})
+		.from(playerSessions)
+		.where(
+			and(
+				eq(playerSessions.steamId, steamId),
+				inArray(playerSessions.serverId, serverIds),
+				gte(playerSessions.lastSeen, new Date(Date.now() - BAN_ANNOUNCEMENT_WINDOW_MS))
+			)
+		)
+		.orderBy(desc(playerSessions.lastSeen));
+	const names = new Map<string, string>();
+	for (const row of rows)
+		if (!names.has(row.serverId)) names.set(row.serverId, row.name.trim() || steamId);
+	return names;
+}
+
+/** A new list entry announces only on affected servers where the player played recently. */
 export async function queueBanAnnouncements(
 	db: DbOrTx,
 	list: ListRow,
@@ -277,17 +298,11 @@ export async function queueBanAnnouncements(
 		.select({ id: servers.id, name: servers.name })
 		.from(servers)
 		.where(list.serverId ? eq(servers.id, list.serverId) : eq(servers.orgId, list.orgId));
-	const [session] = await db
-		.select({ name: playerSessions.name })
-		.from(playerSessions)
-		.where(eq(playerSessions.steamId, entry.steamId))
-		.orderBy(desc(playerSessions.joinedAt))
-		.limit(1);
-	const [profile] = await db
-		.select({ persona: steamProfiles.persona })
-		.from(steamProfiles)
-		.where(eq(steamProfiles.steamId, entry.steamId))
-		.limit(1);
+	const recent = await recentBanPlayers(
+		db,
+		entry.steamId,
+		targets.map((server) => server.id)
+	);
 	const source: BanSource =
 		entry.automatic || caseRecord?.source === 'automated'
 			? 'automatic'
@@ -300,6 +315,8 @@ export async function queueBanAnnouncements(
 		: 'Permanent';
 	let queued = 0;
 	for (const server of targets) {
+		const playerName = recent.get(server.id);
+		if (!playerName) continue;
 		const pools = effectivePools(config, server.id).filter((p) => p.action === 'ban');
 		const pool =
 			pools.find((p) => p.categoryId === category && p.banSources.includes(source)) ??
@@ -309,7 +326,7 @@ export async function queueBanAnnouncements(
 			eventKey: `ban:${entry.id}`,
 			values: {
 				...valuesFor(server),
-				player_name: session?.name || profile?.persona || entry.steamId,
+				player_name: playerName,
 				ban_category: caseRecord?.category || 'Ban',
 				ban_reason: entry.reason,
 				ban_duration: duration,
@@ -320,13 +337,15 @@ export async function queueBanAnnouncements(
 	return queued;
 }
 
-/** A successful direct game ban has no policy case or list entry; use General and legacy source. */
+/** A successful direct game ban uses General and legacy source when played here recently. */
 export async function queueDirectBanAnnouncement(
 	db: DbOrTx,
 	server: ServerRow,
 	steamId: string,
 	reason: string
 ): Promise<number> {
+	const playerName = (await recentBanPlayers(db, steamId, [server.id])).get(server.id);
+	if (!playerName) return 0;
 	const pool = effectivePools(await poolConfigOf(db, server.orgId), server.id).find(
 		(candidate) =>
 			candidate.action === 'ban' &&
@@ -334,22 +353,11 @@ export async function queueDirectBanAnnouncement(
 			candidate.banSources.includes('legacy')
 	);
 	if (!pool) return 0;
-	const [session] = await db
-		.select({ name: playerSessions.name })
-		.from(playerSessions)
-		.where(eq(playerSessions.steamId, steamId))
-		.orderBy(desc(playerSessions.joinedAt))
-		.limit(1);
-	const [profile] = await db
-		.select({ persona: steamProfiles.persona })
-		.from(steamProfiles)
-		.where(eq(steamProfiles.steamId, steamId))
-		.limit(1);
 	return queuePoolEvent(db, server.orgId, server.id, pool, {
 		eventKey: `direct-ban:${randomUUID()}`,
 		values: {
 			...valuesFor(server),
-			player_name: session?.name || profile?.persona || steamId,
+			player_name: playerName,
 			ban_category: 'Ban',
 			ban_reason: reason || 'Server rules',
 			ban_duration: 'Permanent',
