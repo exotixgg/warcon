@@ -1,4 +1,5 @@
 import { beforeAll, describe, expect, test } from 'bun:test';
+import { randomUUID } from 'node:crypto';
 import { and, asc, eq } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
 import { kills, outbox, playerSessions, servers } from '$lib/server/db/schema';
@@ -13,6 +14,7 @@ import {
 } from '$lib/server/exotix/message-pools';
 import { grantEntry, listOf } from '$lib/server/lists';
 import { PANEL_BAN } from '$lib/server/rule-ban';
+import { ingestBatch } from '$lib/server/feed';
 import type { MessagePool } from '$lib/message-pools';
 import type { KillView, Player, Status } from '$lib/types';
 import { hasTestDb, testEnv } from './db';
@@ -584,6 +586,67 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 			{ message: 'Private warning.', steamId: STEAM },
 			{ reason: 'Seven-day ban.', days: 7, scope: 'org', steamId: STEAM },
 			{ reason: 'Seven-day ban.', days: 7, scope: 'org', steamId: STEAM }
+		]);
+	});
+
+	test('ingesting MMGL kills atomically queues one warning and one ban despite feed retries', async () => {
+		const world = await seedWorld(env);
+		const old = await poolConfigOf(env.db, world.org.id);
+		const rule = pool('atomic-mmgl', 'weapon', {
+			allServers: false,
+			serverIds: [world.server.id],
+			weaponTags: ['Id.Item.MMGL'],
+			persistentCounts: true,
+			thresholds: [
+				{ count: 1, action: 'whisper', days: 0, scope: 'org', message: 'Private warning.' },
+				{ count: 2, action: 'ban', days: 7, scope: 'org', message: 'Seven-day ban.' }
+			]
+		});
+		await env.db.transaction((tx) =>
+			savePoolConfig(tx, world.org.id, { pools: [rule] }, old.version)
+		);
+		const ids = [randomUUID(), randomUUID()];
+		const body = {
+			serverId: world.server.id,
+			serverName: 'Test',
+			events: ids.map((eventId, i) => ({
+				eventId,
+				type: 'killed',
+				eventTime: 100 + i,
+				matchId: randomUUID(),
+				mapName: 'Kavkazi',
+				killerName: 'Test Player',
+				killerSteamId: STEAM,
+				victimName: `Victim ${i}`,
+				victimSteamId: `7656119800000060${i}`,
+				cause: 'Id.Item.MMGL',
+				distance: 30,
+				contextTags: []
+			}))
+		};
+		expect((await ingestBatch(env, world.server.id, body)).accepted).toBe(2);
+		expect((await ingestBatch(env, world.server.id, body)).duplicates).toBe(2);
+		const roadKill = {
+			...body,
+			events: [
+				{
+					...body.events[0],
+					eventId: randomUUID(),
+					victimSteamId: '76561198000000609',
+					contextTags: ['RoadKill']
+				}
+			]
+		};
+		expect((await ingestBatch(env, world.server.id, roadKill)).accepted).toBe(1);
+		const rows = await env.db
+			.select()
+			.from(outbox)
+			.where(and(eq(outbox.serverId, world.server.id), eq(outbox.triggerName, 'atomic-mmgl')))
+			.orderBy(asc(outbox.id));
+		expect(rows.map((row) => row.action)).toEqual(['whisper', PANEL_BAN]);
+		expect(rows.map((row) => row.params)).toMatchObject([
+			{ steamId: STEAM, message: 'Private warning.' },
+			{ steamId: STEAM, reason: 'Seven-day ban.', days: 7, scope: 'org' }
 		]);
 	});
 });
