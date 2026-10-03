@@ -40,6 +40,7 @@ import { requireSteamId } from './steam';
 import { desiredFor, memberSlots, summaryOf } from './lists-sync';
 import { gateway } from './gateway';
 import type { BanCaseView } from '$lib/exotix/ban-policy';
+import { queueBanAnnouncements } from './exotix/message-pools';
 import {
 	prepareManualBan,
 	automaticCase,
@@ -543,6 +544,19 @@ async function insertInto(
 				)
 			: null);
 	if (record) await writeCase(tx, id, record);
+	if (list.kind === 'ban')
+		await queueBanAnnouncements(
+			tx,
+			list,
+			{
+				id,
+				steamId: entry.steamId,
+				reason: entry.reason,
+				expiresAt: entry.expiresAt,
+				automatic: entry.addedBy === null
+			},
+			record
+		);
 	await touch(tx, list.id);
 	return { id, added: true, lengthened: false };
 }
