@@ -11,7 +11,6 @@
 	import Badge from '$lib/components/Badge.svelte';
 	import BanDialog from '$lib/components/BanDialog.svelte';
 	import EditBanDialog from '$lib/components/EditBanDialog.svelte';
-	import BanPolicyPanel from '$lib/components/BanPolicyPanel.svelte';
 	import ImportCandidates from './ImportCandidates.svelte';
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort, matches } from '$lib/table.svelte';
@@ -146,13 +145,6 @@
 		when a server is added.
 	</div>
 {/if}
-
-<BanPolicyPanel orgId={org.id} />
-{#if owner}<p class="note mb-3">
-		<a class="text-accent" href="/orgs/{org.id}/settings"
-			>Configure ban policy and messages in Settings</a
-		>
-	</p>{/if}
 
 <div class="mb-3 flex flex-wrap items-center gap-2">
 	<input
