@@ -41,6 +41,7 @@ const pool = (
 	allServers: true,
 	serverIds: [],
 	onlyFirstVisit: false,
+	afterFaction: false,
 	categoryId: action === 'ban' ? 'general' : '',
 	banSources: ['policy', 'legacy', 'automatic'],
 	weaponTags: [],
@@ -82,7 +83,7 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 		} as Status;
 		const player = { steamId: STEAM, name: 'Test Player', faction: 'A' } as Player;
 		const queued = await env.db.transaction((tx) =>
-			queueObservationPools(tx, server, status, [player], new Set(), null, [], now)
+			queueObservationPools(tx, server, status, [player], [], new Set(), null, [], now)
 		);
 		expect(queued).toBe(2);
 		const rows = await env.db
@@ -107,6 +108,55 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 			)
 		);
 		expect(await poolStillHolds(env.db, world.server.id, rows[0].params)).toBe(false);
+	});
+
+	test('a faction-gated join pool waits for the first pick and then applies its delay', async () => {
+		const world = await seedWorld(env);
+		const server = await serverOf(world.server.id);
+		const before = await poolConfigOf(env.db, world.org.id);
+		await env.db.transaction((tx) =>
+			savePoolConfig(
+				tx,
+				world.org.id,
+				{ pools: [pool('after-faction', 'join', { afterFaction: true, initialDelaySeconds: 5 })] },
+				before.version
+			)
+		);
+		const status = {
+			serverName: server.name,
+			map: 'Kavkazi',
+			playerCount: 12,
+			maxPlayers: 100
+		} as Status;
+		const player = { steamId: STEAM, name: 'Test Player', faction: '' } as Player;
+		const joinedAt = new Date();
+		expect(
+			await env.db.transaction((tx) =>
+				queueObservationPools(tx, server, status, [player], [], new Set(), null, [], joinedAt)
+			)
+		).toBe(0);
+		const pickedAt = new Date(joinedAt.getTime() + 2000);
+		expect(
+			await env.db.transaction((tx) =>
+				queueObservationPools(
+					tx,
+					server,
+					status,
+					[],
+					[{ player: { ...player, faction: 'A' }, from: null }],
+					new Set(),
+					null,
+					[],
+					pickedAt
+				)
+			)
+		).toBe(1);
+		const rows = await env.db
+			.select()
+			.from(outbox)
+			.where(and(eq(outbox.serverId, world.server.id), eq(outbox.triggerKind, 'message_pool')));
+		expect(rows).toHaveLength(1);
+		expect(rows[0].notBefore.getTime() - pickedAt.getTime()).toBe(5000);
 	});
 
 	test('round start and end both fire at a detected boundary without a winning faction', async () => {
@@ -137,6 +187,7 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 				tx,
 				server,
 				status,
+				[],
 				[],
 				new Set(),
 				{ map: 'Old Map', scores: [], winner: null, leaders: [] },
@@ -224,6 +275,7 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 				server,
 				status,
 				[player],
+				[],
 				new Set(),
 				{ map: 'Old Map', scores: [], winner: null, leaders: [] },
 				[

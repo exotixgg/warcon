@@ -97,6 +97,7 @@
 			allServers: true,
 			serverIds: [],
 			onlyFirstVisit: false,
+			afterFaction: false,
 			categoryId: 'general',
 			banSources: ['policy', 'legacy', 'automatic'],
 			weaponTags: [],
@@ -320,6 +321,9 @@
 			{#if pool.action === 'join'}
 				<label class="mt-3 field-label flex items-center gap-2">
 					<input type="checkbox" bind:checked={pool.onlyFirstVisit} /> First visit only
+				</label>
+				<label class="mt-3 field-label flex items-center gap-2">
+					<input type="checkbox" bind:checked={pool.afterFaction} /> Wait until first faction pick
 				</label>
 			{:else if pool.action === 'ban'}
 				<div class="mt-3 grid gap-3 md:grid-cols-2">

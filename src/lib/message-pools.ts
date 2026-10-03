@@ -33,6 +33,8 @@ export interface MessagePool {
 	serverIds: string[];
 	/** Join pools only. */
 	onlyFirstVisit: boolean;
+	/** Join pools only: wait until the player's first faction pick. */
+	afterFaction: boolean;
 	/** Ban pools only: a policy category id, or general for bans without a case. */
 	categoryId: string;
 	banSources: BanSource[];
@@ -70,6 +72,7 @@ export const DEFAULT_MESSAGE_POOLS: MessagePoolConfig = {
 			allServers: true,
 			serverIds: [],
 			onlyFirstVisit: false,
+			afterFaction: false,
 			categoryId: 'general',
 			banSources: ['policy', 'legacy', 'automatic'],
 			weaponTags: [],
@@ -266,6 +269,7 @@ export function validateMessagePools(raw: unknown): MessagePoolConfig {
 			allServers,
 			serverIds,
 			onlyFirstVisit: bool(item.onlyFirstVisit ?? false, 'First visits only'),
+			afterFaction: bool(item.afterFaction ?? false, 'After faction pick'),
 			categoryId: a === 'ban' ? categoryId : '',
 			banSources,
 			weaponTags,

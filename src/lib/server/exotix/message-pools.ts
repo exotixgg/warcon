@@ -18,7 +18,13 @@ import {
 	type MessagePoolConfig,
 	type WeaponThreshold
 } from '$lib/message-pools';
-import { matchVars, type MatchEnd, type MatchLineVars } from '../trigger-rules';
+import {
+	matchVars,
+	welcomeTargets,
+	type FactionPick,
+	type MatchEnd,
+	type MatchLineVars
+} from '../trigger-rules';
 import { PANEL_BAN } from '../rule-ban';
 import { policyOf } from './ban-policy';
 import type { KillView, Player, Status } from '$lib/types';
@@ -316,6 +322,7 @@ export async function queueObservationPools(
 	server: ServerRow,
 	status: Status,
 	joined: Player[],
+	factioned: FactionPick<Player>[],
 	firstVisit: Set<string>,
 	matchEnd: MatchEnd | null,
 	matchLines: MatchLineVars[],
@@ -325,13 +332,20 @@ export async function queueObservationPools(
 	const pools = effectivePools(config, server.id);
 	let queued = 0;
 	const base = valuesFor(server, status);
-	const history = pools.some((pool) => pool.action === 'join')
-		? await joinHistory(db, server.orgId, server.id, joined, at)
+	const joinTargets = new Map(
+		pools
+			.filter((pool) => pool.action === 'join')
+			.map((pool) => [pool.id, welcomeTargets(pool, { joined, factioned, firstVisit })])
+	);
+	const historyPlayers = [
+		...new Map([...joinTargets.values()].flat().map((player) => [player.steamId, player])).values()
+	];
+	const history = historyPlayers.length
+		? await joinHistory(db, server.orgId, server.id, historyPlayers, at)
 		: new Map();
 	for (const pool of pools) {
 		if (pool.action === 'join') {
-			for (const player of joined) {
-				if (pool.onlyFirstVisit && !firstVisit.has(player.steamId)) continue;
+			for (const player of joinTargets.get(pool.id) ?? []) {
 				queued += await queuePoolEvent(db, server.orgId, server.id, pool, {
 					eventKey: `join:${player.steamId}:${at.getTime()}`,
 					values: {
