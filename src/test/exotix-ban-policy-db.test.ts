@@ -257,6 +257,24 @@ describe.skipIf(!hasTestDb)('EXOTIX structured bans on a real database', () => {
 			`${autoCase.reference}: Rule violation | PERM | Appeal on discord.gg/exotix`
 		);
 		expect(autoCase.message).not.toContain(PRIVATE);
+		const weaponReason = 'Infantry weapon rule: second prohibited kill';
+		const weapon = await grantEntry(env, list, {
+			steamId: '76561198000000883',
+			reason: weaponReason,
+			playerReason: weaponReason,
+			expiresAt: new Date(Date.now() + 7 * 86400_000),
+			addedByName: 'trigger: Infantry Weapon Rule'
+		});
+		const weaponCase = (await caseOf(env.db, weapon.id))!;
+		expect(weaponCase.message).toContain(`${weaponReason} | 7d |`);
+		const malformed = await grantEntry(env, list, {
+			steamId: '76561198000000884',
+			reason: 'Unsafe | source reason',
+			playerReason: 'Unsafe | source reason',
+			expiresAt: null,
+			addedByName: 'trigger: Infantry Weapon Rule'
+		});
+		expect((await caseOf(env.db, malformed.id))!.message).toContain('Rule violation | PERM |');
 		await savePolicy(env.db, w.org.id, { ...policy, appealText: 'Changed appeal' });
 		await grantEntry(
 			env,
