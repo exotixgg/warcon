@@ -457,6 +457,8 @@ async function touch(db: DbLike, listId: string): Promise<void> {
 interface NewEntry {
 	steamId: string;
 	reason: string;
+	/** Explicitly approved text for the player's policy kick message. Other automation reasons stay internal. */
+	playerReason?: string;
 	expiresAt: Date | null;
 	addedBy: string | null;
 	addedByName: string;
@@ -527,7 +529,7 @@ async function insertInto(
 		await refreshCaseDuration(tx, dup.id, entry.expiresAt, entry.addedByName, entry.reason);
 		return { id: dup.id, added: false, lengthened: true };
 	}
-	const { moderation, ...values } = entry;
+	const { moderation, playerReason, ...values } = entry;
 	await tx.insert(listEntries).values({ id, listId: list.id, ...values });
 	const record =
 		moderation ??
@@ -540,7 +542,8 @@ async function insertInto(
 						? Math.max(1, Math.round((entry.expiresAt.getTime() - Date.now()) / 86400000))
 						: 0,
 					entry.addedByName,
-					entry.expiresAt
+					entry.expiresAt,
+					playerReason
 				)
 			: null);
 	if (record) await writeCase(tx, id, record);
@@ -571,7 +574,13 @@ async function insertInto(
 export async function grantEntry(
 	env: Env,
 	list: ListRow,
-	entry: { steamId: string; reason: string; expiresAt: Date | null; addedByName: string },
+	entry: {
+		steamId: string;
+		reason: string;
+		playerReason?: string;
+		expiresAt: Date | null;
+		addedByName: string;
+	},
 	opts: { tx?: Tx; lengthen?: boolean } = {}
 ): Promise<{ id: string; added: boolean; lengthened: boolean }> {
 	const row = { ...entry, addedBy: null };

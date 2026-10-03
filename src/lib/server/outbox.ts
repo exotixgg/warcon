@@ -685,6 +685,7 @@ async function deliverPanelBan(env: Env, row: OutboxRow): Promise<void> {
 				{
 					steamId: p.steamId,
 					reason: p.reason,
+					playerReason: row.triggerKind === 'message_pool' ? p.reason : undefined,
 					expiresAt: p.days ? new Date(Date.now() + p.days * 86400_000) : null,
 					addedByName: `trigger: ${row.triggerName}`
 				},
