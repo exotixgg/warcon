@@ -130,6 +130,8 @@
 						</p>
 					{/if}
 					<p class="note">
+						<span class="font-mono text-mist-100">{'{reference}'}</span> contains a policy ticket or
+						automation case when present. Legacy bans have no reference; no ticket is invented.
 						<span class="font-mono text-mist-100">{'{admin}'}</span> shows the banning admin's name
 						to the player and to anyone who can view a server's ban list. Leave the message as
 						<span class="font-mono text-mist-100">{DEFAULT_BAN_MESSAGE}</span> to send the reason

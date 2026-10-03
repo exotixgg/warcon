@@ -151,7 +151,21 @@ describe.skipIf(!hasTestDb)('EXOTIX structured bans on a real database', () => {
 		const w = await seedWorld(env),
 			p = await policyOf(env.db, w.org.id);
 		const body = { ...p, enabled: true };
-		expect((await call(w, 'orgs/[id]/ban-policy', 'PATCH', body, 'orgBans')).status).not.toBe(200);
+		for (const principal of [
+			'anon',
+			'member',
+			'viewer',
+			'operator',
+			'admin',
+			'orgBans',
+			'outsider',
+			'keyAll',
+			'keyBans'
+		] as const)
+			expect((await call(w, 'orgs/[id]/ban-policy', 'PATCH', body, principal)).status).not.toBe(
+				200
+			);
+		expect((await policyOf(env.db, w.org.id)).version).toBe(p.version);
 		const edits = await Promise.all([
 			call(w, 'orgs/[id]/ban-policy', 'PATCH', body),
 			call(w, 'orgs/[id]/ban-policy', 'PATCH', body)
@@ -179,6 +193,80 @@ describe.skipIf(!hasTestDb)('EXOTIX structured bans on a real database', () => {
 				)
 			).status
 		).not.toBe(200);
+	});
+	test('settings page data is refused independently of layout for non-owners and other tenants', async () => {
+		const w = await seedWorld(env);
+		const orgSettings = await import('../routes/(app)/orgs/[id]/settings/+page.server');
+		const adminSettings = await import('../routes/(app)/admin/settings/+page.server');
+		for (const principal of [
+			'anon',
+			'member',
+			'viewer',
+			'operator',
+			'admin',
+			'orgBans',
+			'outsider',
+			'keyAll'
+		] as const) {
+			const event = { locals: { user: w.users[principal] }, params: { id: w.org.id } };
+			await expect(orgSettings.load(event as never)).rejects.toBeDefined();
+			await expect(adminSettings.load(event as never)).rejects.toBeDefined();
+		}
+		expect(
+			await orgSettings.load({ locals: { user: w.users.owner }, params: { id: w.org.id } } as never)
+		).toMatchObject({ banOrganization: { id: w.org.id } });
+		await expect(
+			orgSettings.load({ locals: { user: w.users.owner }, params: { id: w.otherOrg.id } } as never)
+		).rejects.toBeDefined();
+		await expect(
+			adminSettings.load({ locals: { user: w.users.owner } } as never)
+		).rejects.toBeDefined();
+		const siteData = await adminSettings.load({ locals: { user: w.users.site } } as never);
+		expect(siteData).toHaveProperty('banOrganizations');
+	});
+	test('custom templates are snapshotted for manual cases, automation, and later extensions', async () => {
+		const { w, policy } = await enabled();
+		const messageTemplate = '{reference}: {reason} | {duration} | {appeal}';
+		const p = await savePolicy(env.db, w.org.id, { ...policy, messageTemplate });
+		expect(
+			(
+				await call(w, 'orgs/[id]/lists/[kind]/entries', 'POST', {
+					steamId: PLAYER,
+					moderation: form(p)
+				})
+			).status
+		).toBe(201);
+		const list = await listOf(env, w.org.id, 'ban');
+		const entries = await env.db.select().from(listEntries).where(eq(listEntries.listId, list.id));
+		expect((await caseOf(env.db, entries[0].id))!.message).toBe(
+			't-00123: Griefing | 7d | Appeal on discord.gg/exotix'
+		);
+		const auto = await grantEntry(env, list, {
+			steamId: '76561198000000882',
+			reason: PRIVATE,
+			expiresAt: null,
+			addedByName: 'trigger: test'
+		});
+		const autoCase = (await caseOf(env.db, auto.id))!;
+		expect(autoCase.message).toBe(
+			`${autoCase.reference}: Rule violation | PERM | Appeal on discord.gg/exotix`
+		);
+		expect(autoCase.message).not.toContain(PRIVATE);
+		await savePolicy(env.db, w.org.id, { ...policy, appealText: 'Changed appeal' });
+		await grantEntry(
+			env,
+			list,
+			{
+				steamId: PLAYER,
+				reason: PRIVATE,
+				expiresAt: new Date(Date.now() + 30 * 86400000),
+				addedByName: 'trigger: extend'
+			},
+			{ lengthen: true }
+		);
+		expect((await caseOf(env.db, entries[0].id))!.message).toBe(
+			't-00123: Griefing | 30d | Appeal on discord.gg/exotix'
+		);
 	});
 	test('enabled manual bans validate before writing; record fixed durations and private notes', async () => {
 		const { w, policy } = await enabled();

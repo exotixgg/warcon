@@ -27,6 +27,14 @@ const facts = {
 };
 
 describe('renderBanMessage', () => {
+	test('reference expands to the recorded ticket or automation ID and is empty on legacy bans', () => {
+		for (const reference of ['t-00123', 'a-0000001'])
+			expect(renderBanMessage('{reason} | {reference}', { ...facts, reference })).toBe(
+				`Team killing | ${reference}`
+			);
+		expect(renderBanMessage('{reason} | {reference}', facts)).toBe('Team killing');
+		expect(unknownBanVars('{reference}')).toEqual([]);
+	});
 	test('fills in the facts of the ban, in UTC', () => {
 		expect(
 			renderBanMessage('{reason} | {duration} | {banned} > {expires} | {uid} | {admin}', facts)

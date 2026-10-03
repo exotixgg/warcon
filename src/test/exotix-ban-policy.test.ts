@@ -1,6 +1,7 @@
 import { describe, expect, test } from 'bun:test';
 import {
 	DEFAULT_BAN_POLICY,
+	DEFAULT_POLICY_MESSAGE,
 	banCaseMessage,
 	manualBanCase,
 	validateBanPolicy
@@ -16,6 +17,42 @@ const body = {
 };
 
 describe('EXOTIX ban policy', () => {
+	test('old policies keep the original format without a database migration', () => {
+		const legacy = { ...policy };
+		delete legacy.messageTemplate;
+		expect(validateBanPolicy(legacy).messageTemplate).toBe(DEFAULT_POLICY_MESSAGE);
+		expect(manualBanCase(legacy, body).message).toBe(manualBanCase(policy, body).message);
+	});
+	test('the same template expands manual tickets and automation references without private notes', () => {
+		const messageTemplate = '{reference} | {reason} | {duration} | {appeal}';
+		const c = manualBanCase({ ...policy, messageTemplate }, body);
+		expect(c.message).toBe('t-00123 | Griefing | 7d | Appeal on discord.gg/exotix');
+		expect(c.messageTemplate).toBe(messageTemplate);
+		expect(banCaseMessage('Rule violation', 0, 'a-0000001', 'Appeal', messageTemplate)).toBe(
+			'a-0000001 | Rule violation | PERM | Appeal'
+		);
+		expect(c.message).not.toContain(body.description);
+	});
+	test('templates cannot omit required facts, expose descriptions, or silently truncate', () => {
+		for (const messageTemplate of [
+			'{reason} | {duration} | {appeal}',
+			'{reason} | {duration} | {reference} | {appeal} | {description}',
+			'{reason} | {duration} | {reference} | {appeal} | {t-id/a-id}',
+			'{reason} | {duration} | {reference} | {appeal} {',
+			'{reason}\n{duration} | {reference} | {appeal}',
+			`${DEFAULT_POLICY_MESSAGE} ${'x'.repeat(150)}`
+		])
+			expect(() => validateBanPolicy({ ...policy, messageTemplate })).toThrow();
+		const reason = 'X'.repeat(40),
+			appeal = 'Appeal'.repeat(5);
+		const prefix = 'x'.repeat(200 - banCaseMessage(reason, 7, 't-12345', appeal).length);
+		expect(
+			banCaseMessage(reason, 7, 't-12345', appeal, prefix + DEFAULT_POLICY_MESSAGE).length
+		).toBe(200);
+		expect(() =>
+			banCaseMessage(reason + 'X', 7, 't-12345', appeal, prefix + DEFAULT_POLICY_MESSAGE)
+		).toThrow('200');
+	});
 	test('six clear defaults use 7d, 30d, PERM, with permanent cheating and pending review', () => {
 		expect(validateBanPolicy(policy).categories.map((c) => c.label)).toEqual([
 			'Rule violation',

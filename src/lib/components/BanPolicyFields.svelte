@@ -17,7 +17,13 @@
 	let level = $derived(category?.levels.find((l) => l.id === levelId));
 	let message = $derived(
 		category && level && /^\d{5}$/.test(ticketId)
-			? banCaseMessage(category.label, level.days, `t-${ticketId}`, policy.appealText)
+			? banCaseMessage(
+					category.label,
+					level.days,
+					`t-${ticketId}`,
+					policy.appealText,
+					policy.messageTemplate
+				)
 			: 'Choose a reason, severity and five-digit ticket.'
 	);
 </script>

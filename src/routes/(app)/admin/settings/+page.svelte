@@ -3,6 +3,7 @@
 	import { api, errorMessage } from '$lib/api';
 	import { toast } from '$lib/toast.svelte';
 	import Badge from '$lib/components/Badge.svelte';
+	import BanSettings from '$lib/components/BanSettings.svelte';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -89,6 +90,20 @@
 </script>
 
 <svelte:head><title>Settings · Admin · {data.appName}</title></svelte:head>
+
+<section class="mb-6">
+	<h2 class="text-lg font-semibold">Ban policy and messages</h2>
+	<p class="note mb-3">
+		Choose an organisation. Policy and template changes apply to new bans; existing cases keep their
+		saved messages.
+	</p>
+	{#each data.banOrganizations as org (org.id)}
+		<details class="mb-3 panel p-4">
+			<summary class="cursor-pointer font-semibold">{org.name}</summary>
+			<div class="mt-4"><BanSettings {org} /></div>
+		</details>
+	{/each}
+</section>
 
 {#each GROUPS as g (g.id)}
 	<div class="mb-4 panel">
