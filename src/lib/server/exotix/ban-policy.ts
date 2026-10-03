@@ -64,7 +64,8 @@ export async function automaticCase(
 	orgId: string,
 	reason: string,
 	days: number,
-	rule: string
+	rule: string,
+	expiresAt: Date | null
 ): Promise<BanCaseView | null> {
 	const policy = await policyOf(db, orgId);
 	if (!policy.enabled) return null;
@@ -84,10 +85,18 @@ export async function automaticCase(
 		severity: 'Configured automation',
 		days,
 		presetDays: days,
+		expiresAt: expiresAt?.toISOString() ?? null,
 		appealText: policy.appealText,
 		messageTemplate: policy.messageTemplate,
 		description: `Automated ban. Source: ${rule}. Rule reason: ${reason}. Duration: ${days ? `${days} days` : 'permanent'}. Review the trigger and audit history for evidence.`,
-		message: banCaseMessage(category, days, reference, policy.appealText, policy.messageTemplate)
+		message: banCaseMessage(
+			category,
+			days,
+			reference,
+			policy.appealText,
+			policy.messageTemplate,
+			expiresAt
+		)
 	};
 }
 export async function resolveReview(db: DbOrTx, entryId: string): Promise<void> {
@@ -117,10 +126,18 @@ export async function refreshCaseDuration(
 	if (!c) return;
 	// The extension starts now; do not round a few elapsed milliseconds into an extra day.
 	c.days = expiresAt ? Math.max(1, Math.round((expiresAt.getTime() - Date.now()) / 86400000)) : 0;
+	c.expiresAt = expiresAt?.toISOString() ?? null;
 	c.extensions = [
 		...(c.extensions ?? []),
 		{ at: new Date().toISOString(), rule, reason, expiresAt: expiresAt?.toISOString() ?? null }
 	];
-	c.message = banCaseMessage(c.category, c.days, c.reference, c.appealText, c.messageTemplate);
+	c.message = banCaseMessage(
+		c.category,
+		c.days,
+		c.reference,
+		c.appealText,
+		c.messageTemplate,
+		expiresAt
+	);
 	await writeCase(db, entryId, c);
 }

@@ -5,7 +5,12 @@ import { randomBytes } from 'node:crypto';
 import { migrate } from 'drizzle-orm/bun-sql/migrator';
 import { connect } from '$lib/server/db';
 import { eq, sql } from 'drizzle-orm';
-import { DEFAULT_BAN_POLICY, type BanPolicyView } from '$lib/exotix/ban-policy';
+import {
+	DEFAULT_BAN_POLICY,
+	EXPIRY_POLICY_MESSAGE,
+	type BanPolicyView
+} from '$lib/exotix/ban-policy';
+import { formatBanExpiry } from '$lib/ban-message';
 import { policyOf, savePolicy, caseOf } from '$lib/server/exotix/ban-policy';
 import { runExotixMigrations, pendingExotixMigrations } from '$lib/server/exotix/migrations';
 import { auditLog, listEntries, organizations, servers } from '$lib/server/db/schema';
@@ -267,6 +272,74 @@ describe.skipIf(!hasTestDb)('EXOTIX structured bans on a real database', () => {
 		expect((await caseOf(env.db, entries[0].id))!.message).toBe(
 			't-00123: Griefing | 30d | Appeal on discord.gg/exotix'
 		);
+	});
+	test('expiry matches list enforcement for org bans, server bans, automation and extensions', async () => {
+		const { w, policy } = await enabled();
+		const p = await savePolicy(env.db, w.org.id, {
+			...policy,
+			messageTemplate: EXPIRY_POLICY_MESSAGE
+		});
+		for (const [route, params, list] of [
+			['orgs/[id]/lists/[kind]/entries', {}, await listOf(env, w.org.id, 'ban')],
+			[
+				'servers/[id]/lists/ban/entries',
+				{ id: w.server.id },
+				await serverListOf(env, { id: w.server.id, orgId: w.org.id }, 'ban')
+			]
+		] as const) {
+			expect(
+				(await call(w, route, 'POST', { steamId: PLAYER, moderation: form(p) }, 'owner', params))
+					.status
+			).toBe(201);
+			const [entry] = await env.db
+				.select()
+				.from(listEntries)
+				.where(eq(listEntries.listId, list.id));
+			const c = (await caseOf(env.db, entry.id))!;
+			expect(c.expiresAt).toBe(entry.expiresAt!.toISOString());
+			expect(c.message).toContain(`Unban: ${formatBanExpiry(entry.expiresAt)}`);
+			await savePolicy(env.db, w.org.id, {
+				...p,
+				messageTemplate: policy.messageTemplate,
+				appealText: 'Changed appeal'
+			});
+			const expiry = new Date(Date.now() + 30 * 86400000);
+			await grantEntry(
+				env,
+				list,
+				{ steamId: PLAYER, reason: PRIVATE, expiresAt: expiry, addedByName: 'trigger: extend' },
+				{ lengthen: true }
+			);
+			const extended = (await caseOf(env.db, entry.id))!;
+			expect(extended.expiresAt).toBe(expiry.toISOString());
+			expect(extended.message).toContain(`Unban: ${formatBanExpiry(expiry)}`);
+			expect(extended.message).toContain('Appeal on discord.gg/exotix');
+			expect(extended.message).not.toContain(PRIVATE);
+			await savePolicy(env.db, w.org.id, p);
+			const exact = new Date(Date.now() + 7 * 86400000);
+			const auto = await grantEntry(env, list, {
+				steamId: '76561198000000882',
+				reason: PRIVATE,
+				expiresAt: exact,
+				addedByName: 'trigger: test'
+			});
+			const automatic = (await caseOf(env.db, auto.id))!;
+			expect(automatic.expiresAt).toBe(exact.toISOString());
+			expect(automatic.message).toContain(`Unban: ${formatBanExpiry(exact)}`);
+			expect(automatic.message).toContain(automatic.reference);
+			await grantEntry(
+				env,
+				list,
+				{
+					steamId: '76561198000000882',
+					reason: PRIVATE,
+					expiresAt: null,
+					addedByName: 'trigger: permanent'
+				},
+				{ lengthen: true }
+			);
+			expect((await caseOf(env.db, auto.id))!.message).toContain('Unban: Permanent');
+		}
 	});
 	test('enabled manual bans validate before writing; record fixed durations and private notes', async () => {
 		const { w, policy } = await enabled();

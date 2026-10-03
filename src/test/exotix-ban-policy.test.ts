@@ -2,6 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import {
 	DEFAULT_BAN_POLICY,
 	DEFAULT_POLICY_MESSAGE,
+	EXPIRY_POLICY_MESSAGE,
 	banCaseMessage,
 	manualBanCase,
 	validateBanPolicy
@@ -17,6 +18,38 @@ const body = {
 };
 
 describe('EXOTIX ban policy', () => {
+	test('expiry messages use exact UTC date, including midnight, year rollover and permanent bans', () => {
+		const p = { ...policy, messageTemplate: EXPIRY_POLICY_MESSAGE };
+		const c = manualBanCase(p, body, new Date('2026-10-16T17:30:59Z'));
+		expect(c.expiresAt).toBe('2026-10-23T17:30:59.000Z');
+		expect(c.message).toBe(
+			'Griefing | 7d | Unban: 23.10.26 17:30 UTC | t-00123 | Appeal on discord.gg/exotix'
+		);
+		expect(c.message).not.toContain(body.description);
+		const rollover = manualBanCase(p, body, new Date('2026-12-25T00:05:00Z'));
+		expect(rollover.message).toContain('01.01.27 00:05 UTC');
+		const permanent = manualBanCase(p, { ...body, levelId: 'critical' });
+		expect(permanent.expiresAt).toBeNull();
+		expect(permanent.message).toContain('Unban: Permanent');
+		expect(() => banCaseMessage('Griefing', 7, 't-12345', 'Appeal', EXPIRY_POLICY_MESSAGE)).toThrow(
+			'exact expiry'
+		);
+		expect(() =>
+			banCaseMessage('Griefing', 7, 't-12345', 'Appeal', EXPIRY_POLICY_MESSAGE, new Date('invalid'))
+		).toThrow('expiry');
+		expect(validateBanPolicy(p).messageTemplate).toBe(EXPIRY_POLICY_MESSAGE);
+	});
+	test('expiry template still rejects the complete 201st character and reserves automation space', () => {
+		const expiry = new Date('2026-10-23T17:30:00Z');
+		const base = banCaseMessage('X', 7, 't-12345', 'Appeal', EXPIRY_POLICY_MESSAGE, expiry);
+		const reason = 'X'.repeat(201 - base.length);
+		expect(
+			banCaseMessage(reason, 7, 't-12345', 'Appeal', EXPIRY_POLICY_MESSAGE, expiry)
+		).toHaveLength(200);
+		expect(() =>
+			banCaseMessage(reason + 'X', 7, 't-12345', 'Appeal', EXPIRY_POLICY_MESSAGE, expiry)
+		).toThrow('200');
+	});
 	test('old policies keep the original format without a database migration', () => {
 		const legacy = { ...policy };
 		delete legacy.messageTemplate;
