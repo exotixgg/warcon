@@ -22,7 +22,8 @@
 					level.days,
 					`t-${ticketId}`,
 					policy.appealText,
-					policy.messageTemplate
+					policy.messageTemplate,
+					level.days ? new Date(Date.now() + level.days * 86400000) : null
 				)
 			: 'Choose a reason, severity and five-digit ticket.'
 	);
@@ -74,7 +75,8 @@
 	<p class="note">
 		{category && level && /^\d{5}$/.test(ticketId)
 			? `${message.length}/200 characters. `
-			: ''}Internal notes are excluded. Duration is fixed by the policy.
+			: ''}Internal notes are excluded. Duration is fixed by the policy. The expiry preview is
+		approximate until submitted; the saved message uses the exact ban expiry in UTC.
 	</p>
 </div>
 <p class="note">
