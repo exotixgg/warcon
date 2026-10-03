@@ -11,6 +11,8 @@ import { gateway } from './gateway';
 import { assertRate } from './ratelimit';
 import { noteLocalEdit } from './lists-sync';
 import type { Kind } from './lists-plan';
+import { policyOf } from './exotix/ban-policy';
+import { gamePath } from './hostpolicy';
 
 function safe<T>(fn: () => T, fallback: T): T {
 	try {
@@ -98,6 +100,17 @@ export async function runAction(
 	}
 
 	if (name === 'raw') assertRate(`raw:${user.id}`, 30, 60_000);
+	if (
+		(name === 'ban' ||
+			(name === 'raw' &&
+				['POST', 'PUT', 'PATCH'].includes(String(params.method).trim().toUpperCase()) &&
+				/^\/v1\/bans(?:[/?]|$)/i.test(gamePath(String(params.path).trim())))) &&
+		(await policyOf(env.db, server.orgId)).enabled
+	)
+		throw new ApiError(
+			400,
+			'Use the managed ban form or list API: reason, severity, five-digit ticket and internal description are required.'
+		);
 	// Pages read the live view; direct game reads are for tools and the odd refresh, not a poll loop.
 	assertRate(`rcon:${user.id}`, 120, 60_000);
 

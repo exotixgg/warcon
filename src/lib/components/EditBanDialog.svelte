@@ -7,6 +7,8 @@
 	import { toDatetimeLocal } from '$lib/format';
 	import { EXPIRY_OPTIONS, expiryIso } from '$lib/lists';
 	import Modal from './Modal.svelte';
+	import type { BanCaseView } from '$lib/exotix/ban-policy';
+	import { durationLabel } from '$lib/exotix/ban-policy';
 
 	let {
 		path,
@@ -14,6 +16,7 @@
 		placed,
 		reason: reasonNow,
 		expiresAt,
+		moderation = null,
 		onclose,
 		ondone
 	}: {
@@ -24,12 +27,14 @@
 		placed: string;
 		reason: string;
 		expiresAt: string | null;
+		moderation?: BanCaseView | null;
 		onclose: () => void;
 		ondone: () => unknown;
 	} = $props();
 
 	// Initial values only: the dialog is created fresh each time it opens.
 	let reason = $state(untrack(() => reasonNow));
+	let description = $state(untrack(() => moderation?.description ?? ''));
 	let expiry = $state(untrack(() => (expiresAt ? 'custom' : '0')));
 	let custom = $state(untrack(() => toDatetimeLocal(expiresAt)));
 	// The expiry goes out only when it was touched: the form holds it to the minute, and a ban
@@ -40,10 +45,18 @@
 	async function submit() {
 		busy = true;
 		try {
-			await api('PATCH', path, {
-				reason: reason.trim(),
-				...([expiry, custom].join() === expiryWas ? {} : { expiresAt: expiryIso(expiry, custom) })
-			});
+			await api(
+				'PATCH',
+				path,
+				moderation
+					? { description }
+					: {
+							reason: reason.trim(),
+							...([expiry, custom].join() === expiryWas
+								? {}
+								: { expiresAt: expiryIso(expiry, custom) })
+						}
+			);
 			toast(`Ban on ${who} changed.`, 'ok');
 			await ondone();
 			onclose();
@@ -64,33 +77,65 @@
 		}}
 	>
 		<p class="note mt-0!">{placed} Who placed it and when stay as they are.</p>
-		<label class="block"
-			><span class="field-label">Reason</span><input
-				class="input"
-				type="text"
-				maxlength="200"
-				bind:value={reason}
-			/></label
-		>
-		<div class="flex flex-wrap gap-3">
-			<label class="block sm:w-48"
-				><span class="field-label">Expires</span><select class="input" bind:value={expiry}>
-					{#each EXPIRY_OPTIONS as [value, label] (value)}
-						<option {value}>{label}</option>
-					{/each}
-				</select></label
+		{#if moderation}
+			<p class="font-mono text-sm">{moderation.message}</p>
+			<p class="note">
+				{moderation.source} · {moderation.severity} ({durationLabel(
+					moderation.presetDays
+				)}){moderation.reviewStatus === 'pending' ? ' · Pending review' : ''}. The selected preset
+				is recorded; existing automation can extend the expiry. Lift the ban after a successful
+				review; document any new decision in its ticket.
+			</p>
+			<label class="block"
+				><span class="field-label">Internal description</span><textarea
+					class="min-h-32 input"
+					maxlength="10000"
+					bind:value={description}
+					required></textarea></label
 			>
-			{#if expiry === 'custom'}
-				<label class="block sm:flex-1"
-					><span class="field-label">Until (local time)</span><input
-						class="input"
-						type="datetime-local"
-						bind:value={custom}
-						required
-					/></label
-				>
+			<p class="note">
+				Private staff notes. Excluded from player messages and notification content.
+			</p>
+			{#if moderation.extensions?.length}
+				<details class="note">
+					<summary>Automation extensions ({moderation.extensions.length})</summary>
+					{#each moderation.extensions as extension}
+						<p>
+							{extension.at} · {extension.rule}: {extension.reason} · Expires {extension.expiresAt ??
+								'never'}
+						</p>
+					{/each}
+				</details>
 			{/if}
-		</div>
+		{:else}
+			<label class="block"
+				><span class="field-label">Reason</span><input
+					class="input"
+					type="text"
+					maxlength="200"
+					bind:value={reason}
+				/></label
+			>
+			<div class="flex flex-wrap gap-3">
+				<label class="block sm:w-48"
+					><span class="field-label">Expires</span><select class="input" bind:value={expiry}>
+						{#each EXPIRY_OPTIONS as [value, label] (value)}
+							<option {value}>{label}</option>
+						{/each}
+					</select></label
+				>
+				{#if expiry === 'custom'}
+					<label class="block sm:flex-1"
+						><span class="field-label">Until (local time)</span><input
+							class="input"
+							type="datetime-local"
+							bind:value={custom}
+							required
+						/></label
+					>
+				{/if}
+			</div>
+		{/if}
 		<div class="flex justify-end gap-2 pt-2">
 			<button type="button" class="btn" data-close onclick={onclose}>Cancel</button>
 			<button type="submit" class="btn btn-primary" disabled={busy}>Save</button>

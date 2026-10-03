@@ -1,0 +1,189 @@
+<script lang="ts">
+	import { api, errorMessage } from '$lib/api';
+	import { toast } from '$lib/toast.svelte';
+	import {
+		DEFAULT_BAN_POLICY,
+		durationLabel,
+		validateBanPolicy,
+		type BanPolicyView
+	} from '$lib/exotix/ban-policy';
+	let { orgId, owner }: { orgId: string; owner: boolean } = $props();
+	let policy = $state<BanPolicyView | null>(null);
+	let problem = $state('');
+	let editing = $state(false);
+	let busy = $state(false);
+	let path = $derived(`/api/orgs/${encodeURIComponent(orgId)}/ban-policy`);
+	async function load() {
+		try {
+			policy = (await api<{ policy: BanPolicyView }>('GET', path)).policy;
+			problem = '';
+		} catch (e) {
+			problem = errorMessage(e);
+		}
+	}
+	$effect(() => {
+		void orgId;
+		void load();
+	});
+	async function save() {
+		if (!policy) return;
+		busy = true;
+		try {
+			validateBanPolicy(policy);
+			policy = (await api<{ policy: BanPolicyView }>('PATCH', path, policy)).policy;
+			editing = false;
+			toast('Ban policy saved.', 'ok');
+		} catch (e) {
+			toast(errorMessage(e), 'err');
+		} finally {
+			busy = false;
+		}
+	}
+	function addCategory() {
+		if (!policy) return;
+		let n = 1;
+		while (policy.categories.some((c) => c.id === `category-${n}`)) n++;
+		policy.categories.push({
+			id: `category-${n}`,
+			label: 'New category',
+			description: 'Describe the conduct and evidence required.',
+			action: 'ban',
+			levels: [{ id: 'standard', label: 'Standard', days: 7 }]
+		});
+	}
+</script>
+
+<details class="mb-4 rounded-ctl border border-black bg-ink-950 p-4">
+	<summary class="cursor-pointer font-semibold"
+		>Ban policy matrix {#if policy}— {policy.enabled ? 'enabled' : 'disabled'}{/if}</summary
+	>
+	{#if problem}<p class="mt-3 text-danger">{problem}</p>
+		<button class="btn" onclick={load}>Retry</button>
+	{:else if !policy}<p class="note">Loading policy…</p>
+	{:else}
+		<p class="note mt-3">
+			Suggested community policy. Review durations and evidence standards before enabling. History
+			remains in the existing ban records; severity is selected by a moderator.
+		</p>
+		{#if owner && !editing}<button class="mb-3 btn" onclick={() => (editing = true)}
+				>Configure policy</button
+			>{/if}
+		{#if editing}
+			<label class="mb-4 flex gap-2"
+				><input type="checkbox" bind:checked={policy.enabled} /> Require policy, TicketID and internal
+				description for new manual bans</label
+			>
+			<label class="mb-4 block"
+				><span class="field-label">Standard appeal text</span><input
+					class="input"
+					maxlength="150"
+					bind:value={policy.appealText}
+				/></label
+			>
+		{/if}
+		<div class="space-y-4">
+			{#each policy.categories as c, i (c.id)}
+				<div class="border-t border-white/10 pt-3">
+					{#if editing}
+						<label
+							><span class="field-label">Reason</span><input
+								class="input"
+								maxlength="80"
+								bind:value={c.label}
+							/></label
+						>
+						<label
+							><span class="field-label">Conduct / evidence guidance</span><textarea
+								class="input"
+								maxlength="600"
+								bind:value={c.description}></textarea></label
+						>
+						<label
+							><span class="field-label">Action</span><select
+								class="input"
+								bind:value={c.action}
+								disabled={c.id === 'player-review' || c.id === 'cheating'}
+								onchange={() =>
+									(c.levels =
+										c.action === 'review'
+											? [{ id: 'pending', label: 'Pending review', days: 0 }]
+											: [{ id: 'standard', label: 'Standard', days: c.id === 'cheating' ? 0 : 7 }])}
+								><option value="ban">Ban by severity</option><option value="review"
+									>Permanent ban pending review</option
+								></select
+							></label
+						>
+						{#each c.levels as l, j (l.id)}
+							<div class="mt-2 flex flex-wrap items-end gap-2">
+								<label class="flex-1"
+									><span class="field-label">Severity</span><input
+										class="input"
+										maxlength="100"
+										bind:value={l.label}
+									/></label
+								><label
+									><span class="field-label">Days (0 = permanent)</span><input
+										class="input w-32"
+										type="number"
+										min="0"
+										max="3650"
+										step="1"
+										bind:value={l.days}
+									/></label
+								><button
+									class="btn"
+									disabled={c.levels.length === 1}
+									onclick={() => c.levels.splice(j, 1)}>Remove level</button
+								>
+							</div>
+						{/each}
+						{#if c.action === 'ban'}<button
+								class="mt-2 btn"
+								disabled={c.levels.length >= 4}
+								onclick={() =>
+									c.levels.push({ id: `level-${Date.now()}`, label: 'New severity', days: 7 })}
+								>Add severity</button
+							>{/if}
+						<button
+							class="mt-2 btn"
+							disabled={policy.categories.length === 1}
+							onclick={() => policy?.categories.splice(i, 1)}>Remove category</button
+						>
+					{:else}
+						<div class="font-semibold">{c.label}</div>
+						<p class="note">{c.description}</p>
+						<div class="flex flex-wrap gap-2">
+							{#each c.levels as l (l.id)}<span class="chip"
+									>{l.label}: {durationLabel(l.days)}</span
+								>{/each}
+						</div>
+					{/if}
+				</div>
+			{/each}
+		</div>
+		{#if editing}<div class="mt-4 flex flex-wrap gap-2">
+				<button class="btn" disabled={busy || policy.categories.length >= 12} onclick={addCategory}
+					>Add category</button
+				><button
+					class="btn"
+					disabled={busy}
+					onclick={() => {
+						if (policy) policy.categories = structuredClone(DEFAULT_BAN_POLICY.categories);
+					}}>Use suggested matrix</button
+				><button
+					class="btn"
+					disabled={busy}
+					onclick={async () => {
+						await load();
+						editing = false;
+					}}>Cancel</button
+				><button class="btn btn-primary" disabled={busy} onclick={save}>Save policy</button>
+			</div>{/if}
+		<p class="note mt-3">
+			Existing bans retain their message and enforcement when the module is disabled.
+			Legacy/imported bans remain unchanged. Automatic bans receive an a- reference and internal
+			rule context.
+		</p>
+		<p class="note">Player message ends with: {policy.appealText}</p>
+	{/if}
+</details>

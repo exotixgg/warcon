@@ -12,6 +12,7 @@
 	import BanDialog from '$lib/components/BanDialog.svelte';
 	import EditBanDialog from '$lib/components/EditBanDialog.svelte';
 	import BanMessagePanel from './BanMessagePanel.svelte';
+	import BanPolicyPanel from '$lib/components/BanPolicyPanel.svelte';
 	import ImportCandidates from './ImportCandidates.svelte';
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort, matches } from '$lib/table.svelte';
@@ -48,7 +49,16 @@
 	let rows = $derived(
 		sort.sorted(
 			entries.filter((e) =>
-				matches(search, e.steamId, e.name, banUid(e.id), e.reason, e.addedByName)
+				matches(
+					search,
+					e.steamId,
+					e.name,
+					banUid(e.id),
+					e.reason,
+					e.addedByName,
+					e.moderation?.reference,
+					e.moderation?.description
+				)
 			)
 		)
 	);
@@ -138,7 +148,12 @@
 	</div>
 {/if}
 
+<BanPolicyPanel orgId={org.id} {owner} />
 {#if lists.banMessage !== null}<BanMessagePanel {org} banMessage={lists.banMessage} {owner} />{/if}
+<p class="note">
+	The template above applies to legacy bans. Policy bans use their saved reason, duration, reference
+	and appeal text.
+</p>
 
 <div class="mb-3 flex flex-wrap items-center gap-2">
 	<input
@@ -182,6 +197,12 @@
 					<td><span class="chip">{banUid(e.id)}</span></td>
 					<td class="max-w-[280px]">
 						{#if e.reason}{e.reason}{:else}<span class="text-mist-600">—</span>{/if}
+						{#if e.moderation}<div class="font-mono text-xs text-accent">
+								{e.moderation.reference} · {e.moderation.source}{e.moderation.reviewStatus ===
+								'pending'
+									? ' · Pending review'
+									: ''}
+							</div>{/if}
 					</td>
 					<td>{e.addedByName || '—'}</td>
 					<td class="text-[12.5px] whitespace-nowrap text-mist-400">{fmtTime(e.addedAt)}</td>
@@ -234,6 +255,7 @@
 		placed={`Banned across ${org.name}${editing.addedByName ? ` by ${editing.addedByName}` : ''} on ${fmtTime(editing.addedAt)}.`}
 		reason={editing.reason}
 		expiresAt={editing.expiresAt}
+		moderation={editing.moderation}
 		onclose={() => (editing = null)}
 		ondone={() => invalidateAll()}
 	/>
