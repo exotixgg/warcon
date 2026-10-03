@@ -538,7 +538,8 @@ async function insertInto(
 					entry.expiresAt
 						? Math.max(1, Math.round((entry.expiresAt.getTime() - Date.now()) / 86400000))
 						: 0,
-					entry.addedByName
+					entry.addedByName,
+					entry.expiresAt
 				)
 			: null);
 	if (record) await writeCase(tx, id, record);
@@ -577,8 +578,8 @@ export async function addEntry(
 	const moderation = kind === 'ban' ? await prepareManualBan(env.db, org.id, body) : null;
 	const reason = moderation?.category ?? str(body.reason, 200);
 	const expiresAt = moderation
-		? moderation.days
-			? new Date(Date.now() + moderation.days * 86400000)
+		? moderation.expiresAt
+			? new Date(moderation.expiresAt)
 			: null
 		: parseExpiry(body.expiresAt);
 	const list = await listOf(env, org.id, kind);
@@ -682,8 +683,8 @@ export async function addServerEntry(
 	const moderation = kind === 'ban' ? await prepareManualBan(env.db, org.id, body) : null;
 	const reason = moderation?.category ?? str(body.reason, 200);
 	const expiresAt = moderation
-		? moderation.days
-			? new Date(Date.now() + moderation.days * 86400000)
+		? moderation.expiresAt
+			? new Date(moderation.expiresAt)
 			: null
 		: parseExpiry(body.expiresAt);
 	const list = await serverListOf(env, server, kind);

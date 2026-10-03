@@ -4,6 +4,7 @@
 	import {
 		DEFAULT_BAN_POLICY,
 		DEFAULT_POLICY_MESSAGE,
+		EXPIRY_POLICY_MESSAGE,
 		POLICY_MESSAGE_VARS,
 		banCaseMessage,
 		durationLabel,
@@ -36,7 +37,8 @@
 					Number(days),
 					String(reference),
 					policy!.appealText,
-					policy!.messageTemplate
+					policy!.messageTemplate,
+					Number(days) ? new Date('2026-10-23T17:30:00Z') : null
 				);
 				return { label: String(label), message, error: false };
 			} catch (e) {
@@ -136,13 +138,24 @@
 						if (policy) policy.messageTemplate = DEFAULT_POLICY_MESSAGE;
 					}}>Reset template</button
 				>
+				<button
+					class="btn btn-sm"
+					onclick={() => {
+						if (policy) policy.messageTemplate = EXPIRY_POLICY_MESSAGE;
+					}}>Use expiry template</button
+				>
 			</div>
 		{/if}
 		{#if owner}
 			<p class="note mt-3">
 				<span class="font-mono">{'{reference}'}</span> is the ticket or automation reference: t-12345
-				for manual bans, a-0000001 for automated bans. All four placeholders are required. Internal descriptions
-				are never available as placeholders.
+				for manual bans, a-0000001 for automated bans. Reason, duration, reference and appeal are required.
+				Internal descriptions are never available as placeholders.
+			</p>
+			<p class="note">
+				<span class="font-mono">{'{unban_at}'}</span> optionally adds the exact expiry, for example 23.10.26
+				17:30 UTC, or Permanent for bans without an expiry. The settings preview uses an example date;
+				actual bans use their saved expiry.
 			</p>
 			<div class="my-3 space-y-2 rounded-ctl border border-black bg-ink-950 p-3">
 				{#each samples as sample (sample.label)}
