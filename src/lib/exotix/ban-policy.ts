@@ -1,4 +1,7 @@
 // Internal descriptions are stored separately and never passed to the message formatter.
+import { substituteBanVariables } from '$lib/ban-message';
+export const POLICY_MESSAGE_VARS = ['reason', 'duration', 'reference', 'appeal'] as const;
+export const DEFAULT_POLICY_MESSAGE = '{reason} | {duration} | {reference} | {appeal}';
 export interface BanLevel {
 	id: string;
 	label: string;
@@ -14,6 +17,8 @@ export interface BanCategory {
 export interface BanPolicy {
 	enabled: boolean;
 	appealText: string;
+	/** Missing on policies saved before template support; use the original format. */
+	messageTemplate?: string;
 	categories: BanCategory[];
 }
 export interface BanPolicyView extends BanPolicy {
@@ -32,6 +37,7 @@ export interface BanCaseView {
 	extensions?: { at: string; rule: string; reason: string; expiresAt: string | null }[];
 	appealText: string;
 	message: string;
+	messageTemplate?: string;
 	reviewStatus?: 'pending' | 'resolved';
 }
 const levels = (): BanLevel[] => [
@@ -42,6 +48,7 @@ const levels = (): BanLevel[] => [
 export const DEFAULT_BAN_POLICY: BanPolicy = {
 	enabled: false,
 	appealText: 'Appeal on discord.gg/exotix',
+	messageTemplate: DEFAULT_POLICY_MESSAGE,
 	categories: [
 		{
 			id: 'rule-violation',
@@ -99,11 +106,27 @@ const text = (v: unknown, name: string, max: number) => {
 	return v.trim();
 };
 export const durationLabel = (days: number) => (days === 0 ? 'PERM' : `${days}d`);
+export function validatePolicyMessage(template: string): string {
+	const value = text(template, 'Player message template', 200);
+	const keys = [...value.matchAll(/\{([^{}]+)\}/g)].map((m) => m[1].toLowerCase());
+	if (
+		/[\r\n]/.test(value) ||
+		/[{}]/.test(value.replace(/\{([^{}]+)\}/g, '')) ||
+		keys.some((k) => !(POLICY_MESSAGE_VARS as readonly string[]).includes(k))
+	)
+		throw new Error('Use only {reason}, {duration}, {reference} and {appeal} placeholders.');
+	if (POLICY_MESSAGE_VARS.some((k) => !keys.includes(k)))
+		throw new Error(
+			'Include {reason}, {duration}, {reference} and {appeal} in the player message.'
+		);
+	return value;
+}
 export function banCaseMessage(
 	reason: string,
 	days: number,
 	reference: string,
-	appealText: string
+	appealText: string,
+	messageTemplate = DEFAULT_POLICY_MESSAGE
 ): string {
 	if (
 		!reason.trim() ||
@@ -115,7 +138,12 @@ export function banCaseMessage(
 		/[|\r\n]/.test(appealText)
 	)
 		throw new Error('Invalid ban message fields.');
-	const message = `${reason.trim()} | ${durationLabel(days)} | ${reference} | ${appealText.trim()}`;
+	const message = substituteBanVariables(validatePolicyMessage(messageTemplate), {
+		reason: reason.trim(),
+		duration: durationLabel(days),
+		reference,
+		appeal: appealText.trim()
+	});
 	if (message.length > 200)
 		throw new Error(
 			'The complete player message exceeds 200 characters. Shorten the reason or appeal text.'
@@ -133,6 +161,9 @@ export function validateBanPolicy(value: unknown): BanPolicy {
 	)
 		throw new Error('Use 1–12 categories and an explicit enabled setting.');
 	const appealText = text(p.appealText, 'Appeal text', 150);
+	const messageTemplate = validatePolicyMessage(
+		p.messageTemplate === undefined ? DEFAULT_POLICY_MESSAGE : (p.messageTemplate as string)
+	);
 	const ids = new Set<string>();
 	const categories = p.categories.map((raw): BanCategory => {
 		if (!raw || typeof raw !== 'object') throw new Error('Invalid category.');
@@ -165,12 +196,13 @@ export function validateBanPolicy(value: unknown): BanPolicy {
 				throw new Error('Duration must be whole days from 0 (permanent) to 3650.');
 			if ((c.action === 'review' || id === 'cheating') && l.days !== 0)
 				throw new Error('Cheating and pending review require a permanent duration.');
-			banCaseMessage(label, Number(l.days), 'a-0000001', appealText);
+			// Automation durations may differ from presets; reserve their largest supported label.
+			banCaseMessage(label, 3650, 'a-0000001', appealText, messageTemplate);
 			return { id: lid, label: text(l.label, 'Severity', 100), days: Number(l.days) };
 		});
 		return { id, label, description, action: c.action, levels: ls };
 	});
-	return { enabled: p.enabled, appealText, categories };
+	return { enabled: p.enabled, appealText, messageTemplate, categories };
 }
 export function manualBanCase(policy: BanPolicyView, body: Record<string, unknown>): BanCaseView {
 	if (body.policyVersion !== policy.version)
@@ -194,7 +226,14 @@ export function manualBanCase(policy: BanPolicyView, body: Record<string, unknow
 		presetDays: level.days,
 		description,
 		appealText: policy.appealText,
-		message: banCaseMessage(category.label, level.days, reference, policy.appealText),
+		messageTemplate: policy.messageTemplate ?? DEFAULT_POLICY_MESSAGE,
+		message: banCaseMessage(
+			category.label,
+			level.days,
+			reference,
+			policy.appealText,
+			policy.messageTemplate
+		),
 		...(category.action === 'review' ? { reviewStatus: 'pending' as const } : {})
 	};
 }

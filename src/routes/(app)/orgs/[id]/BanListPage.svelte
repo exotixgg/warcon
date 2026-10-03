@@ -11,7 +11,6 @@
 	import Badge from '$lib/components/Badge.svelte';
 	import BanDialog from '$lib/components/BanDialog.svelte';
 	import EditBanDialog from '$lib/components/EditBanDialog.svelte';
-	import BanMessagePanel from './BanMessagePanel.svelte';
 	import BanPolicyPanel from '$lib/components/BanPolicyPanel.svelte';
 	import ImportCandidates from './ImportCandidates.svelte';
 	import SortHeader from '$lib/components/SortHeader.svelte';
@@ -148,12 +147,12 @@
 	</div>
 {/if}
 
-<BanPolicyPanel orgId={org.id} {owner} />
-{#if lists.banMessage !== null}<BanMessagePanel {org} banMessage={lists.banMessage} {owner} />{/if}
-<p class="note">
-	The template above applies to legacy bans. Policy bans use their saved reason, duration, reference
-	and appeal text.
-</p>
+<BanPolicyPanel orgId={org.id} />
+{#if owner}<p class="note mb-3">
+		<a class="text-accent" href="/orgs/{org.id}/settings"
+			>Configure ban policy and messages in Settings</a
+		>
+	</p>{/if}
 
 <div class="mb-3 flex flex-wrap items-center gap-2">
 	<input
