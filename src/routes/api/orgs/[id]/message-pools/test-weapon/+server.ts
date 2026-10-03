@@ -100,6 +100,6 @@ export const POST = route(async (event) => {
 		message: `Simulated weapon rule kill #${result.count}: ${result.action}`,
 		target: steamId,
 		detail: { poolId: body.poolId, serverId: body.serverId, weaponTag: body.weaponTag, ...result }
-	});
+	}).catch((error) => console.error('[warcon] weapon rule test audit', error));
 	return apiJson({ ok: true, ...result });
 });
