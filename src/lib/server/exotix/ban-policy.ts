@@ -65,7 +65,8 @@ export async function automaticCase(
 	reason: string,
 	days: number,
 	rule: string,
-	expiresAt: Date | null
+	expiresAt: Date | null,
+	playerReason?: string
 ): Promise<BanCaseView | null> {
 	const policy = await policyOf(db, orgId);
 	if (!policy.enabled) return null;
@@ -76,6 +77,27 @@ export async function automaticCase(
 	// Existing rules retain their configured duration; this adds attribution, not a new trigger.
 	const category =
 		policy.categories.find((c) => c.id === 'rule-violation')?.label ?? 'Rule violation';
+	let message: string;
+	try {
+		message = banCaseMessage(
+			playerReason?.trim() || category,
+			days,
+			reference,
+			policy.appealText,
+			policy.messageTemplate,
+			expiresAt
+		);
+	} catch {
+		// A malformed configured reason must never prevent the ban from being written.
+		message = banCaseMessage(
+			category,
+			days,
+			reference,
+			policy.appealText,
+			policy.messageTemplate,
+			expiresAt
+		);
+	}
 	return {
 		policyVersion: policy.version,
 		source: 'automated',
@@ -89,14 +111,7 @@ export async function automaticCase(
 		appealText: policy.appealText,
 		messageTemplate: policy.messageTemplate,
 		description: `Automated ban. Source: ${rule}. Rule reason: ${reason}. Duration: ${days ? `${days} days` : 'permanent'}. Review the trigger and audit history for evidence.`,
-		message: banCaseMessage(
-			category,
-			days,
-			reference,
-			policy.appealText,
-			policy.messageTemplate,
-			expiresAt
-		)
+		message
 	};
 }
 export async function resolveReview(db: DbOrTx, entryId: string): Promise<void> {
