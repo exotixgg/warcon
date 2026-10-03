@@ -102,6 +102,7 @@ const MATRIX: Record<string, Policy | typeof PER_LIST> = {
 	'PATCH api/orgs/[id]/ban-policy': 'orgOwner',
 	'GET api/orgs/[id]/message-pools': 'site',
 	'PUT api/orgs/[id]/message-pools': 'site',
+	'POST api/orgs/[id]/message-pools/test-weapon': 'site',
 	'GET api/orgs/[id]/lists/[kind]/entries': PER_LIST,
 	'POST api/orgs/[id]/lists/[kind]/entries': PER_LIST,
 	'PATCH api/orgs/[id]/lists/[kind]/entries/[steamId]': PER_LIST,

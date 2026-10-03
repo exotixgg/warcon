@@ -61,6 +61,7 @@
 		ban_reference: 't-12345',
 		victim_name: 'Teammate',
 		weapon: 'Id.Item.Example',
+		weapon_type: 'Humvee M249',
 		count: 1
 	};
 	const preview = (pool: MessagePool) =>
@@ -157,6 +158,51 @@
 	function removeThreshold(pool: MessagePool, step: WeaponThreshold) {
 		pool.thresholds = pool.thresholds.filter((value) => value !== step);
 	}
+	let draggedPoolId = $state<string | null>(null);
+	let testSteamIds = $state<Record<string, string>>({});
+	let testServerIds = $state<Record<string, string>>({});
+	let testWeaponTags = $state<Record<string, string>>({});
+	let testResults = $state<Record<string, string>>({});
+	let testBusyId = $state<string | null>(null);
+	const testServers = (pool: MessagePool) =>
+		loaded?.servers.filter((server) => pool.allServers || pool.serverIds.includes(server.id)) ?? [];
+	const defaultTestTag = (pool: MessagePool) =>
+		pool.weaponTags.find((tag) => /WHL_05\.RingTurret/i.test(tag)) ?? pool.weaponTags[0] ?? '';
+	async function testWeapon(pool: MessagePool) {
+		const steamId = testSteamIds[pool.id]?.trim() ?? '';
+		const serverId = testServerIds[pool.id] || testServers(pool)[0]?.id || '';
+		const weaponTag = testWeaponTags[pool.id] || defaultTestTag(pool);
+		if (!/^\d{17}$/.test(steamId) || !serverId || !weaponTag) {
+			toast('Enter a SteamID64 and choose a server and weapon.', 'err');
+			return;
+		}
+		testBusyId = pool.id;
+		try {
+			const result = await api<{
+				count: number;
+				action: string;
+				queued: number;
+				weaponType: string;
+			}>('POST', `${url}/test-weapon`, { poolId: pool.id, serverId, weaponTag, steamId });
+			testResults[pool.id] =
+				`Test kill #${result.count} (${result.weaponType}): ${result.action}, ${result.queued} action queued.`;
+			toast(testResults[pool.id], 'ok');
+		} catch (err) {
+			toast(errorMessage(err), 'err');
+		} finally {
+			testBusyId = null;
+		}
+	}
+	function movePool(targetId: string) {
+		if (!loaded || !draggedPoolId || draggedPoolId === targetId) return;
+		const pools = [...loaded.config.pools];
+		const from = pools.findIndex((pool) => pool.id === draggedPoolId);
+		const to = pools.findIndex((pool) => pool.id === targetId);
+		if (from < 0 || to < 0) return;
+		pools.splice(to, 0, ...pools.splice(from, 1));
+		loaded.config.pools = pools;
+		draggedPoolId = null;
+	}
 	async function save() {
 		if (!loaded) return;
 		try {
@@ -197,8 +243,26 @@
 		{/each}
 	</div>
 	{#each loaded.config.pools as pool (pool.id)}
-		<details class="mb-3 rounded-ctl border border-black bg-ink-900 p-4">
+		<details
+			class="mb-3 rounded-ctl border border-black bg-ink-900 p-4"
+			ondragover={(event) => event.preventDefault()}
+			ondrop={(event) => {
+				event.preventDefault();
+				movePool(pool.id);
+			}}
+		>
 			<summary class="cursor-pointer font-semibold"
+				><span
+					class="mr-2 cursor-grab"
+					draggable="true"
+					role="button"
+					tabindex="0"
+					aria-label="Drag to reorder {pool.name}"
+					ondragstart={(event) => {
+						draggedPoolId = pool.id;
+						event.dataTransfer?.setData('text/plain', pool.id);
+					}}
+					ondragend={() => (draggedPoolId = null)}>↕</span
 				>{pool.name} · {label(pool.action)} · {pool.enabled ? 'On' : 'Off'}</summary
 			>
 			<div class="mt-4 grid gap-3 md:grid-cols-2">
@@ -217,16 +281,14 @@
 						{#each POOL_ACTIONS as action}<option value={action}>{label(action)}</option>{/each}
 					</select>
 				</label>
-				{#if pool.action !== 'weapon' || pool.thresholds.some((step) => step.message === undefined)}
-					<label class="field-label"
-						>Selection
-						<select class="mt-1 input w-full" bind:value={pool.mode}>
-							<option value="ordered">In order</option><option value="random"
-								>Random, no immediate repeat</option
-							>
-						</select>
-					</label>
-				{/if}
+				<label class="field-label"
+					>{pool.action === 'weapon' ? 'Public ban announcement selection' : 'Selection'}
+					<select class="mt-1 input w-full" bind:value={pool.mode}>
+						<option value="ordered">In order</option><option value="random"
+							>Random, no immediate repeat</option
+						>
+					</select>
+				</label>
 				<label class="field-label flex items-center gap-2 pt-5">
 					<input type="checkbox" bind:checked={pool.enabled} /> Enabled
 				</label>
@@ -373,6 +435,24 @@
 									oninput={(event) => (step.message = (event.target as HTMLInputElement).value)}
 								/>
 							</label>
+							{#if step.action === 'ban'}
+								<label class="mt-3 field-label block"
+									>Serverwide ban announcements, one per line (message pool)
+									<textarea
+										class="mt-1 min-h-[90px] input w-full"
+										placeholder={'{player_name} was banned for using {weapon_type} on {server_name}.'}
+										value={(step.announcementMessages ?? []).join('\n')}
+										oninput={(event) =>
+											(step.announcementMessages = (event.target as HTMLTextAreaElement).value
+												.split('\n')
+												.map((value) => value.trim())
+												.filter(Boolean))}></textarea>
+								</label>
+								<p class="note mt-1">
+									Sent to this server only after the ban is saved. Use {`{weapon_type}`} for names such
+									as Humvee minigun, Humvee M249, or Ural Defender M249.
+								</p>
+							{/if}
 						</div>
 					{/each}
 					<p class="note mt-2">
@@ -382,6 +462,54 @@
 					<button type="button" class="mt-2 btn btn-sm" onclick={() => addThreshold(pool)}
 						>+ Threshold</button
 					>
+					<div class="mt-4 rounded-ctl border border-black p-3">
+						<div class="font-semibold">Test one qualifying kill</div>
+						<p class="note mt-1">
+							Each click advances a separate test counter for this SteamID and queues the configured
+							warning or ban. This sends real moderation actions but does not add a kill to player
+							statistics. Save rule changes before testing.
+						</p>
+						<div class="mt-3 flex flex-wrap items-end gap-2">
+							<label class="field-label"
+								>SteamID64<input
+									class="mt-1 input"
+									type="text"
+									inputmode="numeric"
+									maxlength="17"
+									value={testSteamIds[pool.id] ?? ''}
+									oninput={(event) =>
+										(testSteamIds[pool.id] = (event.target as HTMLInputElement).value)}
+								/></label
+							>
+							<label class="field-label"
+								>Server<select
+									class="mt-1 input"
+									value={testServerIds[pool.id] || testServers(pool)[0]?.id || ''}
+									onchange={(event) =>
+										(testServerIds[pool.id] = (event.target as HTMLSelectElement).value)}
+									>{#each testServers(pool) as server}<option value={server.id}
+											>{server.name}</option
+										>{/each}</select
+								></label
+							>
+							<label class="field-label"
+								>Weapon tag<select
+									class="mt-1 input"
+									value={testWeaponTags[pool.id] || defaultTestTag(pool)}
+									onchange={(event) =>
+										(testWeaponTags[pool.id] = (event.target as HTMLSelectElement).value)}
+									>{#each pool.weaponTags as tag}<option value={tag}>{tag}</option>{/each}</select
+								></label
+							>
+							<button
+								type="button"
+								class="btn btn-sm"
+								disabled={testBusyId === pool.id}
+								onclick={() => testWeapon(pool)}>Simulate one kill</button
+							>
+						</div>
+						{#if testResults[pool.id]}<p class="note mt-2">{testResults[pool.id]}</p>{/if}
+					</div>
 				</div>
 			{:else if pool.action === 'timer'}
 				<div class="mt-3 flex flex-wrap gap-3">

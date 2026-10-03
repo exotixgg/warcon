@@ -85,6 +85,17 @@
 			levels: [{ id: 'standard', label: 'Standard', days: 7 }]
 		});
 	}
+	let draggedCategoryId = $state<string | null>(null);
+	function moveCategory(targetId: string) {
+		if (!policy || !draggedCategoryId || draggedCategoryId === targetId) return;
+		const categories = [...policy.categories];
+		const from = categories.findIndex((category) => category.id === draggedCategoryId);
+		const to = categories.findIndex((category) => category.id === targetId);
+		if (from < 0 || to < 0) return;
+		categories.splice(to, 0, ...categories.splice(from, 1));
+		policy.categories = categories;
+		draggedCategoryId = null;
+	}
 </script>
 
 <details class="mb-4 rounded-ctl border border-black bg-ink-950 p-4">
@@ -174,8 +185,28 @@
 		{/if}
 		<div class="space-y-4">
 			{#each policy.categories as c, i (c.id)}
-				<div class="border-t border-white/10 pt-3">
+				<div
+					class="border-t border-white/10 pt-3"
+					role="listitem"
+					ondragover={(event) => event.preventDefault()}
+					ondrop={(event) => {
+						event.preventDefault();
+						moveCategory(c.id);
+					}}
+				>
 					{#if owner && editing}
+						<span
+							class="mb-2 inline-block cursor-grab text-sm"
+							draggable="true"
+							role="button"
+							tabindex="0"
+							aria-label="Drag to reorder {c.label}"
+							ondragstart={(event) => {
+								draggedCategoryId = c.id;
+								event.dataTransfer?.setData('text/plain', c.id);
+							}}
+							ondragend={() => (draggedCategoryId = null)}>↕ Drag to reorder</span
+						>
 						<label
 							><span class="field-label">Reason</span><input
 								class="input"
