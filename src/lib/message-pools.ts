@@ -75,9 +75,31 @@ export const DEFAULT_MESSAGE_POOLS: MessagePoolConfig = {
 
 const BASE = ['server_name', 'map', 'players', 'max_players'];
 export const POOL_VARIABLES: Record<PoolAction, readonly string[]> = {
-	join: [...BASE, 'player_name', 'faction'],
+	join: [
+		...BASE,
+		'player_name',
+		'faction',
+		'welcome_phrase',
+		'server_visit_count',
+		'exotix_visit_count',
+		'server_connected_time',
+		'exotix_connected_time'
+	],
 	round_start: [...BASE, 'winner', 'scores', 'previous_map', 'mvp', 'top'],
-	round_end: [...BASE, 'winner', 'scores', 'previous_map', 'mvp', 'top'],
+	round_end: [
+		...BASE,
+		'winner',
+		'scores',
+		'previous_map',
+		'mvp',
+		'top',
+		'top_kills_name',
+		'top_kills_count',
+		'top_cash_name',
+		'top_cash_gain',
+		'best_kd_name',
+		'best_kd_value'
+	],
 	ban: [...BASE, 'player_name', 'ban_category', 'ban_reason', 'ban_duration', 'ban_reference'],
 	weapon: [...BASE, 'player_name', 'victim_name', 'weapon', 'count'],
 	timer: BASE
@@ -126,7 +148,7 @@ export function validateMessagePools(raw: unknown): MessagePoolConfig {
 		const mode = item.mode;
 		if (mode !== 'ordered' && mode !== 'random') throw new Error('Choose ordered or random.');
 		const maxMessage = a === 'weapon' ? 200 : MAX_CHAT;
-		const messages = distinct(item.messages, 'Messages', 20, maxMessage);
+		const messages = distinct(item.messages, 'Messages', 50, maxMessage);
 		if (!messages.length) throw new Error(`${name}: add at least one message.`);
 		for (const message of messages) {
 			if (/[\r\n]/.test(message)) throw new Error(`${name}: each message must be one line.`);
@@ -262,6 +284,21 @@ export function chooseMessageIndexes(
 		choices.splice(choices.indexOf(index), 1);
 	}
 	return result;
+}
+
+/** Never send a join or round template whose required value is unavailable. */
+export function eligibleMessageIndexes(
+	pool: Pick<MessagePool, 'action' | 'messages'>,
+	values: Record<string, string | number>
+): number[] {
+	if (!['join', 'round_start', 'round_end'].includes(pool.action))
+		return pool.messages.map((_, index) => index);
+	return pool.messages.flatMap((message, index) => {
+		const tokens = [...message.matchAll(/\{([a-z_]+)\}/gi)].map((match) => match[1].toLowerCase());
+		return tokens.every((key) => values[key] !== undefined && String(values[key]).trim() !== '')
+			? [index]
+			: [];
+	});
 }
 
 /** One-pass substitution: values containing braces are inserted literally. */

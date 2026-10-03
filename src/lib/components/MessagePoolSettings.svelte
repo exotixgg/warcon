@@ -39,11 +39,22 @@
 		max_players: 100,
 		player_name: 'PlayerXY',
 		faction: 'Faction',
+		welcome_phrase: 'Welcome back',
+		server_visit_count: 12,
+		exotix_visit_count: 31,
+		server_connected_time: '8h 20m',
+		exotix_connected_time: '24h 10m',
 		winner: 'Faction',
 		scores: 'Faction 100 · Rival 85',
 		previous_map: 'North America',
 		mvp: 'PlayerXY',
 		top: 'PlayerXY 18',
+		top_kills_name: 'PlayerXY',
+		top_kills_count: 18,
+		top_cash_name: 'RichPlayer',
+		top_cash_gain: 2500,
+		best_kd_name: 'PlayerXY',
+		best_kd_value: '4.50',
 		ban_category: 'Cheating',
 		ban_reason: 'Cheating',
 		ban_duration: 'Permanent',
@@ -372,7 +383,7 @@
 			{/if}
 			<div class="mt-4">
 				<label class="field-label"
-					>Messages, one per line
+					>Messages, one per line (up to 50)
 					<textarea
 						class="mt-1 min-h-[110px] input w-full"
 						value={pool.messages.join('\n')}
@@ -385,6 +396,17 @@
 				<p class="note mt-1">
 					Placeholders: {POOL_VARIABLES[pool.action].map((v) => `{${v}}`).join(' · ')}
 				</p>
+				{#if pool.action === 'join'}
+					<p class="note mt-1">
+						Visit counts include this join. Connected time covers recorded sessions; {`{welcome_phrase}`}
+						says Welcome on the first visit and Welcome back later.
+					</p>
+				{:else if pool.action === 'round_end'}
+					<p class="note mt-1">
+						Cash gain is the recorded increase in the round. Best K/D needs at least 10 kills.
+						Messages using unavailable round stats are skipped.
+					</p>
+				{/if}
 				{#if preview(pool)}<p class="note mt-1">Preview: {preview(pool)}</p>{/if}
 			</div>
 			<div class="mt-3 flex flex-wrap gap-3">
