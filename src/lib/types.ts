@@ -580,6 +580,8 @@ export interface ListServerStateView {
 }
 
 export interface ListEntryView {
+	/** Internal ban metadata; only returned by moderator-authorized list views. */
+	moderation?: import('$lib/exotix/ban-policy').BanCaseView | null;
 	id: string;
 	kind: ListKind;
 	steamId: string;
@@ -643,6 +645,8 @@ export interface ImportCandidate {
 
 /** One ban as the server's Bans page shows it. */
 export interface BanState {
+	/** Private description is absent for readers without ban-management permission. */
+	moderation?: import('$lib/exotix/ban-policy').BanCaseView | null;
 	state: ListEntryState;
 	managed: boolean;
 	/** the list a managed ban comes from: the organisation's, or this server's own */

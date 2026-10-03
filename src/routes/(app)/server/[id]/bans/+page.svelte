@@ -17,6 +17,7 @@
 	import { describeSync } from '$lib/lists';
 	import type { Ban, ListSyncServer, ListSyncSummary, ServerListsState } from '$lib/types';
 	import type { PageProps } from './$types';
+	import type { BanCaseView } from '$lib/exotix/ban-policy';
 
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
@@ -46,6 +47,7 @@
 		by: string;
 		reason: string;
 		expiresAt: string | null;
+		moderation?: BanCaseView | null;
 	}
 	const utc = (iso: string) => iso.slice(0, 16).replace('T', ' ');
 	let rows = $derived.by(() => {
@@ -59,7 +61,8 @@
 				bannedAt: (managed && src.addedAt ? utc(src.addedAt) : '') || utc(b?.bannedAtUtc ?? ''),
 				by: (managed && src.addedByName) || b?.bannedBy || '',
 				reason: (managed && src.reason) || b?.reason || '',
-				expiresAt: managed ? src.expiresAt : null
+				expiresAt: managed ? src.expiresAt : null,
+				moderation: src?.moderation
 			};
 		};
 		return [
@@ -80,7 +83,17 @@
 	});
 	let banRows = $derived(
 		sort.sorted(
-			rows.filter((r) => matches(banSearch, r.steamId, steam[r.steamId]?.name, r.by, r.reason))
+			rows.filter((r) =>
+				matches(
+					banSearch,
+					r.steamId,
+					steam[r.steamId]?.name,
+					r.by,
+					r.reason,
+					r.moderation?.reference,
+					r.moderation?.description
+				)
+			)
 		)
 	);
 	let selectedRow = $derived(rows.find((r) => r.steamId === selectedBan) ?? null);
@@ -347,9 +360,15 @@
 							>{b.bannedAt || '—'}</td
 						>
 						<td>{b.by}</td>
-						<td
-							>{#if b.reason}{b.reason}{:else}<span class="text-mist-600">—</span>{/if}</td
-						>
+						<td>
+							{#if b.reason}{b.reason}{:else}<span class="text-mist-600">—</span>{/if}
+							{#if b.moderation}<div class="font-mono text-xs text-accent">
+									{b.moderation.reference} · {b.moderation.source}{b.moderation.reviewStatus ===
+									'pending'
+										? ' · Pending review'
+										: ''}
+								</div>{/if}
+						</td>
 						<td class="whitespace-nowrap">
 							{#if b.source === 'local'}
 								<span class="text-mist-600">—</span>
@@ -386,6 +405,7 @@
 		placed={`Banned ${selectedRow.source === 'here' ? `on ${data.server.name}` : `across ${data.server.orgName}`}${selectedRow.by ? ` by ${selectedRow.by}` : ''}${selectedRow.bannedAt ? ` on ${selectedRow.bannedAt} UTC` : ''}.`}
 		reason={selectedRow.reason}
 		expiresAt={selectedRow.expiresAt}
+		moderation={banSource(selectedRow.steamId)?.moderation}
 		onclose={() => (editing = false)}
 		ondone={refreshBans}
 	/>
