@@ -659,6 +659,8 @@ export function matchBoundary(prev: MatchLook | null, next: MatchLook): MatchEnd
 export interface MatchLineVars {
 	name: string;
 	kills: number;
+	deaths?: number;
+	cashDelta?: number;
 }
 
 /**
