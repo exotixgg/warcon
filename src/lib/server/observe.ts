@@ -35,6 +35,7 @@ import {
 	type TickContext
 } from './triggers';
 import { applyTriggerUpdates, enqueueIntents, wakeDelivery } from './outbox';
+import { queueObservationPools } from './exotix/message-pools';
 import {
 	kickBanned,
 	liveObserved,
@@ -456,6 +457,8 @@ const sampleKeyOf = (m: ServerMemory) =>
 
 // ---- the observation ----------------------------------------------------------------------------
 
+const poolCheckedAt = new Map<string, number>();
+
 export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKinds): Promise<void> {
 	const started = Date.now();
 	const ts = new Date(started);
@@ -595,6 +598,9 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	}
 
 	const s = settings();
+	const poolCheck =
+		!!m.status &&
+		(joined.length > 0 || !!matchEnd || started - (poolCheckedAt.get(server.id) ?? 0) >= 30_000);
 	const heartbeatDue = started - m.presence.heartbeatAt >= s.sessionHeartbeatMs;
 	const liveKey = liveKeyOf(m);
 	const liveDue = liveKey !== m.liveKey || started - m.liveWrittenAt >= LIVE_HEARTBEAT_MS;
@@ -615,6 +621,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	// remembered from when they joined.
 	for (const { player: p } of diff.factioned)
 		if (m.presence.open.get(p.steamId)?.firstVisit) firstVisit.add(p.steamId);
+	const matchLines = matchEnd ? closeTallies(m.tallies, prevStatusAt).rows : [];
 	const ev =
 		m.status && rows.length
 			? await evaluateTriggers(
@@ -644,7 +651,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 						matchEnd,
 						recovered: wasOffline,
 						// the lines the match stage will write, for the broadcast's {mvp} and {top}
-						matchLines: matchEnd ? closeTallies(m.tallies, prevStatusAt).rows : [],
+						matchLines,
 						ts
 					},
 					rows
@@ -674,8 +681,14 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 		diff.stayed.some((x) => sideMoved(x.session));
 	if (riskWaitNote.length) ev.updates.push(...riskWaitNote);
 	const needWrite =
-		presenceDue || ev.intents.length > 0 || ev.updates.length > 0 || liveDue || sampleDue;
+		presenceDue ||
+		ev.intents.length > 0 ||
+		ev.updates.length > 0 ||
+		liveDue ||
+		sampleDue ||
+		poolCheck;
 	let intents = 0;
+	let poolIntents = 0;
 	/** watch-only rows written by this look, announced after the commit */
 	const watched: number[] = [];
 	let saved = false;
@@ -694,6 +707,17 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 						teams
 					);
 				if (ev.intents.length) intents = await enqueueIntents(tx, server.id, ev.intents, watched);
+				if (poolCheck && m.status)
+					poolIntents = await queueObservationPools(
+						tx,
+						server,
+						m.status,
+						joined,
+						firstVisit,
+						matchEnd,
+						matchLines,
+						ts
+					);
 				if (ev.updates.length) await applyTriggerUpdates(tx, ev.updates);
 				if (liveDue) await writeLive(tx, m, ts);
 				if (sampleDue) await writeSample(tx, m, ts, latencyMs);
@@ -707,6 +731,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 			m.sampleWrittenAt = started;
 		}
 		for (const f of ev.afterCommit ?? []) f();
+		if (poolCheck) poolCheckedAt.set(server.id, started);
 		// A watch-only rule's rows never pass through delivery, which announces the rest.
 		for (const id of watched) emit({ type: 'outbox', serverId: server.id, id, state: 'skipped' });
 		if (riskWaitNote.length) m.riskWaitNoted = true;
@@ -727,7 +752,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 		console.warn(`[warcon] observation of ${server.name} not saved:`, publicMessage(err));
 	}
 	emit({ type: 'live', live: liveView(m) });
-	if (intents) wakeDelivery();
+	if (intents || poolIntents) wakeDelivery();
 	// After the write: a failed one reloads the presence and sees the same joins again.
 	if (saved && joined.length && isOwner())
 		void notifyWatchedJoins(env, server.id, m.status?.serverName || server.name, joined);
