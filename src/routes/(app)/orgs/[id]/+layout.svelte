@@ -22,7 +22,8 @@
 		['/roles', 'Roles', 'owner'],
 		['/players', 'Players', 'any'],
 		['/bans', 'Ban list', 'ban'],
-		['/reserved', 'Reserved slots', 'reserve']
+		['/reserved', 'Reserved slots', 'reserve'],
+		['/settings', 'Settings', 'owner']
 	] as const;
 	let tabs = $derived(
 		TABS.filter(
