@@ -5,6 +5,7 @@ import { ApiError, apiJson, param, readJson, route } from '$lib/server/http';
 import { playerSessions, servers } from '$lib/server/db/schema';
 import { requireSteamId } from '$lib/server/steam';
 import { causeKind, causeLabel } from '$lib/causes';
+import { VEHICLE_TAGS } from '$lib/kills';
 import { effectivePools } from '$lib/message-pools';
 import {
 	poolConfigOf,
@@ -43,7 +44,11 @@ export const POST = route(async (event) => {
 		const weaponTag = pool.weaponTags.find(
 			(tag) => tag.toLowerCase() === (body.weaponTag as string).toLowerCase()
 		);
-		if (!weaponTag || causeKind(weaponTag) === 'vehicle')
+		if (
+			!weaponTag ||
+			causeKind(weaponTag) === 'vehicle' ||
+			VEHICLE_TAGS.some((tag) => tag.toLowerCase() === weaponTag.toLowerCase())
+		)
 			throw new ApiError(400, 'Choose one of the rule’s exact weapon tags, not a roadkill tag.');
 		const key = weaponRuleTestKey(pool);
 		const [counter] = await tx.execute<{ count: number }>(sql`

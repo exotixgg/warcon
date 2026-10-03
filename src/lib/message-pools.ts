@@ -1,4 +1,5 @@
 import { MAX_CHAT } from './chat';
+import { VEHICLE_TAGS } from './kills';
 
 export const POOL_ACTIONS = ['join', 'round_start', 'round_end', 'ban', 'weapon', 'timer'] as const;
 export type PoolAction = (typeof POOL_ACTIONS)[number];
@@ -197,6 +198,8 @@ export function validateMessagePools(raw: unknown): MessagePoolConfig {
 			throw new Error(`${name}: add at least one kill-feed weapon tag.`);
 		if (weaponTags.some((tag) => !/^[A-Za-z0-9_.-]+$/.test(tag)))
 			throw new Error(`${name}: weapon tags must match the kill feed exactly.`);
+		if (a === 'weapon' && weaponTags.some((tag) => VEHICLE_TAGS.some((vehicleTag) => vehicleTag.toLowerCase() === tag.toLowerCase())))
+			throw new Error(`${name}: roadkill and vehicle explosion tags cannot be weapon rules.`);
 		const persistentCounts = bool(item.persistentCounts ?? false, 'Persistent weapon counts');
 		const trackingSince = item.trackingSince;
 		if (
