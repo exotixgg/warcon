@@ -107,8 +107,11 @@
 		};
 		if (action === 'ban')
 			pool.messages = ['{player_name} was banned for {ban_category} ({ban_duration}).'];
-		if (action === 'weapon')
+		if (action === 'weapon') {
 			pool.messages = ['{player_name}: {weapon} is not allowed on {server_name}.'];
+			pool.thresholds[0].message =
+				'Warning: {weapon} is not allowed on {server_name}. Further kills may result in a ban.';
+		}
 		if (action === 'round_start') pool.messages = ['New round on {map}. Good luck!'];
 		if (action === 'round_end') pool.messages = ['Round over: {winner} wins on {previous_map}.'];
 		if (action === 'timer') pool.messages = ['Enjoying {server_name}? Invite a friend!'];
@@ -141,7 +144,13 @@
 		const next = Math.max(0, ...pool.thresholds.map((step) => step.count)) + 1;
 		pool.thresholds = [
 			...pool.thresholds,
-			{ count: next, action: 'whisper', days: 1, scope: 'server' }
+			{
+				count: next,
+				action: 'whisper',
+				days: 1,
+				scope: 'server',
+				message: pool.messages[0] ?? 'Weapon rule violation.'
+			}
 		];
 	}
 	function removeThreshold(pool: MessagePool, step: WeaponThreshold) {
@@ -207,14 +216,16 @@
 						{#each POOL_ACTIONS as action}<option value={action}>{label(action)}</option>{/each}
 					</select>
 				</label>
-				<label class="field-label"
-					>Selection
-					<select class="mt-1 input w-full" bind:value={pool.mode}>
-						<option value="ordered">In order</option><option value="random"
-							>Random, no immediate repeat</option
-						>
-					</select>
-				</label>
+				{#if pool.action !== 'weapon' || pool.thresholds.some((step) => step.message === undefined)}
+					<label class="field-label"
+						>Selection
+						<select class="mt-1 input w-full" bind:value={pool.mode}>
+							<option value="ordered">In order</option><option value="random"
+								>Random, no immediate repeat</option
+							>
+						</select>
+					</label>
+				{/if}
 				<label class="field-label flex items-center gap-2 pt-5">
 					<input type="checkbox" bind:checked={pool.enabled} /> Enabled
 				</label>
@@ -302,46 +313,65 @@
 						Counts reset each match. Each exact threshold acts once for that player.
 					</p>
 					{#each pool.thresholds as step, i (i)}
-						<div class="mt-2 flex flex-wrap items-end gap-2">
-							<label class="field-label"
-								>At kill #<input
-									class="mt-1 input w-20"
-									type="number"
-									min="1"
-									max="100"
-									bind:value={step.count}
-								/></label
-							>
-							<label class="field-label"
-								>Action<select class="mt-1 input" bind:value={step.action}>
-									<option value="whisper">Whisper</option><option value="kick">Kick</option><option
-										value="ban">Ban</option
-									>
-								</select></label
-							>
-							{#if step.action === 'ban'}
+						<div class="mt-3 rounded-ctl border border-black p-3">
+							<div class="flex flex-wrap items-end gap-2">
 								<label class="field-label"
-									>Days (0 = permanent)<input
-										class="mt-1 input w-24"
+									>At kill #<input
+										class="mt-1 input w-20"
 										type="number"
-										min="0"
-										max="3650"
-										bind:value={step.days}
+										min="1"
+										max="100"
+										bind:value={step.count}
 									/></label
 								>
 								<label class="field-label"
-									>Scope<select class="mt-1 input" bind:value={step.scope}>
-										<option value="server">This server</option><option value="org"
-											>All organisation servers</option
-										>
+									>Action<select class="mt-1 input" bind:value={step.action}>
+										<option value="whisper">Whisper</option><option value="kick">Kick</option
+										><option value="ban">Ban</option>
 									</select></label
 								>
-							{/if}
-							<button type="button" class="btn btn-sm" onclick={() => removeThreshold(pool, step)}
-								>Remove</button
-							>
+								{#if step.action === 'ban'}
+									<label class="field-label"
+										>Days (0 = permanent)<input
+											class="mt-1 input w-24"
+											type="number"
+											min="0"
+											max="3650"
+											bind:value={step.days}
+										/></label
+									>
+									<label class="field-label"
+										>Scope<select class="mt-1 input" bind:value={step.scope}>
+											<option value="server">This server</option><option value="org"
+												>All organisation servers</option
+											>
+										</select></label
+									>
+								{/if}
+								<button type="button" class="btn btn-sm" onclick={() => removeThreshold(pool, step)}
+									>Remove</button
+								>
+							</div>
+							<label class="mt-3 field-label block"
+								>{step.action === 'whisper'
+									? 'Private warning message'
+									: step.action === 'kick'
+										? 'Kick reason'
+										: 'Ban reason'}
+								<input
+									class="mt-1 input w-full"
+									type="text"
+									maxlength="200"
+									value={step.message ?? pool.messages[0] ?? ''}
+									oninput={(event) => (step.message = (event.target as HTMLInputElement).value)}
+								/>
+							</label>
 						</div>
 					{/each}
+					<p class="note mt-2">
+						Placeholders: {POOL_VARIABLES.weapon.map((v) => `{${v}}`).join(' · ')}. Each step sends
+						its own text.
+					</p>
 					<button type="button" class="mt-2 btn btn-sm" onclick={() => addThreshold(pool)}
 						>+ Threshold</button
 					>
@@ -381,44 +411,50 @@
 					>
 				</div>
 			{/if}
-			<div class="mt-4">
-				<label class="field-label"
-					>Messages, one per line (up to 50)
-					<textarea
-						class="mt-1 min-h-[110px] input w-full"
-						value={pool.messages.join('\n')}
-						oninput={(event) =>
-							(pool.messages = (event.target as HTMLTextAreaElement).value
-								.split('\n')
-								.map((v) => v.trim())
-								.filter(Boolean))}></textarea>
-				</label>
-				<p class="note mt-1">
-					Placeholders: {POOL_VARIABLES[pool.action].map((v) => `{${v}}`).join(' · ')}
-				</p>
-				{#if pool.action === 'join'}
+			{#if pool.action !== 'weapon' || pool.thresholds.some((step) => step.message === undefined)}
+				<div class="mt-4">
+					<label class="field-label"
+						>{pool.action === 'weapon'
+							? 'Legacy shared messages (used by thresholds without their own message)'
+							: 'Messages, one per line (up to 50)'}
+						<textarea
+							class="mt-1 min-h-[110px] input w-full"
+							value={pool.messages.join('\n')}
+							oninput={(event) =>
+								(pool.messages = (event.target as HTMLTextAreaElement).value
+									.split('\n')
+									.map((v) => v.trim())
+									.filter(Boolean))}></textarea>
+					</label>
 					<p class="note mt-1">
-						Visit counts include this join. Connected time covers recorded sessions; {`{welcome_phrase}`}
-						says Welcome on the first visit and Welcome back later.
+						Placeholders: {POOL_VARIABLES[pool.action].map((v) => `{${v}}`).join(' · ')}
 					</p>
-				{:else if pool.action === 'round_end'}
-					<p class="note mt-1">
-						Cash gain is the recorded increase in the round. Best K/D needs at least 10 kills.
-						Messages using unavailable round stats are skipped.
-					</p>
-				{/if}
-				{#if preview(pool)}<p class="note mt-1">Preview: {preview(pool)}</p>{/if}
-			</div>
+					{#if pool.action === 'join'}
+						<p class="note mt-1">
+							Visit counts include this join. Connected time covers recorded sessions; {`{welcome_phrase}`}
+							says Welcome on the first visit and Welcome back later.
+						</p>
+					{:else if pool.action === 'round_end'}
+						<p class="note mt-1">
+							Cash gain is the recorded increase in the round. Best K/D needs at least 10 kills.
+							Messages using unavailable round stats are skipped.
+						</p>
+					{/if}
+					{#if preview(pool)}<p class="note mt-1">Preview: {preview(pool)}</p>{/if}
+				</div>
+			{/if}
 			<div class="mt-3 flex flex-wrap gap-3">
-				<label class="field-label"
-					>Messages per event<input
-						class="mt-1 input w-24"
-						type="number"
-						min="1"
-						max="5"
-						bind:value={pool.sendCount}
-					/></label
-				>
+				{#if pool.action !== 'weapon' || pool.thresholds.some((step) => step.message === undefined)}
+					<label class="field-label"
+						>Messages per event<input
+							class="mt-1 input w-24"
+							type="number"
+							min="1"
+							max="5"
+							bind:value={pool.sendCount}
+						/></label
+					>
+				{/if}
 				<label class="field-label"
 					>First delay (seconds)<input
 						class="mt-1 input w-24"
@@ -428,15 +464,17 @@
 						bind:value={pool.initialDelaySeconds}
 					/></label
 				>
-				<label class="field-label"
-					>Between messages (seconds)<input
-						class="mt-1 input w-24"
-						type="number"
-						min="0"
-						max="300"
-						bind:value={pool.spacingSeconds}
-					/></label
-				>
+				{#if pool.action !== 'weapon' || pool.thresholds.some((step) => step.message === undefined)}
+					<label class="field-label"
+						>Between messages (seconds)<input
+							class="mt-1 input w-24"
+							type="number"
+							min="0"
+							max="300"
+							bind:value={pool.spacingSeconds}
+						/></label
+					>
+				{/if}
 			</div>
 			<div class="mt-4 flex justify-end">
 				<button
