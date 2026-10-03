@@ -100,6 +100,7 @@
 			banSources: ['policy', 'legacy', 'automatic'],
 			weaponTags: [],
 			teamKillsOnly: false,
+			persistentCounts: false,
 			thresholds: [{ count: 1, action: 'whisper', days: 1, scope: 'server' }],
 			everyMinutes: 10,
 			minPlayers: 1,
@@ -309,8 +310,14 @@
 					<label class="mt-2 field-label flex items-center gap-2"
 						><input type="checkbox" bind:checked={pool.teamKillsOnly} /> Team kills only</label
 					>
+					<label class="mt-2 field-label flex items-center gap-2"
+						><input type="checkbox" bind:checked={pool.persistentCounts} /> Count across matches and selected
+						servers</label
+					>
 					<p class="note mt-1">
-						Counts reset each match. Each exact threshold acts once for that player.
+						{pool.persistentCounts
+							? 'Counts start when this option is saved and continue across matches and selected servers. Changing weapons or selected servers starts a new count. A final ban threshold applies again to later prohibited kills.'
+							: 'Counts reset each match. Each exact threshold acts once for that player.'}
 					</p>
 					{#each pool.thresholds as step, i (i)}
 						<div class="mt-3 rounded-ctl border border-black p-3">
