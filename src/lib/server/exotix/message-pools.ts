@@ -188,7 +188,8 @@ export async function queuePoolEvent(
 						playerName: event.values.player_name,
 						victimName: event.values.victim_name,
 						count: event.values.count,
-						thresholdCount: event.threshold?.count
+						thresholdCount: event.threshold?.count,
+						banMessageTemplate: event.threshold?.banMessageTemplate
 					}
 				: action === 'kick'
 					? { steamId: event.steamId, reason: message }

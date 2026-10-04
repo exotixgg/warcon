@@ -47,6 +47,8 @@ export interface BanCaseView {
 	appealText: string;
 	message: string;
 	messageTemplate?: string;
+	/** The policy reason used to render an automated case after an extension. */
+	playerReason?: string;
 	reviewStatus?: 'pending' | 'resolved';
 	/** Exact list-entry expiry, snapshotted with new cases; absent on historical cases. */
 	expiresAt?: string | null;

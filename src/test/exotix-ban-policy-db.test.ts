@@ -258,15 +258,30 @@ describe.skipIf(!hasTestDb)('EXOTIX structured bans on a real database', () => {
 		);
 		expect(autoCase.message).not.toContain(PRIVATE);
 		const weaponReason = 'Infantry weapon rule: second prohibited kill';
+		const weaponTemplate = '{reason} | {duration} | Unban: {unban_at} | {reference} | {appeal}';
 		const weapon = await grantEntry(env, list, {
 			steamId: '76561198000000883',
 			reason: weaponReason,
 			playerReason: weaponReason,
+			playerMessageTemplate: weaponTemplate,
 			expiresAt: new Date(Date.now() + 7 * 86400_000),
 			addedByName: 'trigger: Infantry Weapon Rule'
 		});
 		const weaponCase = (await caseOf(env.db, weapon.id))!;
 		expect(weaponCase.message).toContain(`${weaponReason} | 7d |`);
+		expect(weaponCase.message).toContain('Unban: ');
+		expect(weaponCase.messageTemplate).toBe(weaponTemplate);
+		const oversized = await grantEntry(env, list, {
+			steamId: '76561198000000885',
+			reason: weaponReason,
+			playerReason: weaponReason,
+			playerMessageTemplate: `${'X'.repeat(145)} {reason} {duration} {reference} {appeal}`,
+			expiresAt: new Date(Date.now() + 7 * 86400_000),
+			addedByName: 'trigger: Infantry Weapon Rule'
+		});
+		const fallbackCase = (await caseOf(env.db, oversized.id))!;
+		expect(fallbackCase.message).toContain('Rule violation | 7d |');
+		expect(fallbackCase.messageTemplate).toBe(messageTemplate);
 		const malformed = await grantEntry(env, list, {
 			steamId: '76561198000000884',
 			reason: 'Unsafe | source reason',
@@ -287,6 +302,20 @@ describe.skipIf(!hasTestDb)('EXOTIX structured bans on a real database', () => {
 			},
 			{ lengthen: true }
 		);
+		await grantEntry(
+			env,
+			list,
+			{
+				steamId: '76561198000000883',
+				reason: weaponReason,
+				expiresAt: new Date(Date.now() + 30 * 86400000),
+				addedByName: 'trigger: extend'
+			},
+			{ lengthen: true }
+		);
+		const extendedWeapon = (await caseOf(env.db, weapon.id))!;
+		expect(extendedWeapon.message).toContain(`${weaponReason} | 30d | Unban: `);
+		expect(extendedWeapon.messageTemplate).toBe(weaponTemplate);
 		expect((await caseOf(env.db, entries[0].id))!.message).toBe(
 			't-00123: Griefing | 30d | Appeal on discord.gg/exotix'
 		);
