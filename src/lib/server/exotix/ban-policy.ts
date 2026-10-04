@@ -3,6 +3,7 @@ import type { DbOrTx } from '../db';
 import { ApiError } from '../http';
 import {
 	DEFAULT_BAN_POLICY,
+	DEFAULT_POLICY_MESSAGE,
 	manualBanCase,
 	banCaseMessage,
 	validateBanPolicy,
@@ -66,7 +67,8 @@ export async function automaticCase(
 	days: number,
 	rule: string,
 	expiresAt: Date | null,
-	playerReason?: string
+	playerReason?: string,
+	playerMessageTemplate?: string
 ): Promise<BanCaseView | null> {
 	const policy = await policyOf(db, orgId);
 	if (!policy.enabled) return null;
@@ -77,26 +79,42 @@ export async function automaticCase(
 	// Existing rules retain their configured duration; this adds attribution, not a new trigger.
 	const category =
 		policy.categories.find((c) => c.id === 'rule-violation')?.label ?? 'Rule violation';
+	const reasonForPlayer = playerReason?.trim() || category;
+	let messageTemplate = playerMessageTemplate ?? policy.messageTemplate;
 	let message: string;
+	let renderedReason = reasonForPlayer;
 	try {
 		message = banCaseMessage(
-			playerReason?.trim() || category,
+			reasonForPlayer,
 			days,
 			reference,
 			policy.appealText,
-			policy.messageTemplate,
+			messageTemplate,
 			expiresAt
 		);
 	} catch {
-		// A malformed configured reason must never prevent the ban from being written.
-		message = banCaseMessage(
-			category,
-			days,
-			reference,
-			policy.appealText,
-			policy.messageTemplate,
-			expiresAt
-		);
+		// A malformed or overlong rule message must not prevent the ban from being written.
+		try {
+			renderedReason = category;
+			message = banCaseMessage(
+				category,
+				days,
+				reference,
+				policy.appealText,
+				messageTemplate,
+				expiresAt
+			);
+		} catch {
+			messageTemplate = policy.messageTemplate;
+			message = banCaseMessage(
+				category,
+				days,
+				reference,
+				policy.appealText,
+				messageTemplate,
+				expiresAt
+			);
+		}
 	}
 	return {
 		policyVersion: policy.version,
@@ -109,7 +127,8 @@ export async function automaticCase(
 		presetDays: days,
 		expiresAt: expiresAt?.toISOString() ?? null,
 		appealText: policy.appealText,
-		messageTemplate: policy.messageTemplate,
+		messageTemplate,
+		playerReason: renderedReason,
 		description: `Automated ban. Source: ${rule}. Rule reason: ${reason}. Duration: ${days ? `${days} days` : 'permanent'}. Review the trigger and audit history for evidence.`,
 		message
 	};
@@ -146,13 +165,27 @@ export async function refreshCaseDuration(
 		...(c.extensions ?? []),
 		{ at: new Date().toISOString(), rule, reason, expiresAt: expiresAt?.toISOString() ?? null }
 	];
-	c.message = banCaseMessage(
-		c.category,
-		c.days,
-		c.reference,
-		c.appealText,
-		c.messageTemplate,
-		expiresAt
-	);
+	try {
+		c.message = banCaseMessage(
+			c.playerReason ?? c.category,
+			c.days,
+			c.reference,
+			c.appealText,
+			c.messageTemplate,
+			expiresAt
+		);
+	} catch (err) {
+		if (c.source !== 'automated') throw err;
+		c.playerReason = c.category;
+		c.messageTemplate = DEFAULT_POLICY_MESSAGE;
+		c.message = banCaseMessage(
+			c.category,
+			c.days,
+			c.reference,
+			c.appealText,
+			c.messageTemplate,
+			expiresAt
+		);
+	}
 	await writeCase(db, entryId, c);
 }

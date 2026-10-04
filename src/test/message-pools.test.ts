@@ -106,6 +106,33 @@ describe('message pools', () => {
 		expect(validateMessagePools({ pools: [distinctSteps] }).pools[0].thresholds).toEqual(
 			distinctSteps.thresholds
 		);
+		const playerTemplate = '{reason} | {duration} | Unban: {unban_at} | {reference} | {appeal}';
+		expect(
+			validateMessagePools({
+				pools: [
+					{
+						...weapon,
+						thresholds: [
+							...weapon.thresholds.slice(0, 2),
+							{ ...weapon.thresholds[2], banMessageTemplate: playerTemplate }
+						]
+					}
+				]
+			}).pools[0].thresholds[2].banMessageTemplate
+		).toBe(playerTemplate);
+		expect(() =>
+			validateMessagePools({
+				pools: [
+					{
+						...weapon,
+						thresholds: [
+							{ ...weapon.thresholds[0], banMessageTemplate: playerTemplate },
+							...weapon.thresholds.slice(1)
+						]
+					}
+				]
+			})
+		).toThrow('requires a ban step');
 		expect(() =>
 			validateMessagePools({
 				pools: [

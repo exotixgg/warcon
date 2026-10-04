@@ -26,6 +26,8 @@ export interface PanelBanParams {
 	victimName?: string;
 	count?: number;
 	thresholdCount?: number;
+	/** Player-facing policy template configured for this weapon ban step. */
+	banMessageTemplate?: string;
 }
 
 /** What a rule that bans needs of whoever saves it: what a ban by hand on that list needs. */
