@@ -12,6 +12,7 @@
 		type PoolAction,
 		type WeaponThreshold
 	} from '$lib/message-pools';
+	import { EXPIRY_POLICY_MESSAGE, POLICY_MESSAGE_VARS } from '$lib/exotix/ban-policy';
 
 	let { org }: { org: { id: string; name: string } } = $props();
 	type Loaded = {
@@ -440,6 +441,30 @@
 								/>
 							</label>
 							{#if step.action === 'ban'}
+								<p class="note mt-1">
+									This reason fills {`{reason}`} in the player's ban message. Weapon placeholders such
+									as {`{weapon_type}`} are available here.
+								</p>
+								<label class="mt-3 field-label block"
+									>Player ban message template (optional)
+									<input
+										class="mt-1 input w-full"
+										type="text"
+										maxlength="200"
+										placeholder={EXPIRY_POLICY_MESSAGE}
+										value={step.banMessageTemplate ?? ''}
+										oninput={(event) => {
+											const value = (event.target as HTMLInputElement).value;
+											if (value.trim()) step.banMessageTemplate = value;
+											else delete step.banMessageTemplate;
+										}}
+									/>
+								</label>
+								<p class="note mt-1">
+									Blank uses the organisation's Ban Policy template. Available here:
+									{POLICY_MESSAGE_VARS.map((v) => `{${v}}`).join(' · ')}. The completed player
+									message must fit 200 characters.
+								</p>
 								<label class="mt-3 field-label block"
 									>Serverwide ban announcements, one per line (message pool)
 									<textarea

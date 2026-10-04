@@ -644,6 +644,7 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 					days: 7,
 					scope: 'org',
 					message: 'Private ban reason.',
+					banMessageTemplate: '{reason} | {duration} | Unban: {unban_at} | {reference} | {appeal}',
 					announcementMessages: [
 						'{player_name} was banned for using {weapon_type}.',
 						'Ban: {player_name} used {weapon_type}.'
@@ -679,6 +680,7 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 		)[0];
 		expect(banAction.params).toMatchObject({
 			reason: 'Private ban reason.',
+			banMessageTemplate: '{reason} | {duration} | Unban: {unban_at} | {reference} | {appeal}',
 			weaponType: 'Humvee M249',
 			thresholdCount: 2
 		});
