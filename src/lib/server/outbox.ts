@@ -471,9 +471,9 @@ async function release(env: Env, row: OutboxRow): Promise<void> {
 async function deliverOne(env: Env, row: OutboxRow): Promise<'held' | 'refused' | void> {
 	if (row.action === 'seed_reward') return deliverSeedReward(env, row);
 	if (row.action === PANEL_BAN) return deliverPanelBan(env, row);
-	// An alert-only Name filter match, a Kill rate or Kill distance flag, or a Kill distance rule's
-	// note of a kill it left out: the audit row (and, but for the note, its Discord card) is the
-	// whole delivery.
+	// An alert-only Name filter match, a Name change, Kill rate or Kill distance flag, or a Kill
+	// distance rule's note of a kill it left out: the audit row (and, but for the note, its Discord
+	// card) is the whole delivery.
 	if (
 		row.action === NAME_FLAG ||
 		row.action === KILL_RATE_FLAG ||

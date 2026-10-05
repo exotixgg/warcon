@@ -2,8 +2,8 @@
 // event bus (the SSE route fans them to browsers; in the split roles every web process gets them
 // through the relay stream), and the team-kill rules get their turn. Their intents go through
 // the same outbox as every other trigger, so delivery, audit and the Discord mirror are shared.
-// The Kill rate and Kill distance rules see every batch; the rest of the work is for batches with
-// team kills.
+// The Kill rate, Kill distance and Name change rules see every batch; the rest of the work is for
+// batches with team kills.
 import { and, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { emit } from './events';
@@ -47,6 +47,14 @@ import {
 	type KillDistanceConfig,
 	type LastDeaths
 } from './kill-distance';
+import {
+	nameChangeSettingsKey,
+	nameChangeStep,
+	pruneNameTracks,
+	type NameChangeConfig,
+	type NameTracks
+} from './name-change';
+import { NAME_FLAG } from './name-filter';
 import { applyTriggerUpdates, enqueueIntents, wakeDelivery } from './outbox';
 import { LostOwnership, withOwnedTransaction } from './leadership';
 import { memoryOf } from './observe';
@@ -78,6 +86,12 @@ export async function onKillsIngested(
 	} catch (err) {
 		if (!(err instanceof LostOwnership))
 			console.warn(`[warcon] kill-distance rules on ${serverId}:`, publicMessage(err));
+	}
+	try {
+		await actOnNameChange(env, serverId, kills, vars);
+	} catch (err) {
+		if (!(err instanceof LostOwnership))
+			console.warn(`[warcon] name-change rules on ${serverId}:`, publicMessage(err));
 	}
 	const teamKills = kills.filter((k) => k.teamKill && k.killer);
 	if (!teamKills.length) return;
@@ -354,10 +368,136 @@ async function actOnKillDistance(
 }
 
 /**
- * The placeholders of a message about a kill's killer: the server as the worker last saw it, the
- * killer (their side as the kill has it, their ping from the last player list) and their stats,
- * read once per player for the whole batch, whichever rules ask. Nothing is looked at until a rule
- * acts.
+ * Each Name change rule's tracks in this process's memory, by rule: the players the feed has shown
+ * under a name not their own, with their changes within the window, and the settings they were
+ * counted under (an edit starts them over). A restart or a handover forgets them, so a change across
+ * one is missed, never made up. Kept only for servers with the rule on.
+ */
+const nameTracks = new Map<
+	string,
+	{ serverId: string; settings: string; prunedAt: number; tracks: NameTracks }
+>();
+/** How often a rule's tracks are swept of players not named within its window. */
+const NAME_PRUNE_MS = 60_000;
+
+/** Forgets the Name change tracks of one server (removed from the worker), or of every server. */
+export function forgetNameChange(serverId?: string): void {
+	if (!serverId) return nameTracks.clear();
+	for (const [id, t] of nameTracks) if (t.serverId === serverId) nameTracks.delete(id);
+}
+
+async function actOnNameChange(
+	env: Env,
+	serverId: string,
+	batch: KillView[],
+	vars: KillerVars
+): Promise<void> {
+	const rows = (await enabledTriggers(env, serverId)).filter((r) => r.kind === 'name_change');
+	const live = new Set(rows.map((r) => r.id));
+	for (const [id, t] of nameTracks)
+		if (t.serverId === serverId && !live.has(id)) nameTracks.delete(id);
+	if (!rows.length) return;
+	// The names the server lists its players under now: nothing to hold the feed against while the
+	// list is empty (a map loading) or not read yet.
+	const m = memoryOf(serverId);
+	const listed = new Map((m?.players ?? []).map((p) => [p.steamId, p.name]));
+	if (!listed.size) return;
+	// Both players of every kill as the feed named them, in the order the game played them; a
+	// suicide names its player once.
+	const shown = [...batch]
+		.sort((a, b) => a.eventTime - b.eventTime)
+		.flatMap((k) => [
+			...(k.killer?.steamId ? [{ ...k.killer, k }] : []),
+			...(k.victim.steamId && k.victim.steamId !== k.killer?.steamId ? [{ ...k.victim, k }] : [])
+		]);
+	if (!shown.length) return;
+	const now = Date.now();
+	const out: Evaluation = { intents: [], updates: [] };
+	// Each rule's tracks move on as it reads; if its actions cannot be queued, they move back.
+	const undos: (() => void)[] = [];
+	try {
+		for (const row of rows) {
+			const cfg = row.config as NameChangeConfig;
+			// the settings it decides under: delivery sends its rows only while the rule still holds them
+			const settings = nameChangeSettingsKey(cfg);
+			let entry = nameTracks.get(row.id);
+			if (!entry || entry.settings !== settings)
+				nameTracks.set(row.id, (entry = { serverId, settings, prunedAt: now, tracks: new Map() }));
+			if (now - entry.prunedAt >= NAME_PRUNE_MS) {
+				pruneNameTracks(cfg, entry.tracks, now);
+				entry.prunedAt = now;
+			}
+			// A kick rule that spares reserved slots flags such a player instead, and flags everyone
+			// until the worker has read the reserved list.
+			const kicks = (steamId: string) =>
+				cfg.action === 'kick' &&
+				!(cfg.spareReserved && (!m?.reservedAt || m.reserved.has(steamId)));
+			const { hits, undo } = nameChangeStep(cfg, entry.tracks, shown, listed, now, {
+				kicked: kicks
+			});
+			undos.push(undo);
+			if (!hits.length) continue;
+			const stats = await vars.stats(
+				hits
+					.filter((h) => kicks(h.player.steamId))
+					.map((h) => ({ steamId: h.player.steamId, text: cfg.reason }))
+			);
+			for (const h of hits) {
+				const p = h.player;
+				const kick = kicks(p.steamId);
+				const spared = cfg.action === 'kick' && !kick;
+				out.intents.push({
+					trigger: row,
+					action: kick ? 'kick' : NAME_FLAG,
+					params: kick
+						? {
+								steamId: p.steamId,
+								reason: renderTemplate(
+									cfg.reason,
+									vars.about(p, stats, { previous: h.listed }),
+									MAX_REASON
+								),
+								rule: settings
+							}
+						: { rule: settings },
+					target: p.steamId,
+					okMessage: `${kick ? 'Kicked' : 'Flagged'} ${h.listed}${spared ? ' (reserved slot)' : ''}: ${h.verdict}`,
+					detail: {
+						name: h.listed,
+						shown: p.name,
+						holder: h.holder,
+						changes: h.count,
+						verdict: h.verdict,
+						eventId: p.k.eventId
+					},
+					steamId: p.steamId,
+					dedupeKey: [row.id, p.steamId, p.k.eventId].join(':')
+				});
+				out.updates.push({
+					id: row.id,
+					lastFiredAt: new Date(),
+					lastResult: `${kick ? 'Kicking' : 'Flagging'} ${h.listed}: ${h.verdict}`
+				});
+			}
+		}
+		if (!out.intents.length) return;
+		let queued = 0;
+		await withOwnedTransaction(env, async (tx) => {
+			queued = await enqueueIntents(tx, serverId, out.intents);
+			await applyTriggerUpdates(tx, out.updates);
+		});
+		if (queued) wakeDelivery();
+	} catch (err) {
+		for (const undo of undos.reverse()) undo();
+		throw err;
+	}
+}
+
+/**
+ * The placeholders of a message about a kill's killer (or either of its players): the server as the
+ * worker last saw it, the player (their side as the kill has it, their ping from the last player
+ * list) and their stats, read once per player for the whole batch, whichever rules ask. Nothing is
+ * looked at until a rule acts.
  */
 function killerVars(env: Env, serverId: string) {
 	let seen: { server: MessageVars; live: Map<string, Player> } | null = null;
@@ -380,23 +520,30 @@ function killerVars(env: Env, serverId: string) {
 		/** what these killers' texts tell them of their stats; nothing is read for none */
 		stats: (wants: { steamId: string; text: string }[], sides?: { org: boolean }) =>
 			statsFor(read, wants, sides),
-		of: (k: KillView, stats: StatsRead, own: MessageVars): MessageVars => {
-			const { server, live } = look();
-			const steamId = k.killer!.steamId;
-			const p = live.get(steamId);
-			return messageVars(
-				server,
-				{
-					name: k.killer!.name || steamId,
-					steamId,
-					faction: k.killer!.faction ?? p?.faction ?? null,
-					ping: p?.ping
-				},
-				statsOf(stats, steamId),
-				own
-			);
-		}
+		of: (k: KillView, stats: StatsRead, own: MessageVars): MessageVars =>
+			about(k.killer!, stats, own),
+		/** the same for either player of a kill, as the feed named them */
+		about
 	};
+	function about(
+		who: { steamId: string; name: string; faction: string | null },
+		stats: StatsRead,
+		own: MessageVars
+	): MessageVars {
+		const { server, live } = look();
+		const p = live.get(who.steamId);
+		return messageVars(
+			server,
+			{
+				name: who.name || who.steamId,
+				steamId: who.steamId,
+				faction: who.faction ?? p?.faction ?? null,
+				ping: p?.ping
+			},
+			statsOf(stats, who.steamId),
+			own
+		);
+	}
 }
 type KillerVars = ReturnType<typeof killerVars>;
 
