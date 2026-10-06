@@ -377,6 +377,8 @@
 				orgName={data.server.orgName}
 				multiServer={data.multiServer}
 				matchHref={(m) => `/server/${encodeURIComponent(m.serverId)}/matches/${m.matchId}`}
+				seasonHref={(s) =>
+					`/server/${encodeURIComponent(data.server.id)}/leaderboard?range=s:${encodeURIComponent(s.key)}`}
 			/>
 		</div>
 
