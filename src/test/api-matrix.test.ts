@@ -20,6 +20,8 @@ const ROUTES = join(import.meta.dir, '..', 'routes');
  * metrics token, a public-page switch, a WebAuthn ceremony. Each has tests of its own.
  */
 const NOT_ROLE_BASED = [
+	// Explicit API-key-only, bounded multi-server query; player-stats.test.ts checks each scope.
+	'POST api/stats/players/query',
 	'GET api/health',
 	'POST api/ingest/events',
 	'POST api/passkeys',
