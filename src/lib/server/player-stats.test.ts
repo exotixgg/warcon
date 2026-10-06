@@ -1,5 +1,10 @@
 import { describe, expect, test } from 'bun:test';
-import { loadPlayerStats, parsePlayerStatsQuery, readPlayerStatsQuery } from './player-stats';
+import {
+	acquirePlayerStatsSlot,
+	loadPlayerStats,
+	parsePlayerStatsQuery,
+	readPlayerStatsQuery
+} from './player-stats';
 import type { Db } from './db';
 
 const PLAYER = '76561198000000001';
@@ -13,6 +18,29 @@ const query = () => ({
 const now = new Date('2026-01-03T00:00:00Z');
 
 describe('bounded native player stats query', () => {
+	test('concurrency admission bounds each key and all keys; releases are idempotent', () => {
+		const releases: (() => void)[] = [];
+		try {
+			const first = acquirePlayerStatsSlot('a')!;
+			releases.push(first);
+			const second = acquirePlayerStatsSlot('a')!;
+			releases.push(second);
+			expect(acquirePlayerStatsSlot('a')).toBeNull();
+			releases.push(acquirePlayerStatsSlot('b')!, acquirePlayerStatsSlot('c')!);
+			expect(acquirePlayerStatsSlot('d')).toBeNull();
+			first();
+			first();
+			const resumed = acquirePlayerStatsSlot('a');
+			expect(resumed).not.toBeNull();
+			releases.push(resumed!);
+			expect(acquirePlayerStatsSlot('d')).toBeNull();
+		} finally {
+			for (const release of releases) release();
+		}
+		const final = acquirePlayerStatsSlot('d');
+		expect(final).not.toBeNull();
+		final!();
+	});
 	test('source/query failure rejects the whole batch instead of returning unknown zero rows', async () => {
 		const db = {
 			transaction: async () => {

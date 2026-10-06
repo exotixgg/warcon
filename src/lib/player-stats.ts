@@ -8,6 +8,9 @@ export interface PlayerStatsQuery {
 	playerWindows?: PlayerStatsWindow[];
 }
 
+// Each response combines the window union per player. Historical organisations whose
+// membership windows differ need separate queries; this API does not return group-key buckets.
+
 export interface PlayerStatsWindow {
 	steamId: string;
 	from: string;
@@ -53,6 +56,8 @@ export interface PlayerStatsResponse {
 		semantics: 'observed-history';
 		matchAttribution: 'ended_at';
 		playtimeAttribution: 'observed-session-overlap';
+		/** Recorded counters do not establish complete kill-feed observation. */
+		feedDerivatives: 'partial';
 		/** Observation timestamps report current worker state, not completeness of past history. */
 		servers: {
 			serverId: string;

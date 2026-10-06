@@ -3,7 +3,7 @@ import { sql } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
 import type { PlayerStatsResponse } from '$lib/player-stats';
 import { matches, matchPlayers, playerSessions, serverLive } from '$lib/server/db/schema';
-import { loadPlayerStats } from '$lib/server/player-stats';
+import { acquirePlayerStatsSlot, loadPlayerStats } from '$lib/server/player-stats';
 import { POST } from '../routes/api/stats/players/query/+server';
 import { hasTestDb, testEnv } from './db';
 import { seedWorld, type World } from './world';
@@ -115,6 +115,7 @@ describe.skipIf(!hasTestDb)('native player statistics on an isolated database', 
 	});
 	test('counts half-open completed matches, native outcomes, observed playtime and unknown coverage', async () => {
 		const result = await loadPlayerStats(env.db, query());
+		expect(result.coverage.feedDerivatives).toBe('partial');
 		expect(result.players).toHaveLength(2);
 		expect(result.players[0]).toMatchObject({
 			steamId: PLAYER,
@@ -143,6 +144,16 @@ describe.skipIf(!hasTestDb)('native player statistics on an isolated database', 
 			serverId: w.server.id,
 			ok: true,
 			playersAt: time(4).toISOString()
+		});
+	});
+	test('session coverage stays inside the requested window, preserving six-digit boundaries', async () => {
+		const from = '2026-01-01T01:00:00.123456Z',
+			to = '2026-01-01T02:00:00.654321Z';
+		const result = await loadPlayerStats(env.db, { ...query(), steamIds: [PLAYER], from, to });
+		expect(result.players[0]).toMatchObject({
+			firstSeen: from,
+			lastSeen: to,
+			coverage: { sessions: 1, matches: 2 }
 		});
 	});
 	test('membership windows merge and leave gaps; playtime clips and match end at new membership belongs once', async () => {
@@ -247,6 +258,54 @@ describe.skipIf(!hasTestDb)('native player statistics on an isolated database', 
 			expect(Number(response.headers.get('retry-after'))).toBeGreaterThan(0);
 			expect((await response.json()).error.code).toBe('rate_limited');
 		} finally {
+			resetRates();
+		}
+	});
+	test('concurrency refusal returns 429 Retry-After and malformed-body errors release admission', async () => {
+		resetRates();
+		const user = w.users.keyView!;
+		const first = acquirePlayerStatsSlot(user.id)!,
+			second = acquirePlayerStatsSlot(user.id)!;
+		try {
+			const busy = await POST({ locals: { user } } as unknown as RequestEvent);
+			expect(busy.status).toBe(429);
+			expect(busy.headers.get('retry-after')).toBe('1');
+			second();
+			const malformed = await POST({
+				locals: { user },
+				request: new Request('http://localhost', {
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body: '{'
+				})
+			} as unknown as RequestEvent);
+			expect(malformed.status).toBe(400);
+			const available = acquirePlayerStatsSlot(user.id);
+			expect(available).not.toBeNull();
+			available!();
+		} finally {
+			first();
+			second();
+			resetRates();
+		}
+	});
+	test('query exceptions release route admission before returning a source error', async () => {
+		const db = env.db as unknown as { transaction: () => Promise<unknown> };
+		const original = db.transaction;
+		const held = acquirePlayerStatsSlot(w.users.keyView!.id)!;
+		try {
+			db.transaction = async () => {
+				throw new Error('test statement timeout');
+			};
+			const result = await callApi(POST, w.users.keyView, { method: 'POST', body: query() });
+			expect(result.status).toBe(500);
+			expect((result.body as { players?: unknown }).players).toBeUndefined();
+			const available = acquirePlayerStatsSlot(w.users.keyView!.id);
+			expect(available).not.toBeNull();
+			available!();
+		} finally {
+			db.transaction = original;
+			held();
 			resetRates();
 		}
 	});

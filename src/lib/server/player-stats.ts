@@ -12,6 +12,25 @@ export const STATS_MAX_PLAYERS = 100;
 export const STATS_MAX_SERVERS = 32;
 export const STATS_MAX_WINDOWS = 200;
 export const STATS_MAX_BODY_BYTES = 32_768;
+const activeByKey = new Map<string, number>();
+let activeQueries = 0;
+
+/** Per-process admission bounds; release in finally, including body/auth/query failures. */
+export function acquirePlayerStatsSlot(key: string): (() => void) | null {
+	const activeForKey = activeByKey.get(key) ?? 0;
+	if (activeForKey >= 2 || activeQueries >= 4) return null;
+	activeByKey.set(key, activeForKey + 1);
+	activeQueries++;
+	let released = false;
+	return () => {
+		if (released) return;
+		released = true;
+		const remaining = (activeByKey.get(key) ?? 1) - 1;
+		if (remaining) activeByKey.set(key, remaining);
+		else activeByKey.delete(key);
+		activeQueries--;
+	};
+}
 const bad = (message: string): never => {
 	throw new ApiError(400, message, 'bad_stats_query');
 };
@@ -197,7 +216,10 @@ export async function loadPlayerStats(db: Db, raw: PlayerStatsQuery): Promise<Pl
 				SELECT s.steam_id, COUNT(DISTINCT s.id) AS sessions,
 				 SUM(EXTRACT(EPOCH FROM (LEAST(COALESCE(s.left_at, s.last_seen), s.last_seen, w.window_to)
 				   - GREATEST(s.joined_at, w.window_from)))) AS seconds,
-				 MIN(s.joined_at) AS first_seen, MAX(s.last_seen) AS last_seen
+				 TO_CHAR(MIN(GREATEST(s.joined_at, w.window_from)) AT TIME ZONE 'UTC',
+				  'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS first_seen,
+				 TO_CHAR(MAX(LEAST(s.last_seen, w.window_to)) AT TIME ZONE 'UTC',
+				  'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS last_seen
 				FROM player_sessions s JOIN windows w ON w.steam_id = s.steam_id
 				WHERE s.server_id IN ${serverIds} AND s.steam_id IN ${steamIds}
 				 AND s.joined_at < w.window_to
@@ -224,7 +246,7 @@ export async function loadPlayerStats(db: Db, raw: PlayerStatsQuery): Promise<Pl
 				 SUM(cash_delta) AS cash_delta, SUM(headshots) AS headshots, SUM(team_kills) AS team_kills,
 				 SUM(suicides) AS suicides, SUM(vehicle_kills) AS vehicle_kills,
 				 MAX(kill_streak) AS kill_streak, MAX(death_streak) AS death_streak,
-				 MAX(ended_at) AS last_match_ended_at,
+				 TO_CHAR(MAX(ended_at) AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.US"Z"') AS last_match_ended_at,
 				 COUNT(*) FILTER (WHERE result = 'win') AS wins,
 				 COUNT(*) FILTER (WHERE result = 'loss') AS losses,
 				 COUNT(*) FILTER (WHERE result = 'draw') AS draws
@@ -251,9 +273,10 @@ export async function loadPlayerStats(db: Db, raw: PlayerStatsQuery): Promise<Pl
 			player.vehicleKills = count(row.vehicle_kills);
 			player.killStreak = count(row.kill_streak);
 			player.deathStreak = count(row.death_streak);
-			player.firstSeen = iso(row.first_seen);
-			player.lastSeen = iso(row.last_seen);
-			player.lastMatchEndedAt = iso(row.last_match_ended_at);
+			player.firstSeen = row.first_seen == null ? null : String(row.first_seen);
+			player.lastSeen = row.last_seen == null ? null : String(row.last_seen);
+			player.lastMatchEndedAt =
+				row.last_match_ended_at == null ? null : String(row.last_match_ended_at);
 			player.coverage = { sessions: count(row.sessions), matches: count(row.matches) };
 		}
 		return tx.execute<Record<string, unknown>>(sql`
@@ -274,6 +297,7 @@ export async function loadPlayerStats(db: Db, raw: PlayerStatsQuery): Promise<Pl
 			semantics: 'observed-history',
 			matchAttribution: 'ended_at',
 			playtimeAttribution: 'observed-session-overlap',
+			feedDerivatives: 'partial',
 			servers: serverIds.map((serverId) => {
 				const row = byServer.get(serverId);
 				return {
