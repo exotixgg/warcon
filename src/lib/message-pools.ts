@@ -1,5 +1,6 @@
 import { MAX_CHAT } from './chat';
 import { VEHICLE_TAGS } from './kills';
+import { validatePolicyMessage } from './exotix/ban-policy';
 
 export const POOL_ACTIONS = ['join', 'round_start', 'round_end', 'ban', 'weapon', 'timer'] as const;
 export type PoolAction = (typeof POOL_ACTIONS)[number];
@@ -14,6 +15,8 @@ export interface WeaponThreshold {
 	scope: 'server' | 'org';
 	/** Text for this step; older rules fall back to the pool's shared messages. */
 	message?: string;
+	/** Optional player-facing ban template; the ban reason fills {reason}. */
+	banMessageTemplate?: string;
 	/** Public messages chosen only after this step successfully adds a ban. */
 	announcementMessages?: string[];
 }
@@ -227,6 +230,12 @@ export function validateMessagePools(raw: unknown): MessagePoolConfig {
 			const message =
 				v.message === undefined ? undefined : string(v.message, 'Threshold message', 200);
 			if (message !== undefined) validateTemplate(name, 'weapon', message);
+			const banMessageTemplate =
+				v.banMessageTemplate === undefined
+					? undefined
+					: validatePolicyMessage(v.banMessageTemplate as string);
+			if (banMessageTemplate !== undefined && v.action !== 'ban')
+				throw new Error(`${name}: a player ban message template requires a ban step.`);
 			const announcementMessages = distinct(
 				v.announcementMessages ?? [],
 				'Public ban announcements',
@@ -243,6 +252,7 @@ export function validateMessagePools(raw: unknown): MessagePoolConfig {
 				days: whole(v.days, 'Ban days', 0, 3650),
 				scope: v.scope,
 				...(message === undefined ? {} : { message }),
+				...(banMessageTemplate === undefined ? {} : { banMessageTemplate }),
 				...(announcementMessages.length ? { announcementMessages } : {})
 			};
 		});
