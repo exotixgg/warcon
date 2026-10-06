@@ -151,6 +151,7 @@ const ACTION_TITLES: Record<string, string> = {
 	'trigger.two_teams': 'Trigger · two-team mode',
 	'trigger.kill_distance': 'Trigger · kill distance watch',
 	'trigger.afk_protection': 'Trigger · AFK protection',
+	'trigger.name_change': 'Trigger · name change watch',
 	'player.note': 'Player note',
 	'player.watch': 'Watchlist',
 	'list.add': 'Org list · added',
@@ -198,8 +199,13 @@ export function buildEmbed(appName: string, row: AuditRow): Embed {
 	};
 }
 
-/** A Kill rate or Kill distance post is a prompt to go and look: it opens the player's page. */
-const DOSSIER_LINKED = new Set(['trigger.kill_rate', 'trigger.kill_distance']);
+/** A Kill rate, Kill distance or Name change post is a prompt to go and look: it opens the player's
+ *  page. */
+const DOSSIER_LINKED = new Set([
+	'trigger.kill_rate',
+	'trigger.kill_distance',
+	'trigger.name_change'
+]);
 function withDossierLink(env: Env, row: AuditRow, embed: Embed): Embed {
 	if (!DOSSIER_LINKED.has(row.action) || !row.serverId || !row.target) return embed;
 	const url = dossierUrl(env.ORIGIN, row.serverId, row.target);

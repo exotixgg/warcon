@@ -9,6 +9,9 @@
 //   team_kill    whisper or kick a player over team kills the kill feed reports (feed-events.ts)
 //   kill_rate    flag a player whose kills in a short window are too many or too many headshots
 //                (kill-rate.ts, acted on in feed-events.ts)
+//   name_change  flag or kick a player the kill feed shows under a name not the one the server lists
+//                them under, or under another listed player's (name-change.ts, acted on in
+//                feed-events.ts)
 //   seed_reward  hand players who stay through a low population a reserved slot, on this server
 //                or across the org
 //   two_teams    close one faction and move its players to the smaller of the other two
@@ -101,6 +104,14 @@ import {
 import { MAX_CHAT } from '$lib/chat';
 import { NAME_FLAG, nameFilterTargets, nameVerdict, type NameFilterConfig } from './name-filter';
 import {
+	nameChangeSettingsKey,
+	nameChangeStep,
+	pruneNameTracks,
+	type NameChangeConfig,
+	type NameReading,
+	type NameTracks
+} from './name-change';
+import {
 	countsForRate,
 	killRateReplay,
 	killTimes,
@@ -170,6 +181,10 @@ export * from './trigger-rules';
 const WINDOW_MS = 24 * 3600_000;
 /** The most kills one Kill rate dry run reads, whatever the server did that day. */
 const KILL_RATE_REPLAY_MAX = 200_000;
+/** The most kills one Name change dry run reads names from. */
+const NAME_CHANGE_REPLAY_MAX = 200_000;
+/** The most sessions it reads the listed names from (a busy server has a couple of thousand a day). */
+const NAME_SESSIONS_MAX = 20_000;
 
 // ---- records ------------------------------------------------------------------------------------
 
@@ -232,7 +247,8 @@ const RULE_NEEDS: Record<
 	team_kill: ['players.kick', 'kicks players'],
 	kill_rate: ['players.kick', 'flags players'],
 	two_teams: ['players.move', 'moves players between teams'],
-	afk_protection: ['players.kill', 'kills players']
+	afk_protection: ['players.kill', 'kills players'],
+	name_change: ['players.kick', 'flags or kicks players']
 };
 
 /**
@@ -436,12 +452,13 @@ export async function deleteTrigger(
  * delivery): a Team balance move decided under the old closed faction or gap could take a player
  * to the wrong side, and a Kill distance kick or ban decided under settings an admin has just corrected, or by
  * a rule just switched off, is not to be sent; nor is an AFK protection round once the rule is off,
- * which is how it is stopped in a hurry.
+ * which is how it is stopped in a hurry, nor a Name change flag or kick.
  */
 export const SETTINGS_KEYS: Partial<Record<string, (config: unknown) => string>> = {
 	two_teams: (c) => twoTeamsSettingsKey(c as TwoTeamsConfig),
 	kill_distance: (c) => killDistanceSettingsKey(c as KillDistanceConfig),
-	afk_protection: (c) => afkSettingsKey(c as AfkProtectionConfig)
+	afk_protection: (c) => afkSettingsKey(c as AfkProtectionConfig),
+	name_change: (c) => nameChangeSettingsKey(c as NameChangeConfig)
 };
 
 /**
@@ -722,6 +739,7 @@ export async function evaluateTriggers(
 				case 'team_kill':
 				case 'kill_rate':
 				case 'kill_distance':
+				case 'name_change':
 					// Acted on as kills arrive (feed-events.ts), not per observation.
 					break;
 				case 'seed_reward':
@@ -2199,6 +2217,103 @@ export async function dryRun(
 		if (rows.length >= KILL_RATE_REPLAY_MAX)
 			result.notes.push(
 				`Replayed the first ${KILL_RATE_REPLAY_MAX.toLocaleString('en')} such kills only.`
+			);
+		return result;
+	}
+	if (kind === 'name_change') {
+		const c = cfg as NameChangeConfig;
+		// The live rule holds each kill's names against the player list of that moment; the replay
+		// holds the window's kills against the sessions open at each, whose names are the list's (but
+		// for a clan tag changed mid-session, which is no change anyway).
+		const sessions = await env.db.execute<{
+			steamId: string;
+			name: string;
+			joinedAt: Date;
+			leftAt: Date | null;
+		}>(sql`
+			SELECT steam_id AS "steamId", name, joined_at AS "joinedAt", left_at AS "leftAt"
+			  FROM player_sessions
+			 WHERE server_id = ${server.id} AND (left_at IS NULL OR left_at >= ${from})
+			 ORDER BY joined_at ASC LIMIT ${NAME_SESSIONS_MAX}`);
+		const rows = await env.db.execute<{
+			ts: Date;
+			killer: string | null;
+			killerName: string | null;
+			victim: string | null;
+			victimName: string | null;
+		}>(sql`
+			SELECT ts, killer_steam_id AS killer, killer_name AS "killerName",
+			       victim_steam_id AS victim, victim_name AS "victimName"
+			  FROM kills
+			 WHERE server_id = ${server.id} AND ts >= ${from}
+			 ORDER BY ts ASC, event_time ASC LIMIT ${NAME_CHANGE_REPLAY_MAX}`);
+		let reserved = new Set<string>();
+		if (c.action === 'kick' && c.spareReserved && readReserved) {
+			try {
+				reserved = new Set(await readReserved());
+			} catch {
+				result.notes.push('Could not read the reserved slots; nobody was spared for one.');
+			}
+		}
+		// The list at the kill being replayed: sessions join it in order and leave it once they have
+		// ended, a few seconds' slack for a kill received just after its player left.
+		const listed = new Map<string, string>();
+		const holding = new Map<string, number>();
+		const ends = sessions
+			.flatMap((s, i) => (s.leftAt ? [{ i, until: new Date(s.leftAt).getTime() + 10_000 }] : []))
+			.sort((a, b) => a.until - b.until);
+		let joins = 0;
+		let leaves = 0;
+		const tracks: NameTracks = new Map();
+		const readings = new Map<string, NameReading>();
+		const kicked = (steamId: string) =>
+			c.action === 'kick' && !(c.spareReserved && reserved.has(steamId));
+		for (let i = 0; i < rows.length; i++) {
+			const r = rows[i];
+			const at = new Date(r.ts).getTime();
+			for (
+				;
+				joins < sessions.length && new Date(sessions[joins].joinedAt).getTime() <= at;
+				joins++
+			) {
+				listed.set(sessions[joins].steamId, sessions[joins].name);
+				holding.set(sessions[joins].steamId, joins);
+			}
+			for (; leaves < ends.length && ends[leaves].until < at; leaves++) {
+				const s = sessions[ends[leaves].i];
+				if (holding.get(s.steamId) !== ends[leaves].i) continue;
+				listed.delete(s.steamId);
+				holding.delete(s.steamId);
+			}
+			if (i % 1000 === 0) pruneNameTracks(c, tracks, at);
+			const shown: { steamId: string; name: string }[] = [];
+			if (r.killer && r.killerName !== null) shown.push({ steamId: r.killer, name: r.killerName });
+			if (r.victim && r.victim !== r.killer && r.victimName !== null)
+				shown.push({ steamId: r.victim, name: r.victimName });
+			for (const h of nameChangeStep(c, tracks, shown, listed, at, { kicked, readings }).hits)
+				push(
+					new Date(at),
+					`${kicked(h.player.steamId) ? 'kick' : 'flag'} ${h.listed} (${h.player.steamId}): ${h.verdict}`
+				);
+		}
+		const [feed] = await env.db
+			.select({ configured: sql<boolean>`feed_token_hash IS NOT NULL` })
+			.from(servers)
+			.where(eq(servers.id, server.id));
+		if (!feed?.configured)
+			result.notes.push(
+				'This server has no kill feed set up (Config tab), so the rule cannot see any names.'
+			);
+		result.notes.push(
+			`${rows.length} kill${rows.length === 1 ? '' : 's'} in the window, each player's name held against the one their session had: a name is checked each time its player kills or dies.`
+		);
+		if (rows.length >= NAME_CHANGE_REPLAY_MAX)
+			result.notes.push(
+				`Replayed the first ${NAME_CHANGE_REPLAY_MAX.toLocaleString('en')} kills of the window only.`
+			);
+		if (sessions.length >= NAME_SESSIONS_MAX)
+			result.notes.push(
+				`Read the first ${NAME_SESSIONS_MAX.toLocaleString('en')} sessions of the window only; players of later ones were not judged.`
 			);
 		return result;
 	}

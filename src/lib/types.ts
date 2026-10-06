@@ -491,7 +491,8 @@ export type TriggerKind =
 	| 'kill_rate'
 	| 'two_teams'
 	| 'kill_distance'
-	| 'afk_protection';
+	| 'afk_protection'
+	| 'name_change';
 
 export interface TriggerView {
 	id: string;

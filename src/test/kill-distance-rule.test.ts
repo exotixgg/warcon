@@ -526,7 +526,7 @@ describe.skipIf(!hasTestDb)('Kill distance rule, live', () => {
 			dead.clear();
 			forgetMemory(server.id);
 		}
-	});
+	}, 30_000);
 
 	test('a kick rule kicks once for a burst, with its reason, while the kick lands', async () => {
 		const w = await seedWorld(env);

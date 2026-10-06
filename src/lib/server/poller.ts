@@ -38,7 +38,7 @@ import {
 import { phaseOffset, pickDue, withHold } from './poller-schedule';
 import { rollupSamples } from './rollups';
 import { liveView } from './live';
-import { feedDemoKills, forgetKillDistance } from './feed-events';
+import { feedDemoKills, forgetKillDistance, forgetNameChange } from './feed-events';
 import { publicMessage } from './http';
 import * as metrics from './metrics';
 import type { LiveView } from '$lib/types';
@@ -236,6 +236,7 @@ async function beat(env: Env): Promise<void> {
 			s.epoch = period;
 			forgetRemembered();
 			forgetKillDistance();
+			forgetNameChange();
 		}
 		if (now - s.settingsAt >= SETTINGS_MS) {
 			s.settingsAt = now;
@@ -284,6 +285,7 @@ async function refreshRoster(env: Env, s: Scheduler, now: number): Promise<void>
 		if (!present.has(m.server.id) && m.inFlight === null) {
 			forgetMemory(m.server.id);
 			forgetKillDistance(m.server.id);
+			forgetNameChange(m.server.id);
 		}
 	if (now - s.expiryAt >= EXPIRY_MS) {
 		s.expiryAt = now;
