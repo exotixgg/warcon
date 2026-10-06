@@ -10,6 +10,9 @@ export interface PlayerStatsQuery {
 
 // Each response combines the window union per player. Historical organisations whose
 // membership windows differ need separate queries; this API does not return group-key buckets.
+// Readers should coalesce identical canonical queries and may keep successful responses in
+// a bounded ephemeral cache up to 60s. Request limits are admission bounds, not capacity
+// guarantees: dense maximum-scope lifetime batches can reach the 5s query timeout.
 
 export interface PlayerStatsWindow {
 	steamId: string;

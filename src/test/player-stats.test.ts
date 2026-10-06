@@ -2,8 +2,12 @@ import { beforeAll, describe, expect, test } from 'bun:test';
 import { sql } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
 import type { PlayerStatsResponse } from '$lib/player-stats';
-import { matches, matchPlayers, playerSessions, serverLive } from '$lib/server/db/schema';
-import { acquirePlayerStatsSlot, loadPlayerStats } from '$lib/server/player-stats';
+import { matches, matchPlayers, playerSessions, serverLive, servers } from '$lib/server/db/schema';
+import {
+	acquirePlayerStatsSlot,
+	loadPlayerStats,
+	parsePlayerStatsQuery
+} from '$lib/server/player-stats';
 import { POST } from '../routes/api/stats/players/query/+server';
 import { hasTestDb, testEnv } from './db';
 import { seedWorld, type World } from './world';
@@ -14,6 +18,120 @@ import type { RequestEvent } from '@sveltejs/kit';
 const PLAYER = '76561198000000881',
 	UNKNOWN = '76561198000000882';
 const time = (hour: number) => new Date(Date.UTC(2026, 0, 1, hour));
+// Opt-in cost evidence only: never use a service database. testEnv creates an isolated database.
+describe.skipIf(!hasTestDb || process.env.STATS_BENCHMARK_SYNTHETIC !== '1')(
+	'synthetic native statistics cost',
+	() => {
+		test('measures real bounded queries over a dense 50-server history fixture', async () => {
+			const env = await testEnv();
+			const world = await seedWorld(env);
+			const serverIds = Array.from(
+				{ length: 50 },
+				(_, i) => `bench-server-${String(i + 1).padStart(3, '0')}`
+			);
+			const steamIds = Array.from(
+				{ length: 100 },
+				(_, i) => `76561199${String(i + 1).padStart(9, '0')}`
+			);
+			await env.db.insert(servers).values(
+				serverIds.map((id) => ({
+					id,
+					orgId: world.org.id,
+					name: id,
+					host: 'synthetic.invalid',
+					port: 7779,
+					passwordEnc: 'synthetic-unused'
+				}))
+			);
+			const started = performance.now();
+			await env.db
+				.execute(sql`INSERT INTO player_sessions (server_id,steam_id,name,joined_at,last_seen,left_at)
+		 SELECT s.id, '76561199'||lpad(p.id::text,9,'0'), 'Synthetic',
+		 '2026-01-01'::timestamptz + d.id * interval '1 day' + h.id * interval '12 hours',
+		 '2026-01-01'::timestamptz + d.id * interval '1 day' + h.id * interval '12 hours' + interval '2 hours',
+		 '2026-01-01'::timestamptz + d.id * interval '1 day' + h.id * interval '12 hours' + interval '2 hours'
+		 FROM jsonb_array_elements_text(${JSON.stringify(serverIds)}::text::jsonb) s(id) CROSS JOIN generate_series(1,100) p(id)
+		 CROSS JOIN generate_series(0,59) d(id) CROSS JOIN generate_series(0,1) h(id)`);
+			await env.db
+				.execute(sql`INSERT INTO matches (server_id,started_at,ended_at,winner,final_scores)
+		 SELECT s.id, '2026-01-01'::timestamptz + d.id * interval '1 day' + h.id * interval '6 hours',
+		 '2026-01-01'::timestamptz + d.id * interval '1 day' + h.id * interval '6 hours' + interval '2 hours',
+		 'A', '[{"name":"A","score":100},{"name":"B","score":50}]'::jsonb
+		 FROM jsonb_array_elements_text(${JSON.stringify(serverIds)}::text::jsonb) s(id) CROSS JOIN generate_series(0,59) d(id) CROSS JOIN generate_series(0,3) h(id)`);
+			await env.db
+				.execute(sql`INSERT INTO match_players (match_id,server_id,steam_id,name,faction,kills,deaths,cash_delta,headshots,team_kills,suicides,vehicle_kills,kill_streak,death_streak)
+		 SELECT m.id,m.server_id,'76561199'||lpad(p.id::text,9,'0'),'Synthetic',CASE WHEN p.id % 2 = 0 THEN 'A' ELSE 'B' END,
+		 10,5,100,2,0,0,1,3,2 FROM matches m CROSS JOIN generate_series(1,100) p(id)
+		 WHERE m.server_id IN ${serverIds}`);
+			await env.db.execute(sql`ANALYZE player_sessions`);
+			await env.db.execute(sql`ANALYZE matches`);
+			await env.db.execute(sql`ANALYZE match_players`);
+			console.log(
+				'native-stats-benchmark-fixture',
+				JSON.stringify({
+					servers: 50,
+					players: 100,
+					days: 60,
+					sessions: 600000,
+					matches: 12000,
+					matchPlayers: 1200000,
+					seedMs: Math.round(performance.now() - started)
+				})
+			);
+			const base = {
+				steamIds,
+				serverIds: serverIds.slice(0, 15),
+				from: '2026-01-01T00:00:00Z',
+				to: '2026-03-02T00:00:00Z'
+			};
+			const cases = [
+				{ name: 'one-player-15-servers', query: { ...base, steamIds: [steamIds[0]] } },
+				{ name: '100-players-15-servers', query: base },
+				{ name: '100-players-32-servers', query: { ...base, serverIds: serverIds.slice(0, 32) } },
+				{
+					name: '100-players-32-servers-200-windows',
+					query: {
+						...base,
+						serverIds: serverIds.slice(0, 32),
+						playerWindows: steamIds.flatMap((steamId) => [
+							{ steamId, from: '2026-01-01T00:00:00Z', to: '2026-01-21T00:00:00Z' },
+							{ steamId, from: '2026-02-01T00:00:00Z', to: '2026-03-02T00:00:00Z' }
+						])
+					}
+				}
+			];
+			for (const sample of cases) {
+				const durations: number[] = [];
+				for (let n = 0; n < 3; n++) {
+					const at = performance.now();
+					try {
+						const result = await loadPlayerStats(env.db, sample.query);
+						expect(result.players).toHaveLength(sample.query.steamIds.length);
+						durations.push(Math.round(performance.now() - at));
+					} catch (error) {
+						const cause = (error as { cause?: { message?: string; errno?: string } }).cause;
+						console.log(
+							'native-stats-benchmark-query',
+							JSON.stringify({
+								name: sample.name,
+								run: n,
+								error: cause?.message ?? 'query failed',
+								sqlState: cause?.errno ?? null,
+								durationMs: Math.round(performance.now() - at)
+							})
+						);
+						break;
+					}
+				}
+				console.log(
+					'native-stats-benchmark-query',
+					JSON.stringify({ name: sample.name, durationsMs: durations })
+				);
+			}
+			expect(() => parsePlayerStatsQuery({ ...base, serverIds })).toThrow();
+		}, 180000);
+	}
+);
 describe.skipIf(!hasTestDb)('native player statistics on an isolated database', () => {
 	let env: Env, w: World;
 	const query = () => ({
@@ -251,13 +369,34 @@ describe.skipIf(!hasTestDb)('native player statistics on an isolated database', 
 	test('caller limit returns Retry-After with the existing limiter', async () => {
 		resetRates();
 		const user = w.users.keyView!;
-		takeRate(`native-stats:${user.id}`, 12, 12, 60_000);
+		takeRate(`native-stats:${user.id}`, 120, 120, 60_000);
 		try {
 			const response = await POST({ locals: { user } } as unknown as RequestEvent);
 			expect(response.status).toBe(429);
 			expect(Number(response.headers.get('retry-after'))).toBeGreaterThan(0);
 			expect((await response.json()).error.code).toBe('rate_limited');
 		} finally {
+			resetRates();
+		}
+	});
+	test('configured budget is honored and invalid overrides retain the conservative fallback', async () => {
+		const previous = process.env.WARCON_NATIVE_STATS_REQUESTS_PER_MINUTE;
+		const user = w.users.keyView!;
+		try {
+			for (const [configured, budget] of [
+				['60', 60],
+				['invalid', 12]
+			] as const) {
+				resetRates();
+				process.env.WARCON_NATIVE_STATS_REQUESTS_PER_MINUTE = configured;
+				takeRate(`native-stats:${user.id}`, budget, budget, 60_000);
+				const response = await POST({ locals: { user } } as unknown as RequestEvent);
+				expect(response.status).toBe(429);
+				expect(Number(response.headers.get('retry-after'))).toBeGreaterThan(0);
+			}
+		} finally {
+			if (previous === undefined) delete process.env.WARCON_NATIVE_STATS_REQUESTS_PER_MINUTE;
+			else process.env.WARCON_NATIVE_STATS_REQUESTS_PER_MINUTE = previous;
 			resetRates();
 		}
 	});

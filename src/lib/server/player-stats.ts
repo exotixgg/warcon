@@ -12,6 +12,18 @@ export const STATS_MAX_PLAYERS = 100;
 export const STATS_MAX_SERVERS = 32;
 export const STATS_MAX_WINDOWS = 200;
 export const STATS_MAX_BODY_BYTES = 32_768;
+export const STATS_DEFAULT_REQUESTS_PER_MINUTE = 120;
+export const STATS_SAFE_REQUESTS_PER_MINUTE = 12;
+
+/** Practical cached-reader default; invalid overrides fail back to the original safe budget. */
+export function playerStatsRequestBudget(raw: unknown): number {
+	if (raw === undefined || raw === '') return STATS_DEFAULT_REQUESTS_PER_MINUTE;
+	if (typeof raw !== 'string' || !/^\d+$/.test(raw)) return STATS_SAFE_REQUESTS_PER_MINUTE;
+	const value = Number(raw);
+	return Number.isInteger(value) && value >= 1 && value <= 240
+		? value
+		: STATS_SAFE_REQUESTS_PER_MINUTE;
+}
 const activeByKey = new Map<string, number>();
 let activeQueries = 0;
 

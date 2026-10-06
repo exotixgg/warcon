@@ -3,6 +3,7 @@ import {
 	acquirePlayerStatsSlot,
 	loadPlayerStats,
 	parsePlayerStatsQuery,
+	playerStatsRequestBudget,
 	readPlayerStatsQuery
 } from './player-stats';
 import type { Db } from './db';
@@ -18,6 +19,14 @@ const query = () => ({
 const now = new Date('2026-01-03T00:00:00Z');
 
 describe('bounded native player stats query', () => {
+	test('practical request budget is configurable without allowing unlimited or invalid overrides', () => {
+		expect(playerStatsRequestBudget(undefined)).toBe(120);
+		expect(playerStatsRequestBudget('')).toBe(120);
+		expect(playerStatsRequestBudget('60')).toBe(60);
+		expect(playerStatsRequestBudget('240')).toBe(240);
+		for (const value of ['0', '241', 'Infinity', 'NaN', '3.5', '-1', 120, null])
+			expect(playerStatsRequestBudget(value)).toBe(12);
+	});
 	test('concurrency admission bounds each key and all keys; releases are idempotent', () => {
 		const releases: (() => void)[] = [];
 		try {
