@@ -42,10 +42,12 @@ describe.skipIf(!hasTestDb)('leaderboard export', () => {
 			]);
 	});
 
+	// the last 30 days unless the query names a range: the history here is two hours old, so the
+	// default (the current season) would leave it out on a season's first two hours
 	const download = async (who: PrincipalName, query: string, serverId = w.server.id) => {
 		const res = await callRaw(exportRoute, w.users[who], {
 			params: { id: serverId },
-			query
+			query: query.includes('range=') ? query : `${query}&range=30d`
 		});
 		return { res, lines: (await res.text()).split('\r\n') };
 	};

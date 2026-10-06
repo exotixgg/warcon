@@ -1,7 +1,11 @@
 <script lang="ts">
-	// The leaderboard as both the panel tab and the public page show it: the controls (scope,
-	// range, playtime floor), one page of ranked rows with sortable headers, and the pager. The
-	// board itself comes from the caller, which reloads it whenever `onchange` hands back a query.
+	// The leaderboard as both the panel tab and the public page show it: what it covers (a season,
+	// or a range) with the picker, a finished season's winners, the controls (scope, playtime
+	// floor), one page of ranked rows with sortable headers, and the pager. The board itself comes
+	// from the caller, which reloads it whenever `onchange` hands back a query.
+	import Badge from '$lib/components/Badge.svelte';
+	import SeasonPicker from '$lib/components/SeasonPicker.svelte';
+	import SeasonWinners from '$lib/components/SeasonWinners.svelte';
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { fmtCash } from '$lib/cash';
 	import { fmtMinutes, fmtNum, fmtTime, fmtAgo } from '$lib/format';
@@ -14,6 +18,7 @@
 		type BoardQuery,
 		type BoardView
 	} from '$lib/leaderboard';
+	import { nextSeason, seasonDay, seasonSpan, WINNER_MIN_MATCHES } from '$lib/seasons';
 	import type { SortLike } from '$lib/table.svelte';
 
 	let {
@@ -77,7 +82,58 @@
 	const ratio = (v: number | null, digits = 2) => (v === null ? '—' : v.toFixed(digits));
 	const pct = (v: number | null) => (v === null ? '—' : `${Math.round(v * 100)}%`);
 	const seen = (iso: string | null) => (iso ? (relative ? fmtAgo(iso) : fmtTime(iso)) : '—');
+
+	let when = $derived(board?.when ?? null);
+	let season = $derived(when?.season ?? null);
+	/** a finished season's board no longer changes: nobody's last sighting means anything on it */
+	let final = $derived(!!when?.finished);
+	let next = $derived(season && board ? nextSeason(board.seasons, season) : null);
+	let rangeLabel = $derived(BOARD_RANGES.find((r) => r.key === when?.range)?.label ?? 'All time');
+	let what = $derived(season ? 'season' : 'range');
+	/** what the heading says under the name */
+	let span = $derived.by(() => {
+		if (!when) return '';
+		if (season) {
+			if (final) return `${seasonSpan(season)} · final standings`;
+			const since = `Since ${seasonDay(season.startsAt)}`;
+			return season.endsAt
+				? `${since} · ends ${seasonDay(season.endsAt)}`
+				: `${since} · runs until the next season starts`;
+		}
+		return when.range === 'all' ? 'Every match on record' : `The last ${rangeLabel}, to now`;
+	});
 </script>
+
+{#if board && when}
+	<div class="mb-[18px] flex flex-wrap items-end gap-x-4 gap-y-3">
+		<div class="min-w-0">
+			<div class="flex items-center gap-2">
+				<Badge
+					>{season
+						? season.kind === 'official'
+							? 'Official season'
+							: `${orgName || 'Our'} season`
+						: 'Range'}</Badge
+				>
+				{#if season}<Badge tone={final ? '' : 'ok'}>{final ? 'Finished' : 'Live'}</Badge>{/if}
+			</div>
+			<h2 class="mt-2 font-display text-[28px] leading-none sm:text-[36px]">
+				{season ? season.name : rangeLabel}
+			</h2>
+			<p class="mt-1.5 text-[13px] text-mist-400">{span}</p>
+		</div>
+		<div class="sm:ml-auto">
+			<SeasonPicker
+				{when}
+				seasons={board.seasons}
+				{orgName}
+				disabled={loading}
+				onpick={(range) => set({ range })}
+			/>
+		</div>
+	</div>
+	{#if board.winners}<SeasonWinners winners={board.winners} {hrefFor} />{/if}
+{/if}
 
 <div class="mb-3 flex flex-wrap items-center gap-x-3 gap-y-2">
 	{#if orgScope}
@@ -94,15 +150,7 @@
 			>
 		</div>
 	{/if}
-	<div class="join">
-		{#each BOARD_RANGES as r (r.key)}
-			<button
-				class="btn btn-sm {query.range === r.key ? 'btn-primary' : ''}"
-				onclick={() => set({ range: r.key })}>{r.label}</button
-			>
-		{/each}
-	</div>
-	<label class="join items-center" title="Players with less playtime in the range are left out">
+	<label class="join items-center" title="Players with less playtime in the {what} are left out">
 		<span class="pointer-events-none btn btn-sm">At least</span>
 		<input
 			class="h-[30px] input w-20 py-0 text-right"
@@ -148,7 +196,7 @@
 				<SortHeader {sort} key="wins" num title="Wins, losses, draws">W-L-D</SortHeader>
 				<SortHeader {sort} key="winRate" num>Win %</SortHeader>
 				<SortHeader {sort} key="cash" num>Cash</SortHeader>
-				<th>Last seen</th>
+				{#if !final}<th>Last seen</th>{/if}
 			</tr>
 		</thead>
 		<tbody>
@@ -175,14 +223,15 @@
 					<td class="num whitespace-nowrap">{r.wins}-{r.losses}-{r.draws}</td>
 					<td class="num">{pct(winRate(r.wins, r.losses, r.draws))}</td>
 					<td class="num">{fmtCash(r.cash)}</td>
-					<td class="whitespace-nowrap text-mist-400">{seen(r.lastSeen)}</td>
+					{#if !final}<td class="whitespace-nowrap text-mist-400">{seen(r.lastSeen)}</td>{/if}
 				</tr>
 			{:else}
 				<tr>
-					<td colspan="15" class="py-6 text-center text-mist-600">
+					<td colspan={final ? 14 : 15} class="py-6 text-center text-mist-600">
 						{#if !board || loading}Loading…{:else if board.total === 0 && query.minMinutes > 0}Nobody
-							has {fmtMinutes(query.minMinutes)} of playtime in this range yet.{:else}No players in
-							this range yet.{/if}
+							has {fmtMinutes(query.minMinutes)} of playtime in this {what}{final
+								? ''
+								: ' yet'}.{:else}No players in this {what}{final ? '' : ' yet'}.{/if}
 					</td>
 				</tr>
 			{/each}
@@ -203,6 +252,14 @@
 			onclick={() => onchange({ ...query, page: query.page + 1 })}>Next →</button
 		>
 	</div>
+{/if}
+{#if board && season}
+	<p class="note">
+		{#if final}{season.name} ended when {next?.name ?? 'the next season'} started; its board counts the
+			matches that ended before then and no longer changes, so Last seen is left off. A player needs at
+			least {WINNER_MIN_MATCHES} matches in the season to win on K/D.{:else}{season.name}
+			counts the matches that ended since it started; all time and the other ranges are in the picker.{/if}
+	</p>
 {/if}
 {#if board && !board.hasFeed}
 	<p class="note">
