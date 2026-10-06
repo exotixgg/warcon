@@ -227,6 +227,20 @@ export const seasons = pgTable(
 );
 
 /**
+ * The org's quick reasons: the buttons under Reason in the ban dialog ($lib/ban-reasons). No row
+ * means the built-in six. Kept off `organizations`, whose whole row the worker reads with every
+ * server every few seconds.
+ */
+export const orgBanReasons = pgTable('org_ban_reasons', {
+	orgId: text('org_id')
+		.primaryKey()
+		.references(() => organizations.id, { onDelete: 'cascade' }),
+	/** BanReason[], in the order the buttons show */
+	reasons: jsonb('reasons').notNull(),
+	updatedAt: ts('updated_at').notNull().defaultNow()
+});
+
+/**
  * An org's server roles: a name and the capabilities it carries (see $lib/capabilities). Every org
  * starts with the three built-ins, which owners may edit but not delete; custom roles are more rows.
  */

@@ -31,7 +31,9 @@ export const REASON_PRESETS = [
 export const EXPIRY_OPTIONS = [
 	['0', 'Permanent'],
 	['1', '1 day'],
+	['3', '3 days'],
 	['7', '7 days'],
+	['14', '14 days'],
 	['30', '30 days'],
 	['custom', 'Until a date…']
 ] as const;
