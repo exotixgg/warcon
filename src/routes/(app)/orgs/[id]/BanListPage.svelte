@@ -12,6 +12,7 @@
 	import BanDialog from '$lib/components/BanDialog.svelte';
 	import EditBanDialog from '$lib/components/EditBanDialog.svelte';
 	import BanMessagePanel from './BanMessagePanel.svelte';
+	import BanReasonsPanel from './BanReasonsPanel.svelte';
 	import ImportCandidates from './ImportCandidates.svelte';
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort, matches } from '$lib/table.svelte';
@@ -139,6 +140,7 @@
 {/if}
 
 {#if lists.banMessage !== null}<BanMessagePanel {org} banMessage={lists.banMessage} {owner} />{/if}
+{#if lists.banReasons !== null}<BanReasonsPanel {org} reasons={lists.banReasons} {owner} />{/if}
 
 <div class="mb-3 flex flex-wrap items-center gap-2">
 	<input
@@ -247,6 +249,7 @@
 		orgName={org.name}
 		canOrg
 		banMessage={lists.banMessage}
+		reasons={lists.banReasons ?? []}
 		onclose={() => (banning = false)}
 		ondone={() => invalidateAll()}
 	/>

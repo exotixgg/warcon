@@ -10,12 +10,14 @@
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import type { SortLike } from '$lib/table.svelte';
 	import type { SeenPlayer, SeenSort } from '$lib/server/seen';
+	import type { BanReason } from '$lib/ban-reasons';
 
 	let {
 		server,
 		canBan,
 		canWatch,
-		canOrg
+		canOrg,
+		reasons
 	}: {
 		server: { id: string; name: string; orgId: string; orgName: string };
 		/** holds Bans here: the row's Ban places it on this server's list or the org's */
@@ -24,6 +26,8 @@
 		canWatch: boolean;
 		/** may edit the org's ban list: the Ban dialog then offers every server */
 		canOrg: boolean;
+		/** the org's quick reasons for the Ban dialog */
+		reasons: BanReason[];
 	} = $props();
 
 	const PAGE = 50;
@@ -247,6 +251,7 @@
 			name={banning.name}
 			server={{ id: server.id, name: server.name }}
 			{canOrg}
+			{reasons}
 			onclose={() => (banning = null)}
 			ondone={() => load()}
 		/>

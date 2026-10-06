@@ -468,6 +468,17 @@ server's own list, from the moment it is saved; the list keeps the bare reason, 
 on a server keeps the text it was placed with, also when its reason or expiry is edited later.
 The default, `{reason}`, sends the reason alone.
 
+An org owner can also set the ban dialog's **quick reasons** on the Ban list tab: the buttons under
+Reason when anyone in the organisation places a ban, from any page. Each has a short name for the
+button, the reason it fills in and, if you like, a length (permanent, 1, 3, 7, 14 or 30 days) that
+it sets in Expires, shown beside its name (`7d`, `Perm`); one with no length leaves Expires as the
+admin has it. An organisation keeps up to 20, in the order the buttons show. Until its owners save
+a list of their own it offers the six built in (Cheating, Team killing, Toxic behaviour, Racism /
+hate speech, Ban evasion, Griefing), and **Reset to the built-in six** puts those back. The quick
+reasons reach only people who can place a ban there (_Bans_ on the server, or the org's ban list),
+and ban list editors who are not owners see them on the Ban list tab without changing them. Bans
+already placed keep their reasons.
+
 Each entry shows where it stands on every server: **applied** by the panel, **pending** the next
 sync, **failed** (hover for the server's answer), or **local**. Local means the player was already
 banned (or reserved) on that server by someone working outside the panel. The panel never removes
@@ -1464,7 +1475,7 @@ which call Better Auth server-side behind the login lockout and the audit trail.
 own `/api/auth/*` routes only the OAuth callback is reachable over HTTP; everything else answers 404.
 
 ```
-GET/POST /api/orgs  PATCH/DELETE /api/orgs/:id   PATCH {name} | {discordInviteUrl} | {boardOpens: official|custom|30d|all} | {membersReserved} | {banMessage} | site owner: {serverLimit, suspended, reason, allowPublicStatus, allowPublicLeaderboards}
+GET/POST /api/orgs  PATCH/DELETE /api/orgs/:id   PATCH {name} | {discordInviteUrl} | {boardOpens: official|custom|30d|all} | {membersReserved} | {banMessage} | {banReasons: [{label,reason,days}] | null} | site owner: {serverLimit, suspended, reason, allowPublicStatus, allowPublicLeaderboards}
 GET/POST /api/orgs/:id/seasons {name,startsAt}  PATCH/DELETE .../:seasonId {name?,startsAt?}   the official seasons and the organisation's own, and what its boards open on (owners; a start is still to come, and a started season's stays put)
 GET  /api/orgs/:id/members  PATCH/DELETE /api/orgs/:id/members/:userId {role}  PUT .../:userId/grants {grants:[{serverId,roleId}]}
 GET/POST /api/orgs/:id/roles {name,capabilities[]}  PATCH/DELETE .../:roleId {name?,capabilities?}  POST .../:roleId/reset  PUT .../order {ids[]} (every role once, else 409 stale)
@@ -1492,7 +1503,7 @@ POST /api/servers/:id/players/:steamId/notes {body}     DELETE .../notes/:noteId
 GET/POST /api/servers/:id/triggers {kind,name,enabled,config}   PATCH/DELETE .../:triggerId   POST .../dry-run {kind,config}
 GET/POST /api/orgs/:id/webhooks {label,url,events,serverIds,enabled,statusEnabled,statusStyle,statusIntervalS,linkStatus,linkLeaderboard,linkPanel}   PATCH/DELETE .../:webhookId   POST .../:webhookId/test
 GET  /api/public/servers/:id   .../leaderboard (same query as above, page 20 at most)   .../players/:steamId      the public pages' JSON: no session, 404 while the page is off, limited per address
-GET  /api/orgs/:id/lists                                 the org lists the caller edits (kinds), with counts, and the caller's role on them
+GET  /api/orgs/:id/lists                                 the org lists the caller edits (kinds), with counts, and the caller's role on them; for ban list editors, the ban message and quick reasons
 GET/POST /api/orgs/:id/lists/:kind/entries {steamId,reason,expiresAt}   PATCH {reason,expiresAt} / DELETE .../entries/:steamId   (kind = ban | reserve, needing Org ban list or Org reserved slots; ?includeRemoved=1)
 POST /api/orgs/:id/lists/sync                            push the lists to every org server now
 GET  /api/orgs/:id/lists/import                          server entries not on the org list   POST {entries:[{kind,steamId,reason}]} adopts them (owner)

@@ -399,6 +399,7 @@
 		server={{ id, name: data.server.name }}
 		canOrg={listState?.canEditOrgBans ?? false}
 		banMessage={listState?.banMessage}
+		reasons={listState?.banReasons ?? []}
 		onclose={() => (banning = false)}
 		ondone={refreshAll}
 	/>

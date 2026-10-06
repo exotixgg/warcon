@@ -712,6 +712,7 @@
 		steamId={d.steamId}
 		name={d.name}
 		canOrg
+		reasons={d.orgLists.banReasons ?? []}
 		onclose={() => (banning = false)}
 		ondone={() => invalidateAll()}
 	/>
