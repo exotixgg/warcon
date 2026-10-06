@@ -12,10 +12,12 @@
 // of each set of servers are equal column by column, and so are the rows since a spread of
 // instants (the boards' own 7, 30 and 90 days back; midnights and a millisecond either side; a
 // join, a leave and a match end and a millisecond either side; random ones; before and after all
-// the data), all read in one transaction (one now()); every tenth step and at the end the reads
+// the data), and so are the rows of finished seasons between them (neighbouring and random pairs,
+// and ends on the start's own day, at its midnight, the day after and later, a millisecond either
+// side), all read in one transaction (one now()); every tenth step and at the end the reads
 // themselves are equal too (every board metric both ways at two floors for all time, and for each
-// range, every player's rank, the placeholders' stats, the risk record), and a rebuild leaves both
-// tables as they were.
+// range and a few finished seasons, every player's rank, the placeholders' stats, the risk
+// record), and a rebuild leaves both tables as they were.
 import { afterAll, beforeAll, describe, expect, setSystemTime, spyOn, test } from 'bun:test';
 import { and, eq, isNotNull, sql, type SQL } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
@@ -41,7 +43,8 @@ import {
 	rankOf,
 	riskPerformanceFor
 } from '$lib/server/leaderboards';
-import { BOARD_METRICS, rangeStart, type BoardQuery } from '$lib/leaderboard';
+import { BOARD_METRICS, type BoardQuery, type FixedRange } from '$lib/leaderboard';
+import { fixedWindow, type BoardWindow } from '$lib/server/seasons';
 import { hasTestDb, testEnv } from './db';
 import { seedWorld, type World } from './world';
 import {
@@ -50,7 +53,9 @@ import {
 	oracleRangeBase,
 	oracleRank,
 	oracleRiskRecord,
+	oracleSeasonBase,
 	rangeRows,
+	seasonRows,
 	totalsRows
 } from './totals-oracle';
 
@@ -473,6 +478,47 @@ describe.skipIf(!hasTestDb)('player totals against the reads they replace', () =
 		});
 	};
 
+	/**
+	 * Finished seasons worth holding the day rows to, from those instants: each one to the next
+	 * and (every tenth step) to a random later one; and from one of them, ends on its own day, at
+	 * its midnight and a millisecond either side, within the day after, at the midnight after
+	 * that and a millisecond either side, and days later.
+	 */
+	const windows = (ts: number[], every: boolean): [number, number][] => {
+		const u = [...new Set(ts)].sort((a, b) => a - b);
+		const out: [number, number][] = [];
+		for (let i = 0; i + 1 < u.length; i++) {
+			out.push([u[i], u[i + 1]]);
+			if (every) out.push([u[i], u[i + 1 + pick.int(u.length - i - 1)]]);
+		}
+		const f = u[pick.int(u.length)];
+		const m1 = midnight(f) + DAY;
+		for (const t of [f + 1, m1 - 1, m1, m1 + 1, m1 + HOUR, m1 + DAY - 1, m1 + DAY, m1 + DAY + 1])
+			out.push([f, t]);
+		out.push([f, m1 + 3 * DAY + HOUR]);
+		// a season always ends after it starts
+		return out.filter(([from, to]) => to > from);
+	};
+	/** The rows of each of those seasons, equal column by column, in one transaction. */
+	const compareSeasons = async (step: string, every: boolean) => {
+		const plan: [string[], [number, number][]][] = [];
+		for (const ids of sets()) plan.push([ids, windows(await instants(ids, every), every)]);
+		await env.db.transaction(async (tx) => {
+			for (const [ids, ws] of plan)
+				for (const [f, t] of ws) {
+					const from = new Date(f);
+					const to = new Date(t);
+					const season = `${from.toISOString()} to ${to.toISOString()}`;
+					expect({ step, ids, season, rows: await seasonRows(tx, ids, from, to) }).toEqual({
+						step,
+						ids,
+						season,
+						rows: await oracleSeasonBase(tx, ids, from, to)
+					});
+				}
+		});
+	};
+
 	/** The reads themselves: boards, ranks, placeholders' stats and the risk record. */
 	const compareReads = async (step: string) => {
 		await env.db.transaction(async (tx) => {
@@ -480,26 +526,44 @@ describe.skipIf(!hasTestDb)('player totals against the reads they replace', () =
 			for (const ids of sets()) {
 				const players = (await oracleBase(tx, ids)).map((b) => b.steam_id as string);
 				// all time: every metric both ways at both floors; each range: every metric at the
-				// default floor, and one more each way round
-				const boards: BoardQuery[] = [];
+				// default floor, and one more each way round; two finished seasons: every metric at
+				// the default floor
+				const boards: { q: BoardQuery; win: BoardWindow }[] = [];
 				const board = (
-					range: BoardQuery['range'],
+					win: BoardWindow,
 					sort: BoardQuery['sort'],
 					dir: BoardQuery['dir'],
 					minMinutes: number
-				) => boards.push({ scope: 'server', range, sort, dir, page: 1, minMinutes });
+				) =>
+					boards.push({
+						q: { scope: 'server', range: win.range, sort, dir, page: 1, minMinutes },
+						win
+					});
+				// the clock is frozen: each range starts where the board's own does
 				for (const metric of BOARD_METRICS)
 					for (const dir of ['desc', 'asc'] as const)
-						for (const minMinutes of [0, 60]) board('all', metric.key, dir, minMinutes);
-				for (const range of ['7d', '30d', '90d'] as const) {
-					for (const metric of BOARD_METRICS) board(range, metric.key, 'desc', 60);
-					board(range, BOARD_METRICS[pick.int(BOARD_METRICS.length)].key, 'asc', 60);
-					board(range, BOARD_METRICS[pick.int(BOARD_METRICS.length)].key, 'desc', 0);
+						for (const minMinutes of [0, 60])
+							board(fixedWindow('all'), metric.key, dir, minMinutes);
+				for (const range of ['7d', '30d', '90d'] as FixedRange[]) {
+					for (const metric of BOARD_METRICS) board(fixedWindow(range), metric.key, 'desc', 60);
+					board(fixedWindow(range), BOARD_METRICS[pick.int(BOARD_METRICS.length)].key, 'asc', 60);
+					board(fixedWindow(range), BOARD_METRICS[pick.int(BOARD_METRICS.length)].key, 'desc', 0);
 				}
-				for (const q of boards) {
-					// the range starts where exportBoard's does: the clock is frozen
-					const from = rangeStart(q.range) ?? undefined;
-					const want = (await oracleBoard(tx, ids, q, EXPORT_ROWS, 0, from)).map((o, i) => ({
+				const spans = windows(await instants(ids, true), false);
+				for (const [f, t] of [spans[pick.int(spans.length)], [start - DAY, clock - DAY]]) {
+					const win: BoardWindow = {
+						range: 's:test',
+						from: new Date(f),
+						to: new Date(t),
+						season: null,
+						finished: true
+					};
+					for (const metric of BOARD_METRICS) board(win, metric.key, 'desc', 60);
+				}
+				for (const { q, win } of boards) {
+					const want = (
+						await oracleBoard(tx, ids, q, EXPORT_ROWS, 0, win.from ?? undefined, win.to)
+					).map((o, i) => ({
 						rank: i + 1,
 						steamId: o.steamId as string,
 						name: ((o.name as string | null) || o.steamId) as string,
@@ -520,10 +584,11 @@ describe.skipIf(!hasTestDb)('player totals against the reads they replace', () =
 						cash: Number(o.cash),
 						lastSeen: o.lastSeen ? new Date(o.lastSeen as string).toISOString() : null
 					}));
-					expect({ step, ids, q, rows: await exportBoard(e, ids, q) }).toEqual({
+					expect({ step, ids, q, win, rows: await exportBoard(e, ids, q, win) }).toEqual({
 						step,
 						ids,
 						q,
+						win,
 						rows: want
 					});
 				}
@@ -705,6 +770,7 @@ describe.skipIf(!hasTestDb)('player totals against the reads they replace', () =
 			}
 			await compareBase(label);
 			await compareRanges(label, step % 10 === 0);
+			await compareSeasons(label, step % 10 === 0);
 			if (step % 10 === 0) await compareReads(label);
 		}
 		// Everyone leaves; the last sessions close and their matches stay open.
@@ -715,6 +781,7 @@ describe.skipIf(!hasTestDb)('player totals against the reads they replace', () =
 		for (const g of games.values()) await look(g);
 		await compareBase(`seed ${SEED} end`);
 		await compareRanges(`seed ${SEED} end`, true);
+		await compareSeasons(`seed ${SEED} end`, true);
 		await compareReads(`seed ${SEED} end`);
 		const before = await table();
 		const beforeDays = await dayTable();
@@ -779,6 +846,7 @@ describe.skipIf(!hasTestDb)('player totals against the reads they replace', () =
 		);
 		await compareBase(`seed ${SEED} after a purge`);
 		await compareRanges(`seed ${SEED} after a purge`, true);
+		await compareSeasons(`seed ${SEED} after a purge`, true);
 		const purged = await dayTable();
 		await env.db.execute(sql`SELECT player_totals_rebuild()`);
 		expect(await dayTable()).toEqual(purged);

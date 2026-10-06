@@ -10,7 +10,7 @@ import {
 } from '$lib/server/orgs';
 
 /**
- * {name} or {discordInviteUrl} or {membersReserved} or {banMessage} for org owners; {serverLimit, suspended,
+ * {name} or {discordInviteUrl} or {boardOpens} or {membersReserved} or {banMessage} for org owners; {serverLimit, suspended,
  * reason, allowPublicStatus, allowPublicLeaderboards} for the site owner only.
  */
 export const PATCH = route(async (event) => {

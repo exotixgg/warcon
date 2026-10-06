@@ -200,9 +200,31 @@ export const organizations = pgTable('organizations', {
 	discordInviteUrl: text('discord_invite_url').notNull().default(''),
 	/** what a banned player is shown: the reason and facts about the ban, see $lib/ban-message */
 	banMessage: text('ban_message').notNull().default('{reason}'),
+	/** what the org's boards open on: official | custom | 30d | all ($lib/seasons, BOARD_OPENS) */
+	boardOpens: text('board_opens').notNull().default('official'),
 	createdAt: ts('created_at').notNull().defaultNow(),
 	updatedAt: ts('updated_at').notNull().defaultNow()
 });
+
+/**
+ * A community's own season: a name and a start, running until its next season starts
+ * ($lib/seasons). Nothing is stored per player: its board is a range over the kept history. Once
+ * one has started its start stays put, so a finished season's standings never move.
+ */
+export const seasons = pgTable(
+	'seasons',
+	{
+		id: text('id').primaryKey(),
+		orgId: text('org_id')
+			.notNull()
+			.references(() => organizations.id, { onDelete: 'cascade' }),
+		name: text('name').notNull(),
+		startsAt: ts('starts_at').notNull(),
+		createdBy: text('created_by'),
+		createdAt: ts('created_at').notNull().defaultNow()
+	},
+	(t) => [uniqueIndex('seasons_org_start_uidx').on(t.orgId, t.startsAt)]
+);
 
 /**
  * An org's server roles: a name and the capabilities it carries (see $lib/capabilities). Every org

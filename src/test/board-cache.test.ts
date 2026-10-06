@@ -20,7 +20,7 @@ const HOUR = 3_600_000;
 const HERE = '76561198000000301';
 const THERE = '76561198000000302';
 const LATER = '76561198000000303';
-const q = parseBoardQuery(new URLSearchParams('minMinutes=0'));
+const q = parseBoardQuery(new URLSearchParams('minMinutes=0&range=30d'));
 
 describe.skipIf(!hasTestDb)('board cache', () => {
 	let env: Env;
@@ -66,47 +66,52 @@ describe.skipIf(!hasTestDb)('board cache', () => {
 	});
 
 	test('a second look inside the minute is the first one; after it, the board is read again', async () => {
-		const first = await loadBoard(env, [w.server.id], q);
+		const first = await loadBoard(env, [w.server.id], q, w.org.id);
 		expect(ids(first)).toEqual([HERE]);
 		await played(w.server.id, LATER);
-		expect(ids(await loadBoard(env, [w.server.id], q))).toEqual([HERE]);
+		expect(ids(await loadBoard(env, [w.server.id], q, w.org.id))).toEqual([HERE]);
 		setSystemTime(new Date(Date.now() + 61_000));
-		expect(ids(await loadBoard(env, [w.server.id], q))).toEqual([HERE, LATER]);
+		expect(ids(await loadBoard(env, [w.server.id], q, w.org.id))).toEqual([HERE, LATER]);
 		await env.db.delete(playerSessions).where(eq(playerSessions.steamId, LATER));
 	});
 
 	test('the requests that arrive during a read wait for it; a failed read is not kept', async () => {
 		const down = counted(true);
-		await expect(loadBoard(down.env, [w.server.id], q)).rejects.toThrow('down');
+		await expect(loadBoard(down.env, [w.server.id], q, w.org.id)).rejects.toThrow('down');
 		const up = counted();
 		const [a, b] = await Promise.all([
-			loadBoard(up.env, [w.server.id], q),
-			loadBoard(up.env, [w.server.id], q)
+			loadBoard(up.env, [w.server.id], q, w.org.id),
+			loadBoard(up.env, [w.server.id], q, w.org.id)
 		]);
 		expect(up.n.execute).toBe(1);
 		expect(ids(a)).toEqual([HERE]);
-		expect(b).toBe(a);
+		expect(b).toEqual(a);
 	});
 
 	test('every part of the query is its own board, and so is every set of servers', async () => {
 		const up = counted();
-		await loadBoard(up.env, [w.server.id, w.otherServer.id], q);
+		await loadBoard(up.env, [w.server.id, w.otherServer.id], q, w.org.id);
 		// the same servers in another order are the same board
-		await loadBoard(up.env, [w.otherServer.id, w.server.id], q);
+		await loadBoard(up.env, [w.otherServer.id, w.server.id], q, w.org.id);
 		expect(up.n.execute).toBe(1);
-		await loadBoard(up.env, [w.server.id], q);
-		await loadBoard(up.env, [w.server.id, w.otherServer.id], { ...q, page: 2 });
-		await loadBoard(up.env, [w.server.id, w.otherServer.id], { ...q, sort: 'deaths' });
-		await loadBoard(up.env, [w.server.id, w.otherServer.id], { ...q, minMinutes: 1 });
-		await loadBoard(up.env, [w.server.id, w.otherServer.id], { ...q, range: 'all' });
-		await loadBoard(up.env, [w.server.id, w.otherServer.id], { ...q, dir: 'asc' });
-		const org = await loadBoard(up.env, [w.server.id, w.otherServer.id], { ...q, scope: 'org' });
+		await loadBoard(up.env, [w.server.id], q, w.org.id);
+		await loadBoard(up.env, [w.server.id, w.otherServer.id], { ...q, page: 2 }, w.org.id);
+		await loadBoard(up.env, [w.server.id, w.otherServer.id], { ...q, sort: 'deaths' }, w.org.id);
+		await loadBoard(up.env, [w.server.id, w.otherServer.id], { ...q, minMinutes: 1 }, w.org.id);
+		await loadBoard(up.env, [w.server.id, w.otherServer.id], { ...q, range: 'all' }, w.org.id);
+		await loadBoard(up.env, [w.server.id, w.otherServer.id], { ...q, dir: 'asc' }, w.org.id);
+		const org = await loadBoard(
+			up.env,
+			[w.server.id, w.otherServer.id],
+			{ ...q, scope: 'org' },
+			w.org.id
+		);
 		expect(up.n.execute).toBe(8);
 		expect(org.query.scope).toBe('org');
 	});
 
 	test("an organisation board read by its owner is not a member's who was given one server", async () => {
-		const query = 'scope=org&minMinutes=0';
+		const query = 'scope=org&minMinutes=0&range=30d';
 		const owner = await callApi(panelBoard, w.users.owner, {
 			params: { id: w.server.id },
 			query
@@ -141,7 +146,7 @@ describe.skipIf(!hasTestDb)('board cache', () => {
 			.update(servers)
 			.set({ publicLeaderboards: true })
 			.where(eq(servers.id, w.otherServer.id));
-		const query = 'scope=org&minMinutes=0';
+		const query = 'scope=org&minMinutes=0&range=30d';
 		const owner = await callApi(panelBoard, w.users.owner, {
 			params: { id: w.otherServer.id },
 			query
@@ -164,7 +169,7 @@ describe.skipIf(!hasTestDb)('board cache', () => {
 			.select({ name: servers.name })
 			.from(servers)
 			.where(eq(servers.id, w.server.id));
-		const before = await loadBoard(env, [w.server.id, w.otherServer.id], q);
+		const before = await loadBoard(env, [w.server.id, w.otherServer.id], q, w.org.id);
 		expect(ids(before)).toEqual([HERE, THERE]);
 		await played(w.server.id, LATER);
 		const done = await callApi(purge, w.users.owner, {
@@ -174,7 +179,7 @@ describe.skipIf(!hasTestDb)('board cache', () => {
 		});
 		expect(done.status).toBe(200);
 		// sessions stay through a purge, so the board read again has the newcomer
-		expect(ids(await loadBoard(env, [w.server.id, w.otherServer.id], q))).toEqual([
+		expect(ids(await loadBoard(env, [w.server.id, w.otherServer.id], q, w.org.id))).toEqual([
 			HERE,
 			THERE,
 			LATER

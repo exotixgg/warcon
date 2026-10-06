@@ -701,7 +701,8 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 	});
 
 	// The two ways the day rows arrive on a database with history: 0038 and 0039 in one migration
-	// run (Drizzle runs every pending migration in one transaction), or 0039 over 0038's totals.
+	// run (Drizzle runs every pending migration in one transaction), or 0039 over 0038's totals;
+	// either way with the migrations after them in the same run.
 	for (const [label, after] of [
 		[
 			'0038 and 0039 in one run over a database at 0037',
@@ -719,16 +720,18 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 			const { client, db } = connect(url.href);
 			const dir = await mkdtemp(join(tmpdir(), 'warcon-migrate-'));
 			try {
-				// every migration before these
+				// every migration before these, and none after them: Drizzle takes the newest one
+				// applied for the point the database is at, so a later one run first would leave
+				// these out
 				await cp('drizzle', dir, { recursive: true });
 				const journal = JSON.parse(await readFile(join(dir, 'meta', '_journal.json'), 'utf8'));
-				for (const tag of after) {
+				const first = journal.entries.findIndex((e: { tag: string }) => e.tag === after[0]);
+				expect(first).toBeGreaterThan(0);
+				for (const { tag } of journal.entries.slice(first) as { tag: string }[]) {
 					await rm(join(dir, `${tag}.sql`));
-					await rm(join(dir, 'meta', `${tag.slice(0, 4)}_snapshot.json`));
+					await rm(join(dir, 'meta', `${tag.slice(0, 4)}_snapshot.json`), { force: true });
 				}
-				journal.entries = journal.entries.filter(
-					(e: { tag: string }) => !(after as readonly string[]).includes(e.tag)
-				);
+				journal.entries = journal.entries.slice(0, first);
 				await writeFile(join(dir, 'meta', '_journal.json'), JSON.stringify(journal));
 				await runMigrations(db, dir);
 				// history as the worker leaves it: closed and open sessions, one over two midnights,
