@@ -13,6 +13,16 @@ describe('causeLabel', () => {
 		expect(causeLabel('Id.Item.WEPN_029')).toBe('Galil');
 		expect(causeLabel('Id.Item.MMGL')).toBe('MGL-40');
 		expect(causeLabel('Id.Item.CGM4')).toBe('MAAWS');
+		expect(causeLabel('Id.Item.Launcher_04')).toBe('9K333 Verba');
+		expect(causeLabel('Id.Item.WEPN_030')).toBe('FAL');
+		expect(causeLabel('Id.Item.WEPN_033')).toBe('Bushmaster M17S');
+		expect(causeLabel('Id.Item.SMG_03')).toBe('PP-19 Vityaz');
+		expect(causeLabel('Id.Item.WEPN_028')).toBe('MP5');
+		expect(causeLabel('Id.Item.SR_04')).toBe('AMR 50');
+		expect(causeLabel('Id.Item.WEPN_035')).toBe('Scout Rifle TD');
+		expect(causeLabel('Id.Item.WEPN_026')).toBe('M1911');
+		expect(causeLabel('Id.Item.WEPN_032')).toBe('GGX 18');
+		expect(causeLabel('Id.Item.WEPN_027')).toBe('Deagle');
 		expect(causeLabel('Id.Item.M4')).toBe('M4');
 		expect(causeLabel('Id.Item.M67Grenade')).toBe('M67 frag grenade');
 		expect(causeLabel('Id.Item.Crowbar')).toBe('Halligan bar');
@@ -35,9 +45,7 @@ describe('causeLabel', () => {
 	});
 
 	test('tags the game sends that have no name are listed in their own words', () => {
-		expect(causeLabel('Id.Item.SR_04')).toBe('SR 04');
-		expect(causeLabel('Id.Item.Launcher_04')).toBe('Launcher 04');
-		expect(causeLabel('Id.Item.WEPN_035')).toBe('WEPN 035');
+		expect(causeLabel('Vehicle.Variant.Stationary.STN_05')).toBe('STN 05');
 		expect(causeLabel('ID.Item.RepairTool.Drill.Light')).toBe('Light drill');
 		expect(causeLabel('Vehicle.Variant.Land.Wheeled.Humvee.Default')).toBe('Humvee');
 		expect(causeLabel('Id.Vehicle.WeaponExtension.STN_05.MainBarrel')).toBe('STN 05 main gun');
