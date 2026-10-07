@@ -10,6 +10,7 @@ import { OWNERS_ROWS } from './audit-rows';
 import { escapeMarkdown } from './webhook-status-core';
 import { KILL_DISTANCE_SKIP } from './kill-distance';
 import { causeLabel } from '$lib/causes';
+import { FAILURES_ONLY } from '$lib/rule-kinds';
 import type { KillView } from '$lib/types';
 
 export const WEBHOOK_EVENTS = [
@@ -474,7 +475,7 @@ export async function recordResult(env: Env, id: string, result: PostResult): Pr
  * one; Discord hears only of those that fail, so they neither flood a staff channel nor push another
  * rule's card out of the webhook's queue.
  */
-const QUIET_WHEN_OK = new Set(['trigger.two_teams', 'trigger.afk_protection']);
+const QUIET_WHEN_OK = new Set(FAILURES_ONLY.map((kind) => `trigger.${kind}`));
 /** A delivery that only notes what a rule saw and let be: the audit trail keeps it, Discord does not. */
 const NOTES = new Set([KILL_DISTANCE_SKIP]);
 const isNote = (row: AuditRow): boolean => {
