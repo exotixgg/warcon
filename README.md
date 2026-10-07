@@ -44,9 +44,10 @@ What is in the box:
   minute when it is empty. Pages get each observation as it happens over an event stream, and a
   command you send shows its effect on the next look. Browsers never talk to a game server.
 - **Past players**: the Players tab switches between who is on now and everyone who has played on
-  that server, searched by name, alias or SteamID64, with when they were last on, their sessions
-  and playtime. Anyone who can open the server can look; a row's Ban (for people who hold _Bans_)
-  lands the moment the player next joins, and Watch needs _Notes_.
+  that server, searched by name, alias, a name the kill feed showed for them or SteamID64, with
+  when they were last on, their sessions and playtime. Anyone who can open the server can look; a
+  row's Ban (for people who hold _Bans_) lands the moment the player next joins, and Watch needs
+  _Notes_.
 - **Analytics**: the worker keeps what the game does not: players online over time, players per
   day and how many of them were new, how long sessions last, cash in play per faction, uptime,
   time per map, wins per team, busiest hours, player playtime and sessions, match history
@@ -410,6 +411,17 @@ watchlist_ can write them, and a note can be deleted by its author or a role wit
 A [Discord webhook](#discord-webhooks) ticked for _Watched players joining_ posts each time a
 watched player joins one of the organisation's servers.
 
+On servers with the [kill feed](#kill-feed), the dossier also lists the names the feed showed for
+the player that were not the one the server listed them under, newest first: _In the kill feed as_.
+The game's player list keeps the name a player joined with (a clan tag changed mid-game aside), so a
+player who renames mid-game to hide, often as another player, shows only there. A name that was
+another player's on the server at the time is in brass and opens that player's page; the five
+newest show, the rest a press away, with a link to the player's kills. A name they also played under
+as their own there is left out. Past players and the
+organisation's Players find a player by those names too, and show which one the search found. Only
+the servers the reader can open are read. The names are recorded as kills come in, kept for good,
+and filled once from the kill history, in the background, after the upgrade that adds them.
+
 With a Steam key, the Players tab shows a player's Steam name under an in-game name that does not
 already hold it (a streamer's hidden name, say), and its filter finds players by that name too.
 
@@ -611,7 +623,8 @@ history (filter by killer, victim, either side, weapon or vehicle, kind of kill 
 distance, with a count, older pages and new kills arriving live; the filter lives in the URL, so a
 view can be shared), a **Combat** section on Analytics (kills per bucket, weapons, longest kills,
 top killers with headshot share and team kills), a Combat card on every player dossier (weapons,
-most-killed, nemeses, recent kills and deaths), and the team-kill trigger. Team kills are
+most-killed, nemeses, recent kills and deaths), the names players showed in it that were not their
+own (on their dossiers and in the Players searches), and the team-kill trigger. Team kills are
 inferred: the feed carries no factions, so Warcon uses the factions it observed for both players
 at that moment. Kills are history and are
 never pruned (a TimescaleDB hypertable with compression where the extension is installed). The
@@ -1192,8 +1205,8 @@ These need _View_ on the server unless the table says otherwise.
 
 | Route                                                    | Answers                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET /api/servers/:id/players/seen`                      | everyone who has played on the server: `q` (name, alias or SteamID), `since` (days), `flag` (`banned`, `watched` or `online`), `sort` (`lastSeen`, `firstSeen`, `minutes`, `sessions`, `kills`, `deaths`, `name`), `dir`, `offset`, `limit` (up to 100)                                                                                                                                                                                                                                                                                                                                |
-| `GET /api/servers/:id/players/:steamId`                  | the dossier: names, sessions, totals per server, bans, risk, the kill feed's summary; notes and why a player is watched only with _Notes & watchlist_                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| `GET /api/servers/:id/players/seen`                      | everyone who has played on the server: `q` (name, alias, a name the kill feed showed for them, or SteamID; each player's `feedNames` are those names), `since` (days), `flag` (`banned`, `watched` or `online`), `sort` (`lastSeen`, `firstSeen`, `minutes`, `sessions`, `kills`, `deaths`, `name`), `dir`, `offset`, `limit` (up to 100)                                                                                                                                                                                                                                              |
+| `GET /api/servers/:id/players/:steamId`                  | the dossier: names, the names the kill feed showed that were not theirs (`feedNames`), sessions, totals per server, bans, risk, the kill feed's summary; notes and why a player is watched only with _Notes & watchlist_                                                                                                                                                                                                                                                                                                                                                               |
 | `GET /api/servers/:id/players/:steamId/career`           | rank, streak, results by map and faction, the last ten matches, the organisation's last ten seasons with the places won                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | `GET /api/servers/:id/players/marks?ids=a,b`             | watched, first visit, risk score and Steam name (`steamName`) for up to 200 SteamIDs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `GET /api/servers/:id/kills`                             | the stored kill feed, newest first (see [Kill feed](#kill-feed)): `killer`, `victim`, `player` (a SteamID, or part of a name), `kind` (`headshot`, `teamKill`, `suicide`, `vehicle`, `environment`), `cause`, `minM` (metres), `match`, `limit` (up to 200); `count=1` adds the total. For the next page, send the last kill's `ts` as `before` and its `eventTime` as `beforeTime`                                                                                                                                                                                                    |
@@ -1508,7 +1521,7 @@ GET  /api/orgs/:id/lists                                 the org lists the calle
 GET/POST /api/orgs/:id/lists/:kind/entries {steamId,reason,expiresAt}   PATCH {reason,expiresAt} / DELETE .../entries/:steamId   (kind = ban | reserve, needing Org ban list or Org reserved slots; ?includeRemoved=1)
 POST /api/orgs/:id/lists/sync                            push the lists to every org server now
 GET  /api/orgs/:id/lists/import                          server entries not on the org list   POST {entries:[{kind,steamId,reason}]} adopts them (owner)
-GET  /api/servers/:id/players/seen?q=&since=&flag=&sort=&dir=&offset=&limit=   everyone who has played on this server, by name, alias or SteamID (View; 60 a minute)
+GET  /api/servers/:id/players/seen?q=&since=&flag=&sort=&dir=&offset=&limit=   everyone who has played on this server, by name, alias, kill-feed name or SteamID (View; 60 a minute)
 GET  /api/servers/:id/lists/state                        which bans / reserved slots here come from the org lists or this server's own   POST .../lists/sync
 POST /api/servers/:id/lists/ban/entries {steamId,reason,expiresAt}       ban on this server only, placed on sight if the player is away (Bans)   PATCH {reason,expiresAt} / DELETE .../entries/:steamId
 POST /api/servers/:id/lists/reserve/entries {steamId,reason,expiresAt}   reserve on this server only (Reserved slots)   DELETE .../entries/:steamId

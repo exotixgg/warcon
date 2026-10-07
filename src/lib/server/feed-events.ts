@@ -50,10 +50,12 @@ import {
 import {
 	nameChangeSettingsKey,
 	nameChangeStep,
+	namesShownElse,
 	pruneNameTracks,
 	type NameChangeConfig,
 	type NameTracks
 } from './name-change';
+import { recordAliases } from './aliases';
 import { NAME_FLAG } from './name-filter';
 import { applyTriggerUpdates, enqueueIntents, wakeDelivery } from './outbox';
 import { LostOwnership, withOwnedTransaction } from './leadership';
@@ -73,6 +75,13 @@ export async function onKillsIngested(
 ): Promise<void> {
 	if (!kills.length) return;
 	emit({ type: 'kills', serverId, kills });
+	const named = namedIn(kills);
+	try {
+		await recordFeedNames(env, serverId, kills, named);
+	} catch (err) {
+		if (!(err instanceof LostOwnership))
+			console.warn(`[warcon] kill feed names on ${serverId}:`, publicMessage(err));
+	}
 	try {
 		await actOnKillRate(env, serverId, kills);
 	} catch (err) {
@@ -88,7 +97,7 @@ export async function onKillsIngested(
 			console.warn(`[warcon] kill-distance rules on ${serverId}:`, publicMessage(err));
 	}
 	try {
-		await actOnNameChange(env, serverId, kills, vars);
+		await actOnNameChange(env, serverId, named, vars);
 	} catch (err) {
 		if (!(err instanceof LostOwnership))
 			console.warn(`[warcon] name-change rules on ${serverId}:`, publicMessage(err));
@@ -103,6 +112,55 @@ export async function onKillsIngested(
 		if (err instanceof LostOwnership) return;
 		console.warn(`[warcon] team-kill rules on ${serverId}:`, publicMessage(err));
 	}
+}
+
+/** Both players of every kill as the feed named them, in the order the game played them; a suicide
+ *  names its player once, and the environment no one. */
+function namedIn(batch: KillView[]) {
+	return [...batch]
+		.sort((a, b) => a.eventTime - b.eventTime)
+		.flatMap((k) => [
+			...(k.killer?.steamId ? [{ ...k.killer, k }] : []),
+			...(k.victim.steamId && k.victim.steamId !== k.killer?.steamId ? [{ ...k.victim, k }] : [])
+		]);
+}
+type Named = ReturnType<typeof namedIn>;
+
+/** The names the server's player list holds, by SteamID, from the worker's last look at it (read
+ *  once a look, however many batches come in meanwhile). */
+const listedCache = new WeakMap<Player[], Map<string, string>>();
+function listedOf(serverId: string): ReadonlyMap<string, string> {
+	const players = memoryOf(serverId)?.players;
+	if (!players) return new Map();
+	let listed = listedCache.get(players);
+	if (!listed)
+		listedCache.set(players, (listed = new Map(players.map((p) => [p.steamId, p.name]))));
+	return listed;
+}
+
+/**
+ * Keeps, for staff, the names this batch showed that were not the ones the list holds for their
+ * players (aliases.ts), on every server with the feed whatever its rules: a name the same as the
+ * list's, nearly every one, costs a lookup and a compare.
+ */
+async function recordFeedNames(
+	env: Env,
+	serverId: string,
+	batch: KillView[],
+	named: Named
+): Promise<void> {
+	const listed = listedOf(serverId);
+	if (!listed.size) return;
+	const found = namesShownElse(named, listed);
+	if (!found.length) return;
+	const at = new Date(Math.max(...batch.map((k) => Date.parse(k.ts))));
+	await withOwnedTransaction(env, (tx) =>
+		recordAliases(
+			tx,
+			serverId,
+			found.map((a) => ({ ...a, firstSeen: at, lastSeen: at }))
+		)
+	);
 }
 
 /**
@@ -389,7 +447,7 @@ export function forgetNameChange(serverId?: string): void {
 async function actOnNameChange(
 	env: Env,
 	serverId: string,
-	batch: KillView[],
+	shown: Named,
 	vars: KillerVars
 ): Promise<void> {
 	const rows = (await enabledTriggers(env, serverId)).filter((r) => r.kind === 'name_change');
@@ -400,17 +458,8 @@ async function actOnNameChange(
 	// The names the server lists its players under now: nothing to hold the feed against while the
 	// list is empty (a map loading) or not read yet.
 	const m = memoryOf(serverId);
-	const listed = new Map((m?.players ?? []).map((p) => [p.steamId, p.name]));
-	if (!listed.size) return;
-	// Both players of every kill as the feed named them, in the order the game played them; a
-	// suicide names its player once.
-	const shown = [...batch]
-		.sort((a, b) => a.eventTime - b.eventTime)
-		.flatMap((k) => [
-			...(k.killer?.steamId ? [{ ...k.killer, k }] : []),
-			...(k.victim.steamId && k.victim.steamId !== k.killer?.steamId ? [{ ...k.victim, k }] : [])
-		]);
-	if (!shown.length) return;
+	const listed = listedOf(serverId);
+	if (!listed.size || !shown.length) return;
 	const now = Date.now();
 	const out: Evaluation = { intents: [], updates: [] };
 	// Each rule's tracks move on as it reads; if its actions cannot be queued, they move back.

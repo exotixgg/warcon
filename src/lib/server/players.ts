@@ -29,6 +29,7 @@ import type {
 } from '$lib/types';
 import { killView } from './feed';
 import { latestNames } from './sessions';
+import { feedNamesOf } from './aliases';
 
 export { requireSteamId } from './steam';
 
@@ -293,7 +294,8 @@ export async function dossier(
 		listsRole,
 		allOrgServers,
 		combat,
-		performance
+		performance,
+		feedNames
 	] = await Promise.all([
 		getProfiles(env, [steamId], {
 			refresh: !!opts.refreshSteam,
@@ -323,7 +325,8 @@ export async function dossier(
 		listsRoleFor(env, user, server.orgId),
 		orgServers(env, server.orgId),
 		playerCombat(env, ids, nameOf, steamId),
-		riskPerformanceFor(env, ids, [steamId])
+		riskPerformanceFor(env, ids, [steamId]),
+		feedNamesOf(env, ids, steamId)
 	]);
 	const l = local.get(steamId);
 	const admin = access.caps.has('players.notes.manage');
@@ -342,6 +345,8 @@ export async function dossier(
 		steamId,
 		name,
 		names: names.map((n) => n.name),
+		feedNames: feedNames.names,
+		feedNamesTotal: feedNames.total,
 		online: online
 			? { serverId: online.serverId, serverName: nameOf.get(online.serverId) || '' }
 			: null,

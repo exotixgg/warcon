@@ -11,6 +11,7 @@
 	import type { SortLike } from '$lib/table.svelte';
 	import type { SeenPlayer, SeenSort } from '$lib/server/seen';
 	import type { BanReason } from '$lib/ban-reasons';
+	import { feedNamesLine } from '$lib/feed-names';
 
 	let {
 		server,
@@ -183,6 +184,16 @@
 								>
 							{/if}
 						</div>
+						{#if p.feedNames.length}
+							{@const line = feedNamesLine(p.feedNames, q)}
+							<div class="text-[12px] text-mist-400" title={p.feedNames.join(', ')}>
+								in the kill feed as {#each line.names as f, i (f.name)}<span
+										class={f.hit ? 'font-semibold text-accent' : ''}>{f.name}</span
+									>{i < line.names.length - 1
+										? ', '
+										: ''}{/each}{#if line.more}{` and ${line.more} more`}{/if}
+							</div>
+						{/if}
 						<div class="font-mono text-[12.5px] text-mist-400">{p.steamId}</div>
 					</td>
 					<td class="whitespace-nowrap" title={fmtTime(p.lastSeen)}>{fmtAgo(p.lastSeen)}</td>

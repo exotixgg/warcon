@@ -422,6 +422,12 @@ export interface DossierView {
 	steamId: string;
 	name: string;
 	names: string[];
+	/** the names the kill feed showed for them that were not the ones the server listed them under,
+	 *  newest first, on the servers the viewer can open; `holder` is another listed player whose name
+	 *  it read as */
+	feedNames: { name: string; holder: string | null; lastSeen: string }[];
+	/** how many there are in all: the list holds the newest 200 at most */
+	feedNamesTotal: number;
 	online: { serverId: string; serverName: string } | null;
 	steamEnabled: boolean;
 	steam: SteamView | null;

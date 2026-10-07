@@ -39,6 +39,7 @@ import { phaseOffset, pickDue, withHold } from './poller-schedule';
 import { rollupSamples } from './rollups';
 import { liveView } from './live';
 import { feedDemoKills, forgetKillDistance, forgetNameChange } from './feed-events';
+import { startAliasFill } from './aliases';
 import { publicMessage } from './http';
 import * as metrics from './metrics';
 import type { LiveView } from '$lib/types';
@@ -238,6 +239,9 @@ async function beat(env: Env): Promise<void> {
 			forgetKillDistance();
 			forgetNameChange();
 		}
+		// Once, in the background: the names the kill feed showed before they were recorded (a fill
+		// that did not finish is tried again a while later).
+		startAliasFill(env);
 		if (now - s.settingsAt >= SETTINGS_MS) {
 			s.settingsAt = now;
 			await loadSettings(env).catch((err) => console.error('[warcon] settings', err));
