@@ -456,7 +456,7 @@ describe('riskKickVerdict', () => {
 				{ ...cfg, spareReserved: false },
 				{ ...base, reserved: true, bannedOn: [{ serverName: 'x', reason: '' }] }
 			)
-		).toBe('banned on x');
+		).toBe('banned on another server of this organisation');
 	});
 	test('order: ban elsewhere, watchlist, VAC, age', () => {
 		expect(riskKickVerdict(cfg, { ...base, watched: { reason: 'tk' } })).toBe(
@@ -544,8 +544,8 @@ describe('riskKickVerdict', () => {
 			resembles: [{ name: 'Nomad', steamId: '76561198000000009', serverName: 'EU #2' }]
 		};
 		expect(riskKickVerdict({ ...none, kickAtScore: 50 }, lookalike)).toBeNull();
-		expect(riskKickVerdict({ ...none, kickAtScore: 20 }, lookalike)).toMatch(
-			/^medium risk \(40\): Steam account is 8 days old; Name resembles banned Nomad/
+		expect(riskKickVerdict({ ...none, kickAtScore: 20 }, lookalike)).toBe(
+			'medium risk (40): Steam account is 8 days old; Name resembles a banned player'
 		);
 		// any whole score works, not only the level boundaries
 		expect(riskKickVerdict({ ...none, kickAtScore: 40 }, lookalike)).toStartWith(
@@ -590,12 +590,38 @@ describe('riskKickVerdict', () => {
 		expect(riskKickVerdict(levelOnly, { ...old, performance })).toStartWith('medium risk (28)');
 		expect(riskKickVerdict(levelOnly, old)).toBeNull();
 	});
+	test('a verdict never says which server banned the player, why, or whom they resemble', () => {
+		const signals = {
+			...base,
+			steamEnabled: false,
+			profile: null,
+			bannedOn: [
+				{ serverName: 'EU #2', reason: 'Griefing' },
+				{ serverName: 'EU #3', reason: 'Cheating' }
+			],
+			resembles: [{ name: 'Nomad', steamId: '76561198000000009', serverName: 'EU #2' }]
+		};
+		const verdicts = [
+			riskKickVerdict(cfg, signals),
+			riskKickVerdict({ ...cfg, bannedElsewhere: false, kickAtScore: 50 }, signals)
+		];
+		expect(verdicts).toEqual([
+			'banned on another server of this organisation',
+			// two bans read as one line, not two
+			'high risk (100): Banned on another server of this organisation; Name resembles a banned player [Steam not checked]'
+		]);
+		for (const v of verdicts)
+			for (const told of ['EU #', 'Griefing', 'Cheating', 'Nomad', '76561198000000009'])
+				expect({ v, told: v!.includes(told) }).toEqual({ v, told: false });
+	});
 	test('the risk level works from local signals alone and says when Steam was not checked', () => {
 		const v = riskKickVerdict(
 			{ ...cfg, bannedElsewhere: false, kickAtScore: 50 },
 			{ ...base, steamEnabled: false, profile: null, bannedOn: [{ serverName: 'x', reason: 'tk' }] }
 		);
-		expect(v).toBe('high risk (60): Banned on x: tk [Steam not checked]');
+		expect(v).toBe(
+			'high risk (60): Banned on another server of this organisation [Steam not checked]'
+		);
 		expect(
 			riskKickVerdict(
 				{ ...cfg, kickAtScore: 50 },

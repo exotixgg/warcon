@@ -227,7 +227,9 @@ describe.skipIf(!hasTestDb)('what View shows', () => {
 		};
 		const viewer = await seen('viewer');
 		expect(viewer).not.toContain('cheating on the other server');
-		expect(viewer).not.toContain('Banned on');
+		expect(viewer).not.toContain(`Banned on ${w.otherServer.id.slice(2)}`);
+		// the org's list holds the player on the viewer's server too, so it counts on the page
+		expect(viewer).toContain('Banned on every server of the organisation: org-wide ban reason');
 		expect(viewer).not.toContain('K/D');
 		const owner = await seen('owner');
 		expect(owner).toContain('cheating on the other server');

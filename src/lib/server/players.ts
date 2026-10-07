@@ -1,6 +1,6 @@
 // Player intelligence: the dossier (history across an org's servers, Steam data, risk, notes,
 // watchlist) and the marks the players table shows next to each connected player.
-import { and, asc, desc, eq, inArray, isNull, ne, or, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, ne, or, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { ApiError, str } from './http';
 import { queryAudit, writeAudit } from './audit';
@@ -17,6 +17,8 @@ import { orgListMembership, playerBans } from './lists';
 import { banReasonsFor } from './ban-reasons';
 import {
 	kills,
+	listEntries,
+	lists,
 	playerMarks,
 	playerNotes,
 	playerSessions,
@@ -83,28 +85,81 @@ export async function orgServers(env: Env, orgId: string): Promise<{ id: string;
 
 export interface BanHit {
 	steamId: string;
-	serverId: string;
+	/** null for the org's list, which holds the player on every server that takes it */
+	serverId: string | null;
 	serverName: string;
 	reason: string;
 	bannedBy: string;
 }
 
-/** The poller's snapshot of the ban lists of these servers. */
-async function bansOn(env: Env, serverIds: string[]): Promise<BanHit[]> {
+/** How a ban on the org's list names where it holds. */
+const ORG_WIDE = 'every server of the organisation';
+
+/**
+ * The bans that hold players on these servers: the game's own lists as the worker last read them,
+ * and the panel's, which since 9887c93 never reach those lists: each server's own list and the
+ * org's list. `steamIds` narrows it to those players; without it, every banned player of the
+ * servers (for the lookalike names).
+ */
+async function bansOn(
+	env: Env,
+	orgId: string,
+	serverIds: string[],
+	steamIds: string[] | null
+): Promise<BanHit[]> {
 	if (!serverIds.length) return [];
-	const rows = await env.db
-		.select({
-			steamId: serverBans.steamId,
-			serverId: serverBans.serverId,
-			serverName: servers.name,
-			reason: serverBans.reason,
-			bannedBy: serverBans.bannedBy
-		})
-		.from(serverBans)
-		.innerJoin(servers, eq(servers.id, serverBans.serverId))
-		.where(inArray(serverBans.serverId, serverIds))
-		.limit(5000);
-	return rows;
+	const now = new Date();
+	const [game, panel] = await Promise.all([
+		env.db
+			.select({
+				steamId: serverBans.steamId,
+				serverId: serverBans.serverId,
+				serverName: servers.name,
+				reason: serverBans.reason,
+				bannedBy: serverBans.bannedBy
+			})
+			.from(serverBans)
+			.innerJoin(servers, eq(servers.id, serverBans.serverId))
+			.where(
+				and(
+					inArray(serverBans.serverId, serverIds),
+					steamIds ? inArray(serverBans.steamId, steamIds) : undefined
+				)
+			)
+			.limit(5000),
+		env.db
+			.select({
+				steamId: listEntries.steamId,
+				serverId: lists.serverId,
+				serverName: servers.name,
+				reason: listEntries.reason
+			})
+			.from(listEntries)
+			.innerJoin(lists, eq(lists.id, listEntries.listId))
+			.leftJoin(servers, eq(servers.id, lists.serverId))
+			.where(
+				and(
+					eq(lists.orgId, orgId),
+					eq(lists.kind, 'ban'),
+					or(isNull(lists.serverId), inArray(lists.serverId, serverIds)),
+					steamIds ? inArray(listEntries.steamId, steamIds) : undefined,
+					isNull(listEntries.removedAt),
+					or(isNull(listEntries.expiresAt), gt(listEntries.expiresAt, now))
+				)
+			)
+			.limit(5000)
+	]);
+	return [
+		...game,
+		...panel.map((e) => ({
+			steamId: e.steamId,
+			serverId: e.serverId,
+			serverName: e.serverId === null ? ORG_WIDE : (e.serverName ?? ''),
+			reason: e.reason,
+			// who placed a panel ban is staff's; nothing here shows it
+			bannedBy: ''
+		}))
+	];
 }
 
 /** Last name each SteamID was seen with on these servers. */
@@ -144,7 +199,7 @@ export async function localSignals(
 					inArray(playerMarks.steamId, ids)
 				)
 			),
-		bansOn(env, orgServerIds)
+		bansOn(env, orgId, orgServerIds, withResembles ? null : ids)
 	]);
 	const watched = new Map(marks.map((m) => [m.steamId, { reason: m.reason }]));
 	const bannedIds = [...new Set(bans.map((b) => b.steamId))];
@@ -158,7 +213,13 @@ export async function localSignals(
 	for (const b of bans) if (!serverOfBan.has(b.steamId)) serverOfBan.set(b.steamId, b.serverName);
 	for (const p of players) {
 		if (!isSteamId(p.steamId) || out.has(p.steamId)) continue;
-		const bannedOn = bans.filter((b) => b.steamId === p.steamId && b.serverId !== currentServerId);
+		// A ban on this server, or on the org's list (which holds the player here as well), is the
+		// panel's to enforce here, not a sign from elsewhere; on the dossier every ban counts.
+		const bannedOn = bans.filter(
+			(b) =>
+				b.steamId === p.steamId &&
+				(currentServerId === null || (b.serverId !== null && b.serverId !== currentServerId))
+		);
 		const resembles = bannedNamed
 			.filter((b) => b.steamId !== p.steamId && namesResemble(p.name, b.name))
 			.slice(0, 5)
@@ -389,7 +450,7 @@ export async function dossier(
 			updatedAt: iso(mark?.updatedAt)
 		},
 		bannedOn: (l?.bannedOn ?? []).map((b) => ({
-			serverId: b.serverId,
+			serverId: b.serverId ?? '',
 			serverName: b.serverName,
 			reason: b.reason,
 			bannedBy: b.bannedBy
