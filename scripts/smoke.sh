@@ -311,7 +311,7 @@ check import-post '"imported":1' "$(req $J1 POST /api/orgs/$ORG/lists/import '{"
 check import-managed '"76561198100000301":{"state":"applied","managed":true' "$(req $J1 GET /api/servers/$SID/lists/state)"
 check import-reason '"reason":"Cheating - aimbot"' "$(req $J1 GET /api/orgs/$ORG/lists/ban/entries)"
 check import-gone '0' "$(req $J1 GET /api/orgs/$ORG/lists/import | grep -c 76561198100000301)"
-check dossier-orglists '"orgLists":{"ban":{' "$(req $J1 GET /api/servers/$SID/players/76561198100000301)"
+check dossier-org-ban '"source":"org","serverId":null,"serverName":"","reason":"Cheating - aimbot"' "$(req $J1 GET /api/servers/$SID/players/76561198100000301)"
 # expiry: a ban that lifts itself ten seconds from now; members-reserved: james links a SteamID and gets a slot
 EXP=$(date -u -v+12S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '+12 seconds' +%Y-%m-%dT%H:%M:%SZ)
 EB="{\"steamId\":\"76561198100000701\",\"expiresAt\":\"$EXP\"}"

@@ -407,23 +407,22 @@ export async function dossier(
 	]);
 	const l = local.get(steamId);
 	const admin = access.caps.has('players.notes.manage');
-	// What staff wrote about the player is for those who may write it; an org list entry (its
-	// reason, who added it, where it stands on every server) for those who may edit that list,
-	// and the org's quick reasons for those who may ban on its list.
+	// What staff wrote about the player is for those who may write it; the org's reserved-slot
+	// entry (its note, who added it, where it stands on every server) for that list's editors.
 	const staff = admin || access.caps.has('players.notes');
 	const canBan = !!listsRole?.kinds.includes('ban');
+	const canReserve = !!listsRole?.kinds.includes('reserve');
 	// The ban dialog's quick reasons and the message the org wraps its bans in are for those who
 	// may ban here or on the org's list, as on the Bans tab.
 	const banStaff = canBan || access.caps.has('bans.manage');
 	const [membership, reasons, bans, seedReward] = await Promise.all([
-		org && listsRole
-			? orgListMembership(env, org, steamId, listsRole.kinds)
+		org && canReserve
+			? orgListMembership(env, org, steamId, ['reserve'])
 			: { ban: null, reserve: null },
 		banStaff ? banReasonsFor(env, server.orgId) : null,
 		playerBans(env, server.orgId, visible, steamId, canBan),
 		seedProgress(env, server, access, steamId)
 	]);
-	const banReasons = canBan ? reasons : null;
 	return {
 		steamId,
 		name,
@@ -434,12 +433,7 @@ export async function dossier(
 			? { serverId: online.serverId, serverName: nameOf.get(online.serverId) || '' }
 			: null,
 		orgServerCount: allOrgServers.length,
-		orgLists: {
-			...membership,
-			canBan,
-			canReserve: !!listsRole?.kinds.includes('reserve'),
-			banReasons
-		},
+		orgLists: { reserve: membership.reserve, canBan, canReserve },
 		steamEnabled: steamEnabled(env),
 		steam: steamView(profiles.get(steamId)),
 		risk: riskFor(env, profiles.get(steamId), l, performance.get(steamId), staff),
@@ -449,12 +443,6 @@ export async function dossier(
 			updatedByName: staff ? (mark?.updatedByName ?? '') : '',
 			updatedAt: iso(mark?.updatedAt)
 		},
-		bannedOn: (l?.bannedOn ?? []).map((b) => ({
-			serverId: b.serverId ?? '',
-			serverName: b.serverName,
-			reason: b.reason,
-			bannedBy: b.bannedBy
-		})),
 		bans,
 		banDialog: reasons ? { reasons, message: org?.banMessage ?? DEFAULT_BAN_MESSAGE } : null,
 		combat,

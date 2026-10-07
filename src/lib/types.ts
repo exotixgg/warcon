@@ -435,20 +435,16 @@ export interface DossierView {
 	watch: { watched: boolean; reason: string; updatedByName: string; updatedAt: string | null };
 	/** every ban that holds the player on the servers the viewer can open */
 	bans: PlayerBanView[];
-	bannedOn: { serverId: string; serverName: string; reason: string; bannedBy: string }[];
 	/** how many servers the organisation runs (for "banned on N of M") */
 	orgServerCount: number;
 	/**
-	 * the player's entry on each organisation list the viewer edits (null on the others, whatever
-	 * they hold), and which lists those are
+	 * the player's reserved slot on the organisation's list when the viewer edits that list, and
+	 * which of the organisation's lists the viewer edits
 	 */
 	orgLists: {
-		ban: ListEntryView | null;
 		reserve: ListEntryView | null;
 		canBan: boolean;
 		canReserve: boolean;
-		/** the org's quick reasons for the ban dialog; null unless canBan */
-		banReasons: BanReason[] | null;
 	};
 	/** the org's quick reasons and ban message for the ban dialog; null unless the viewer may ban
 	 *  here (Bans) or on the org's list */
