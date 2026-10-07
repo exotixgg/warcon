@@ -652,6 +652,12 @@ webhook with only that box ticked; the server's **Settings** tab connects one in
 (which lets anyone post to the channel) is stored encrypted with `ENCRYPTION_KEY` and never shown
 again. **Test** posts a message right away; delivery failures show on the org page.
 
+Trigger actions can be narrowed to some kinds of rule: untick _Every kind of rule_ under them and
+tick the kinds, grouped as on the Automation tab, so a channel for kicks and bans leaves out the
+welcome whispers and scheduled broadcasts. A rule added later posts to every webhook that carries
+its kind. Team balance and AFK protection post only what fails; the audit trail keeps every action
+whatever goes to Discord.
+
 Posts carry the name and picture the webhook has in Discord (the channel's settings →
 Integrations → Webhooks). A status card keeps the name it was posted under: after renaming the
 webhook, delete the card and Warcon posts it again under the new name.
@@ -1528,7 +1534,7 @@ GET  /api/servers/:id/leaderboard?scope=server|org&range=current|s:<season>|7d|3
 GET  /api/servers/:id/leaderboard/export?<same query>   the board as CSV, every row from the top, up to 10,000
 POST /api/servers/:id/players/:steamId/notes {body}     DELETE .../notes/:noteId   PUT .../watch {watched,reason}
 GET/POST /api/servers/:id/triggers {kind,name,enabled,config}   PATCH/DELETE .../:triggerId   POST .../dry-run {kind,config}
-GET/POST /api/orgs/:id/webhooks {label,url,events,serverIds,enabled,statusEnabled,statusStyle,statusIntervalS,linkStatus,linkLeaderboard,linkPanel}   PATCH/DELETE .../:webhookId   POST .../:webhookId/test
+GET/POST /api/orgs/:id/webhooks {label,url,events,triggerKinds[]|null,serverIds,enabled,statusEnabled,statusStyle,statusIntervalS,linkStatus,linkLeaderboard,linkPanel}   PATCH/DELETE .../:webhookId   POST .../:webhookId/test
 GET  /api/public/servers/:id   .../leaderboard (same query as above, page 20 at most)   .../players/:steamId      the public pages' JSON: no session, 404 while the page is off, limited per address
 GET  /api/orgs/:id/lists                                 the org lists the caller edits (kinds), with counts, and the caller's role on them; for ban list editors, the ban message and quick reasons
 GET/POST /api/orgs/:id/lists/:kind/entries {steamId,reason,expiresAt}   PATCH {reason,expiresAt} / DELETE .../entries/:steamId   (kind = ban | reserve, needing Org ban list or Org reserved slots; ?includeRemoved=1)

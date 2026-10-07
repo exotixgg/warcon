@@ -874,6 +874,8 @@ export const webhooks = pgTable(
 		urlHint: text('url_hint').notNull().default(''),
 		/** event classes to mirror; see webhook-delivery.ts */
 		events: jsonb('events').notNull(),
+		/** with Automation ticked, the kinds of rule it carries; null = every kind */
+		triggerKinds: jsonb('trigger_kinds'),
 		/** null = every server in the org */
 		serverIds: jsonb('server_ids'),
 		enabled: boolean('enabled').notNull().default(true),

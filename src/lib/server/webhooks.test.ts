@@ -1,11 +1,13 @@
 import { describe, expect, test } from 'bun:test';
 import { validateWebhookUrl } from './webhooks';
+import { RULE_KINDS } from '../rule-kinds';
 import {
 	buildEmbed,
 	buildTeamKillEmbed,
 	buildWatchedJoinEmbed,
 	classify,
-	dossierUrl
+	dossierUrl,
+	takesRule
 } from './webhook-delivery';
 
 const token = 'a'.repeat(68);
@@ -50,6 +52,15 @@ describe('classify', () => {
 	});
 });
 
+describe('takesRule', () => {
+	test('every kind of rule when the webhook names none, else only the kinds it names', () => {
+		expect(takesRule({ triggerKinds: null }, 'trigger.welcome')).toBe(true);
+		expect(takesRule({ triggerKinds: ['team_kill'] }, 'trigger.team_kill')).toBe(true);
+		expect(takesRule({ triggerKinds: ['team_kill'] }, 'trigger.welcome')).toBe(false);
+		expect(takesRule({ triggerKinds: ['team_kill'] }, 'trigger.team_kill_x')).toBe(false);
+	});
+});
+
 describe('buildEmbed', () => {
 	const row = {
 		id: 1,
@@ -77,6 +88,15 @@ describe('buildEmbed', () => {
 		expect(e.description).toContain('Kicked Nomad.');
 		expect(e.color).toBe(0x7bc462);
 		expect(e.timestamp).toBe('2026-09-09T12:00:00.000Z');
+	});
+	test('a rule posts under the name the webhook dialog gives its kind', () => {
+		for (const { kind, label } of RULE_KINDS) {
+			const e = buildEmbed('Warcon', { ...row, category: 'trigger', action: `trigger.${kind}` });
+			expect({ kind, title: e.title.toLowerCase() }).toEqual({
+				kind,
+				title: `trigger · ${label.toLowerCase()}`
+			});
+		}
 	});
 	test('failures are red and say so', () => {
 		const e = buildEmbed('Warcon', {

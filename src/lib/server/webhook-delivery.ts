@@ -10,6 +10,7 @@ import { OWNERS_ROWS } from './audit-rows';
 import { escapeMarkdown } from './webhook-status-core';
 import { KILL_DISTANCE_SKIP } from './kill-distance';
 import { causeLabel } from '$lib/causes';
+import { FAILURES_ONLY } from '$lib/rule-kinds';
 import type { KillView } from '$lib/types';
 
 export const WEBHOOK_EVENTS = [
@@ -142,13 +143,15 @@ const ACTION_TITLES: Record<string, string> = {
 	'trigger.faction_change': 'Trigger · faction change whisper',
 	'trigger.broadcast': 'Trigger · scheduled broadcast',
 	'trigger.empty_reset': 'Trigger · empty-server map reset',
-	'trigger.risk_kick': 'Trigger · risk kick',
+	'trigger.risk_kick': 'Trigger · kick on connect risk',
+	'trigger.ping_kick': 'Trigger · high ping kick',
 	'trigger.restart_notice': 'Trigger · restart notice',
 	'trigger.team_kill': 'Trigger · team kill limit',
+	'trigger.seed_reward': 'Trigger · seeding reward',
 	'trigger.match_broadcast': 'Trigger · match broadcast',
 	'trigger.name_filter': 'Trigger · name filter',
 	'trigger.kill_rate': 'Trigger · kill rate watch',
-	'trigger.two_teams': 'Trigger · two-team mode',
+	'trigger.two_teams': 'Trigger · team balance',
 	'trigger.kill_distance': 'Trigger · kill distance watch',
 	'trigger.afk_protection': 'Trigger · AFK protection',
 	'trigger.name_change': 'Trigger · name change watch',
@@ -474,13 +477,19 @@ export async function recordResult(env: Env, id: string, result: PostResult): Pr
  * one; Discord hears only of those that fail, so they neither flood a staff channel nor push another
  * rule's card out of the webhook's queue.
  */
-const QUIET_WHEN_OK = new Set(['trigger.two_teams', 'trigger.afk_protection']);
+const QUIET_WHEN_OK = new Set(FAILURES_ONLY.map((kind) => `trigger.${kind}`));
 /** A delivery that only notes what a rule saw and let be: the audit trail keeps it, Discord does not. */
 const NOTES = new Set([KILL_DISTANCE_SKIP]);
 const isNote = (row: AuditRow): boolean => {
 	const action = (row.detail as { rconAction?: unknown } | null)?.rconAction;
 	return typeof action === 'string' && NOTES.has(action);
 };
+
+/** A webhook ticked for Automation carries every kind of rule, or only the kinds it names. */
+export function takesRule(hook: Pick<WebhookRow, 'triggerKinds'>, action: string): boolean {
+	const kinds = hook.triggerKinds as string[] | null;
+	return !kinds || kinds.includes(action.slice('trigger.'.length));
+}
 
 /** Fans one audit row out to the org's webhooks that want its event class. Never throws. */
 export async function notifyWebhooks(env: Env, row: AuditRow): Promise<void> {
@@ -496,6 +505,7 @@ export async function notifyWebhooks(env: Env, row: AuditRow): Promise<void> {
 		for (const hook of hooks) {
 			const events = (hook.events as string[]) || [];
 			if (!events.includes(event)) continue;
+			if (event === 'triggers' && !takesRule(hook, row.action)) continue;
 			const only = hook.serverIds as string[] | null;
 			if (only && only.length && (!row.serverId || !only.includes(row.serverId))) continue;
 			embed ??= withDossierLink(env, row, buildEmbed(env.APP_NAME || 'Warcon', row));
