@@ -1,7 +1,8 @@
 // An organisation's seasons for its boards: the official ones from $lib/seasons and the
-// community's own (the seasons table), chained per kind; what its boards open on; which window of
-// the kept history a board reads; and an owner's changes to the community's seasons, each
-// audited. A season that has not started is listed in the Seasons tab but never read.
+// community's own (the seasons table), chained per kind; what its boards open on and the columns
+// its public boards leave out; which window of the kept history a board reads; and an owner's
+// changes to the community's seasons, each audited. A season that has not started is listed in
+// the Seasons tab but never read.
 import { and, asc, count, eq } from 'drizzle-orm';
 import type { Env } from './env';
 import { ApiError, newId, str } from './http';
@@ -18,12 +19,21 @@ import {
 	type BoardOpens,
 	type Season
 } from '$lib/seasons';
-import { isFixedRange, rangeStart, type BoardRange, type FixedRange } from '$lib/leaderboard';
+import {
+	isFixedRange,
+	rangeStart,
+	storedHidden,
+	type BoardColumn,
+	type BoardRange,
+	type FixedRange
+} from '$lib/leaderboard';
 
 export interface OrgSeasons {
 	/** the official seasons, then the community's own, each kind in start order */
 	seasons: Season[];
 	opens: BoardOpens;
+	/** the columns its public boards leave out */
+	hidden: BoardColumn[];
 }
 
 /** Read once a minute per organisation: every board and career asks. */
@@ -58,7 +68,7 @@ export const listSeasons = (env: Env, orgId: string): Promise<OrgSeasons> =>
 async function readSeasons(env: Env, orgId: string): Promise<OrgSeasons> {
 	const [[org], own] = await Promise.all([
 		env.db
-			.select({ opens: organizations.boardOpens })
+			.select({ opens: organizations.boardOpens, hidden: organizations.boardHidden })
 			.from(organizations)
 			.where(eq(organizations.id, orgId)),
 		env.db
@@ -75,7 +85,8 @@ async function readSeasons(env: Env, orgId: string): Promise<OrgSeasons> {
 				own.map((s) => ({ key: s.key, name: s.name, startsAt: s.startsAt.toISOString() }))
 			)
 		],
-		opens: isBoardOpens(org?.opens) ? org.opens : 'official'
+		opens: isBoardOpens(org?.opens) ? org.opens : 'official',
+		hidden: storedHidden(org?.hidden)
 	};
 }
 

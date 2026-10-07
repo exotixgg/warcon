@@ -1,9 +1,12 @@
 import { describe, expect, test } from 'bun:test';
 import {
+	BOARD_COLUMNS,
+	BOARD_METRICS,
 	boardQueryParams,
 	DEFAULT_BOARD_QUERY,
 	DEFAULT_FLOOR_MINUTES,
 	groupCareer,
+	hiddenColumns,
 	kdRatio,
 	matchResult,
 	meetsFloor,
@@ -11,9 +14,12 @@ import {
 	parseBoardQuery,
 	perHour,
 	perMinute,
+	publicQuery,
 	rangeStart,
+	storedHidden,
 	streak,
 	winRate,
+	type BoardQuery,
 	type BoardRow
 } from './leaderboard';
 
@@ -133,6 +139,36 @@ describe('board query', () => {
 		const now = Date.parse('2026-09-17T12:00:00Z');
 		expect(rangeStart('7d', now)?.toISOString()).toBe('2026-09-10T12:00:00.000Z');
 		expect(rangeStart('all', now)).toBeNull();
+	});
+});
+
+describe('the columns a public board leaves out', () => {
+	test("an owner names any column but kills, in any order; it keeps the table's", () => {
+		expect(hiddenColumns([])).toEqual([]);
+		expect(hiddenColumns(['cash', 'seeded', 'cash'])).toEqual(['seeded', 'cash']);
+		for (const bad of [['kills'], ['seeded', 'kills'], ['luck'], [1], 'cash', null, { cash: true }])
+			expect({ bad, hidden: hiddenColumns(bad) }).toEqual({ bad, hidden: null });
+	});
+
+	test('a stored list is read leaving out what is not a column today', () => {
+		expect(storedHidden(['cash', 'gone', 'kills', 'seeded'])).toEqual(['seeded', 'cash']);
+		expect(storedHidden(null)).toEqual([]);
+	});
+
+	test('a sort by a column left out ranks by kills, the board’s first order', () => {
+		const q: BoardQuery = { ...DEFAULT_BOARD_QUERY, sort: 'cash', dir: 'asc', page: 2 };
+		expect(publicQuery(q, ['cash'])).toEqual({ ...q, sort: 'kills', dir: 'desc' });
+		expect(publicQuery(q, ['seeded', 'headshots'])).toBe(q);
+		expect(publicQuery({ ...q, sort: 'wins' }, ['results']).sort).toBe('kills');
+		expect(publicQuery({ ...q, sort: 'cashPerMin' }, ['cashPerMin']).sort).toBe('kills');
+	});
+
+	test('every metric a board sorts by has its column', () => {
+		for (const m of BOARD_METRICS)
+			expect({ metric: m.key, column: BOARD_COLUMNS.some((c) => c.sort === m.key) }).toEqual({
+				metric: m.key,
+				column: true
+			});
 	});
 });
 

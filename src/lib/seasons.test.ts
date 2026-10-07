@@ -107,7 +107,8 @@ describe('resolveWindow', () => {
 	]);
 	const os = (opens: OrgSeasons['opens']): OrgSeasons => ({
 		seasons: [...official, ...custom],
-		opens
+		opens,
+		hidden: []
 	});
 	const now = at('2026-10-20T12:00:00.000Z');
 
@@ -151,7 +152,8 @@ describe('resolveWindow', () => {
 		expect(resolveWindow('current', os('custom'), before)).toMatchObject({ range: 'all' });
 		const theirsLater: OrgSeasons = {
 			seasons: [...official, ...chainSeasons('custom', [{ key: 'x', name: 'X', startsAt: NOV }])],
-			opens: 'custom'
+			opens: 'custom',
+			hidden: []
 		};
 		expect(resolveWindow('current', theirsLater, now).range).toBe('s:o2');
 		expect(resolveWindow('current', { ...theirsLater, opens: 'official' }, before).range).toBe(

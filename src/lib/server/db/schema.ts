@@ -202,6 +202,11 @@ export const organizations = pgTable('organizations', {
 	banMessage: text('ban_message').notNull().default('{reason}'),
 	/** what the org's boards open on: official | custom | 30d | all ($lib/seasons, BOARD_OPENS) */
 	boardOpens: text('board_opens').notNull().default('official'),
+	/** the columns its public boards leave out ($lib/leaderboard, BOARD_COLUMNS); none = every one */
+	boardHidden: text('board_hidden')
+		.array()
+		.notNull()
+		.default(sql`'{}'::text[]`),
 	createdAt: ts('created_at').notNull().defaultNow(),
 	updatedAt: ts('updated_at').notNull().defaultNow()
 });

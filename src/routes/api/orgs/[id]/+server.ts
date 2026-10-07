@@ -11,9 +11,9 @@ import {
 } from '$lib/server/orgs';
 
 /**
- * {name} or {discordInviteUrl} or {boardOpens} or {membersReserved} or {banMessage} or {banReasons}
- * for org owners; {serverLimit, suspended, reason, allowPublicStatus, allowPublicLeaderboards} for
- * the site owner only.
+ * {name} or {discordInviteUrl} or {boardOpens} or {boardHidden} or {membersReserved} or
+ * {banMessage} or {banReasons} for org owners; {serverLimit, suspended, reason, allowPublicStatus,
+ * allowPublicLeaderboards} for the site owner only.
  */
 export const PATCH = route(async (event) => {
 	const env = getEnv();
