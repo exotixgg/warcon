@@ -9,7 +9,14 @@ import { assertRate } from '$lib/server/ratelimit';
 import { exportBoard } from '$lib/server/leaderboards';
 import { boardWindow } from '$lib/server/seasons';
 import { csvCell, fileSlug } from '$lib/server/csv';
-import { kdRatio, parseBoardQuery, perHour, winRate, type BoardRow } from '$lib/leaderboard';
+import {
+	kdRatio,
+	parseBoardQuery,
+	perHour,
+	perMinute,
+	winRate,
+	type BoardRow
+} from '$lib/leaderboard';
 
 /** Rounded to `digits` places; empty where the ratio has nothing to divide by. */
 const round = (v: number | null, digits: number): number | null =>
@@ -38,6 +45,7 @@ const COLUMNS: [string, (r: BoardRow) => unknown][] = [
 	['draws', (r) => r.draws],
 	['win_pct', (r) => percent(winRate(r.wins, r.losses, r.draws))],
 	['cash', (r) => r.cash],
+	['cash_per_min', (r) => round(perMinute(r.cash, r.cashMinutes, r.seedMinutes), 1)],
 	['last_seen', (r) => r.lastSeen]
 ];
 

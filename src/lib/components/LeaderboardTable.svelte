@@ -13,6 +13,7 @@
 		BOARD_RANGES,
 		kdRatio,
 		perHour,
+		perMinute,
 		winRate,
 		type BoardMetric,
 		type BoardQuery,
@@ -196,6 +197,13 @@
 				<SortHeader {sort} key="wins" num title="Wins, losses, draws">W-L-D</SortHeader>
 				<SortHeader {sort} key="winRate" num>Win %</SortHeader>
 				<SortHeader {sort} key="cash" num>Cash</SortHeader>
+				<SortHeader
+					{sort}
+					key="cashPerMin"
+					num
+					title="Cash per minute of the sessions it was made in, seed time left out"
+					>$/min</SortHeader
+				>
 				{#if !final}<th>Last seen</th>{/if}
 			</tr>
 		</thead>
@@ -223,11 +231,15 @@
 					<td class="num whitespace-nowrap">{r.wins}-{r.losses}-{r.draws}</td>
 					<td class="num">{pct(winRate(r.wins, r.losses, r.draws))}</td>
 					<td class="num">{fmtCash(r.cash)}</td>
-					{#if !final}<td class="whitespace-nowrap text-mist-400">{seen(r.lastSeen)}</td>{/if}
+					<td class="num">{fmtCash(perMinute(r.cash, r.cashMinutes, r.seedMinutes))}</td>
+					{#if !final}
+						<!-- A clock time may wrap after its date: the panel's rows are two lines (name, SteamID) anyway. -->
+						<td class="text-mist-400 {relative ? 'whitespace-nowrap' : ''}">{seen(r.lastSeen)}</td>
+					{/if}
 				</tr>
 			{:else}
 				<tr>
-					<td colspan={final ? 14 : 15} class="py-6 text-center text-mist-600">
+					<td colspan={final ? 15 : 16} class="py-6 text-center text-mist-600">
 						{#if !board || loading}Loading…{:else if board.total === 0 && query.minMinutes > 0}Nobody
 							has {fmtMinutes(query.minMinutes)} of playtime in this {what}{final
 								? ''

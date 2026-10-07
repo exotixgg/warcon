@@ -22,7 +22,8 @@ export type BoardMetric =
 	| 'matches'
 	| 'wins'
 	| 'winRate'
-	| 'cash';
+	| 'cash'
+	| 'cashPerMin';
 export type SortDir = 'asc' | 'desc';
 
 export const BOARD_RANGES: { key: FixedRange; label: string; ms: number | null }[] = [
@@ -41,7 +42,8 @@ export const BOARD_METRICS: { key: BoardMetric; label: string }[] = [
 	{ key: 'matches', label: 'Matches' },
 	{ key: 'wins', label: 'Wins' },
 	{ key: 'winRate', label: 'Win rate' },
-	{ key: 'cash', label: 'Cash' }
+	{ key: 'cash', label: 'Cash' },
+	{ key: 'cashPerMin', label: 'Cash per minute' }
 ];
 const METRIC_KEYS = new Set<string>(BOARD_METRICS.map((m) => m.key));
 const RANGE_KEYS = new Set<string>(BOARD_RANGES.map((r) => r.key));
@@ -91,6 +93,12 @@ export interface BoardRow {
 	/** the name last seen with, or the id when no session has one */
 	name: string;
 	minutes: number;
+	/**
+	 * the whole time of the sessions the cash came from, what cash per minute divides by: a session
+	 * that began before the range or season counts all of its cash, so all of its minutes too, and
+	 * one still going when a season ended counts in neither; the playtime itself on all time
+	 */
+	cashMinutes: number;
 	/** minutes on with the server low, as the Seeding reward counts them (0 without a rule) */
 	seedMinutes: number;
 	kills: number;
@@ -187,6 +195,13 @@ export const kdRatio = (kills: number, deaths: number): number | null =>
 export const perHour = (kills: number, minutes: number, seedMinutes = 0): number | null =>
 	minutes - seedMinutes > 0 ? kills / ((minutes - seedMinutes) / 60) : null;
 
+/**
+ * Cash per minute of the time it was made in (a board row's cashMinutes), seed time left out as
+ * for kills per hour; nothing without such time.
+ */
+export const perMinute = (cash: number, minutes: number, seedMinutes = 0): number | null =>
+	minutes - seedMinutes > 0 ? cash / (minutes - seedMinutes) : null;
+
 /** Wins over the matches that had a result; nothing without one. */
 export const winRate = (wins: number, losses: number, draws: number): number | null => {
 	const played = wins + losses + draws;
@@ -276,6 +291,8 @@ export function metricValue(row: BoardRow, metric: BoardMetric): number | null {
 			return winRate(row.wins, row.losses, row.draws);
 		case 'cash':
 			return row.cash;
+		case 'cashPerMin':
+			return perMinute(row.cash, row.cashMinutes, row.seedMinutes);
 	}
 }
 
