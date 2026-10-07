@@ -5,7 +5,8 @@ import {
 	buildTeamKillEmbed,
 	buildWatchedJoinEmbed,
 	classify,
-	dossierUrl
+	dossierUrl,
+	takesRule
 } from './webhook-delivery';
 
 const token = 'a'.repeat(68);
@@ -47,6 +48,15 @@ describe('classify', () => {
 		expect(classify({ category: 'org', action: 'org.invite.create' })).toBe('management');
 		expect(classify({ category: 'auth', action: 'login' })).toBe('auth');
 		expect(classify({ category: 'weird', action: 'x' })).toBeNull();
+	});
+});
+
+describe('takesRule', () => {
+	test('every kind of rule when the webhook names none, else only the kinds it names', () => {
+		expect(takesRule({ triggerKinds: null }, 'trigger.welcome')).toBe(true);
+		expect(takesRule({ triggerKinds: ['team_kill'] }, 'trigger.team_kill')).toBe(true);
+		expect(takesRule({ triggerKinds: ['team_kill'] }, 'trigger.welcome')).toBe(false);
+		expect(takesRule({ triggerKinds: ['team_kill'] }, 'trigger.team_kill_x')).toBe(false);
 	});
 });
 

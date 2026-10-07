@@ -530,6 +530,8 @@ export interface WebhookView {
 	label: string;
 	urlHint: string;
 	events: string[];
+	/** with Automation ticked, the kinds of rule it carries; null is every kind */
+	triggerKinds: TriggerKind[] | null;
 	serverIds: string[] | null;
 	enabled: boolean;
 	/** keeps a live status card per covered server in the channel, edited in place */

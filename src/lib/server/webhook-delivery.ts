@@ -482,6 +482,12 @@ const isNote = (row: AuditRow): boolean => {
 	return typeof action === 'string' && NOTES.has(action);
 };
 
+/** A webhook ticked for Automation carries every kind of rule, or only the kinds it names. */
+export function takesRule(hook: Pick<WebhookRow, 'triggerKinds'>, action: string): boolean {
+	const kinds = hook.triggerKinds as string[] | null;
+	return !kinds || kinds.includes(action.slice('trigger.'.length));
+}
+
 /** Fans one audit row out to the org's webhooks that want its event class. Never throws. */
 export async function notifyWebhooks(env: Env, row: AuditRow): Promise<void> {
 	try {
@@ -496,6 +502,7 @@ export async function notifyWebhooks(env: Env, row: AuditRow): Promise<void> {
 		for (const hook of hooks) {
 			const events = (hook.events as string[]) || [];
 			if (!events.includes(event)) continue;
+			if (event === 'triggers' && !takesRule(hook, row.action)) continue;
 			const only = hook.serverIds as string[] | null;
 			if (only && only.length && (!row.serverId || !only.includes(row.serverId))) continue;
 			embed ??= withDossierLink(env, row, buildEmbed(env.APP_NAME || 'Warcon', row));
