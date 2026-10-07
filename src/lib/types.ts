@@ -370,6 +370,8 @@ export interface PlayerMark {
 	risk: RiskView;
 	/** the Steam profile's name, as the dossier shows it; null without a profile on record */
 	steamName: string | null;
+	/** kills and deaths over the matches the player finished on this server; null before the first */
+	record: { kills: number; deaths: number } | null;
 }
 
 export interface PlayerNoteView {

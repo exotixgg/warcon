@@ -22,6 +22,7 @@ import {
 	playerMarks,
 	playerNotes,
 	playerSessions,
+	playerTotals,
 	serverBans,
 	servers,
 	triggers
@@ -265,7 +266,7 @@ export async function marksFor(
 	// Bans elsewhere in the org count only where the reader could open them, as in the dossier.
 	const orgIds = (await accessibleServers(env, user, server.orgId)).map((s) => s.id);
 	const staff = access.caps.has('players.notes') || access.caps.has('players.notes.manage');
-	const [profiles, local, counts, performance] = await Promise.all([
+	const [profiles, local, counts, performance, totals] = await Promise.all([
 		getProfiles(env, ids),
 		localSignals(env, server.orgId, orgIds, server.id, players),
 		env.db
@@ -273,9 +274,21 @@ export async function marksFor(
 			.from(playerSessions)
 			.where(and(eq(playerSessions.serverId, server.id), inArray(playerSessions.steamId, ids)))
 			.groupBy(playerSessions.steamId),
-		riskPerformanceFor(env, orgIds, ids)
+		riskPerformanceFor(env, orgIds, ids),
+		// the matches each player finished here, which the Teams view's shuffle can spread by
+		env.db
+			.select({
+				steamId: playerTotals.steamId,
+				kills: playerTotals.kills,
+				deaths: playerTotals.deaths
+			})
+			.from(playerTotals)
+			.where(and(eq(playerTotals.serverId, server.id), inArray(playerTotals.steamId, ids)))
 	]);
 	const visits = new Map(counts.map((c) => [c.steamId, num(c.n)]));
+	const records = new Map(
+		totals.map((t) => [t.steamId, { kills: num(t.kills), deaths: num(t.deaths) }])
+	);
 	return ids.map((steamId) => {
 		const l = local.get(steamId);
 		return {
@@ -284,7 +297,8 @@ export async function marksFor(
 			reason: staff ? (l?.watched?.reason ?? '') : '',
 			firstVisit: (visits.get(steamId) ?? 0) <= 1,
 			risk: riskFor(env, profiles.get(steamId), l, performance.get(steamId), staff),
-			steamName: profiles.get(steamId)?.persona || null
+			steamName: profiles.get(steamId)?.persona || null,
+			record: records.get(steamId) ?? null
 		};
 	});
 }
