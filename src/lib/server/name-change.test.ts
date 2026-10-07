@@ -2,8 +2,10 @@ import { describe, expect, test } from 'bun:test';
 import {
 	nameChangeStep,
 	nameKey,
+	namesShownElse,
 	pruneNameTracks,
 	readName,
+	sessionSweep,
 	validateNameChange,
 	type NameTracks
 } from './name-change';
@@ -293,5 +295,55 @@ describe('validateNameChange', () => {
 		expect(
 			validateNameChange({ changes: 0, windowMinutes: 99999, action: 'ban', takenOnly: 1 })
 		).toMatchObject({ changes: 1, windowMinutes: 120, action: 'alert', takenOnly: true });
+	});
+});
+
+describe('the names a batch showed that were not the listed ones', () => {
+	const server = list(['1', 'Ghostpepper'], ['2', '[R-14] ✪ Silver Fox'], ['3', '[ABC] Steady']);
+
+	test("each player's other name once, with the listed player whose name it read as", () => {
+		expect(
+			namesShownElse(
+				[
+					p('1', '✪ SiIver Fox'),
+					p('1', '✪ SiIver Fox'),
+					p('1', 'Tango'),
+					// their own name with another clan tag, a player off the list, a blank name
+					p('3', '[XYZ] Steady'),
+					p('9', 'Silver Fox'),
+					p('2', '  ')
+				],
+				server
+			)
+		).toEqual([
+			{ steamId: '1', name: '✪ SiIver Fox', holder: '2' },
+			{ steamId: '1', name: 'Tango', holder: null }
+		]);
+	});
+});
+
+describe('the list as the sessions give it', () => {
+	test('sessions join in order and leave some seconds after they end; a later session takes over', () => {
+		const at = (s: number) => new Date(s * 1000);
+		const listedAt = sessionSweep(
+			[
+				{ steamId: '1', name: 'Alpha', joinedAt: at(0), leftAt: at(100) },
+				{ steamId: '2', name: 'Bravo', joinedAt: at(10), leftAt: null },
+				{ steamId: '1', name: 'Alpha2', joinedAt: at(105), leftAt: at(200) }
+			],
+			10_000
+		);
+		expect([...listedAt(5_000)]).toEqual([['1', 'Alpha']]);
+		expect([...listedAt(50_000)]).toEqual([
+			['1', 'Alpha'],
+			['2', 'Bravo']
+		]);
+		// ended at 100 s, still listed for the slack, then the next session holds the name
+		expect(listedAt(104_000).get('1')).toBe('Alpha');
+		expect(listedAt(106_000).get('1')).toBe('Alpha2');
+		// the first session's end does not take the second one off
+		expect(listedAt(150_000).get('1')).toBe('Alpha2');
+		expect(listedAt(211_000).has('1')).toBe(false);
+		expect(listedAt(211_000).get('2')).toBe('Bravo');
 	});
 });

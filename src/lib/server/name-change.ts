@@ -241,3 +241,85 @@ export function pruneNameTracks(cfg: NameChangeConfig, tracks: NameTracks, now: 
 	const from = now - cfg.windowMinutes * 60_000;
 	for (const [id, t] of tracks) if (t.seenAt < from) tracks.delete(id);
 }
+
+/** A name the feed showed for a player that was not the one the list held for them. */
+export interface ShownElse {
+	steamId: string;
+	name: string;
+	/** the listed player whose name it read as, when it was someone else's */
+	holder: string | null;
+}
+
+/**
+ * The names some kills showed that were not the ones the list held for their players (their own
+ * name with a clan tag put on, taken off or swapped is the same name), each player's name once,
+ * with the listed player whose name it read as. A player not on the list, or shown under a blank
+ * name, is not judged. `readings` keeps the names read across calls.
+ */
+export function namesShownElse(
+	shown: readonly ShownName[],
+	listed: ReadonlyMap<string, string>,
+	readings: Map<string, NameReading> = new Map()
+): ShownElse[] {
+	const read = (name: string): NameReading => {
+		let r = readings.get(name);
+		if (!r) readings.set(name, (r = readName(name)));
+		return r;
+	};
+	const out = new Map<string, ShownElse>();
+	for (const p of shown) {
+		const own = listed.get(p.steamId);
+		if (own === undefined || p.name === own || !p.name.trim()) continue;
+		const key = `${p.steamId}\n${p.name}`;
+		if (out.has(key)) continue;
+		const r = read(p.name);
+		if (ownName(r, read(own))) continue;
+		out.set(key, {
+			steamId: p.steamId,
+			name: p.name,
+			holder: holderOf(listed, p.steamId, r, read)
+		});
+	}
+	return [...out.values()];
+}
+
+/** One session as a replay reads it: who was listed under which name, from when until when. */
+export interface ListedSession {
+	steamId: string;
+	name: string;
+	joinedAt: Date | string;
+	leftAt: Date | string | null;
+}
+
+/**
+ * The player list as a server's sessions give it at a moment, for a replay that moves forward in
+ * time (`at` never goes back): sessions, given in join order, join it as they start and leave it
+ * `slackMs` after they end (a kill is received a second or two after it happened); a player's later
+ * session takes over their name. The name is the session's last, which is the list's but for a clan
+ * tag changed during it.
+ */
+export function sessionSweep(
+	sessions: readonly ListedSession[],
+	slackMs = 10_000
+): (at: number) => ReadonlyMap<string, string> {
+	const listed = new Map<string, string>();
+	const holding = new Map<string, number>();
+	const ends = sessions
+		.flatMap((s, i) => (s.leftAt ? [{ i, until: new Date(s.leftAt).getTime() + slackMs }] : []))
+		.sort((a, b) => a.until - b.until);
+	let joins = 0;
+	let leaves = 0;
+	return (at) => {
+		for (; joins < sessions.length && new Date(sessions[joins].joinedAt).getTime() <= at; joins++) {
+			listed.set(sessions[joins].steamId, sessions[joins].name);
+			holding.set(sessions[joins].steamId, joins);
+		}
+		for (; leaves < ends.length && ends[leaves].until < at; leaves++) {
+			const s = sessions[ends[leaves].i];
+			if (holding.get(s.steamId) !== ends[leaves].i) continue;
+			listed.delete(s.steamId);
+			holding.delete(s.steamId);
+		}
+		return listed;
+	};
+}

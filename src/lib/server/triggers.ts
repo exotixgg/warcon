@@ -107,6 +107,7 @@ import {
 	nameChangeSettingsKey,
 	nameChangeStep,
 	pruneNameTracks,
+	sessionSweep,
 	type NameChangeConfig,
 	type NameReading,
 	type NameTracks
@@ -2255,15 +2256,16 @@ export async function dryRun(
 				result.notes.push('Could not read the reserved slots; nobody was spared for one.');
 			}
 		}
-		// The list at the kill being replayed: sessions join it in order and leave it once they have
-		// ended, a few seconds' slack for a kill received just after its player left.
-		const listed = new Map<string, string>();
-		const holding = new Map<string, number>();
-		const ends = sessions
-			.flatMap((s, i) => (s.leftAt ? [{ i, until: new Date(s.leftAt).getTime() + 10_000 }] : []))
-			.sort((a, b) => a.until - b.until);
-		let joins = 0;
-		let leaves = 0;
+		// The list at the kill being replayed, a few seconds' slack for a kill received just after its
+		// player left.
+		const listedAt = sessionSweep(
+			sessions.map((s) => ({
+				steamId: s.steamId,
+				name: s.name,
+				joinedAt: s.joinedAt,
+				leftAt: s.leftAt
+			}))
+		);
 		const tracks: NameTracks = new Map();
 		const readings = new Map<string, NameReading>();
 		const kicked = (steamId: string) =>
@@ -2271,20 +2273,7 @@ export async function dryRun(
 		for (let i = 0; i < rows.length; i++) {
 			const r = rows[i];
 			const at = new Date(r.ts).getTime();
-			for (
-				;
-				joins < sessions.length && new Date(sessions[joins].joinedAt).getTime() <= at;
-				joins++
-			) {
-				listed.set(sessions[joins].steamId, sessions[joins].name);
-				holding.set(sessions[joins].steamId, joins);
-			}
-			for (; leaves < ends.length && ends[leaves].until < at; leaves++) {
-				const s = sessions[ends[leaves].i];
-				if (holding.get(s.steamId) !== ends[leaves].i) continue;
-				listed.delete(s.steamId);
-				holding.delete(s.steamId);
-			}
+			const listed = listedAt(at);
 			if (i % 1000 === 0) pruneNameTracks(c, tracks, at);
 			const shown: { steamId: string; name: string }[] = [];
 			if (r.killer && r.killerName !== null) shown.push({ steamId: r.killer, name: r.killerName });

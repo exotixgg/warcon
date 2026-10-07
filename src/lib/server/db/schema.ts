@@ -580,6 +580,32 @@ export const kills = pgTable(
 export type KillRow = typeof kills.$inferSelect;
 
 /**
+ * The names the kill feed showed for a player that were not the one the server's player list held
+ * for them then (a clan tag put on, taken off or swapped is the same name): one row per server,
+ * player and name, with when it was first and last shown and, when it read as another listed
+ * player's name, that player. Staff see them on the dossier as "in the kill feed as", and the
+ * Players searches match them. Written by the worker as kill batches come in (feed-events.ts) and,
+ * once, from the history (aliases.ts); kept for good. A name that differs is rare, so rows are few.
+ */
+export const playerAliases = pgTable(
+	'player_aliases',
+	{
+		serverId: text('server_id').notNull(),
+		steamId: text('steam_id').notNull(),
+		/** as the feed showed it */
+		name: text('name').notNull(),
+		/** the listed player whose name it read as, the last time it was someone else's */
+		holder: text('holder'),
+		firstSeen: ts('first_seen').notNull(),
+		lastSeen: ts('last_seen').notNull()
+	},
+	(t) => [
+		primaryKey({ columns: [t.serverId, t.steamId, t.name] }),
+		index('player_aliases_steam_idx').on(t.steamId)
+	]
+);
+
+/**
  * One row per player per match: the game's own scoreboard counters over the match (kills, deaths,
  * the change in cash) with the player's time on and side, and, on servers with a kill feed, what
  * the feed adds (headshots, team kills, suicides, vehicle kills, longest shot, best streaks).
