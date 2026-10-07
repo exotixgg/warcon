@@ -568,6 +568,7 @@ describe.skipIf(!hasTestDb)('player totals against the reads they replace', () =
 						steamId: o.steamId as string,
 						name: ((o.name as string | null) || o.steamId) as string,
 						minutes: Math.round(Number(o.minutes)),
+						cashMinutes: Math.round(Number(o.cashMinutes)),
 						seedMinutes: Math.round(Number(o.seedMinutes)),
 						kills: Number(o.kills),
 						deaths: Number(o.deaths),

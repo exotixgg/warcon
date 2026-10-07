@@ -25,6 +25,7 @@ import { skipQueued } from './json-webhook-queue';
 import type { InviteStatus, InviteView, ListSyncSummary, OrgMemberView, OrgView } from '$lib/types';
 import { parseDiscordInvite } from '$lib/discord-invite';
 import { isBoardOpens } from '$lib/seasons';
+import { hiddenColumns } from '$lib/leaderboard';
 import { forgetSeasons } from './seasons';
 import {
 	BAN_MESSAGE_VARS,
@@ -327,10 +328,17 @@ export async function updateOrg(
 		set.boardOpens = body.boardOpens;
 		detail.boardOpens = body.boardOpens;
 	}
+	if (body.boardHidden !== undefined) {
+		const hidden = hiddenColumns(body.boardHidden);
+		if (!hidden)
+			throw new ApiError(400, "Leave out only the board's own columns, and never kills.");
+		set.boardHidden = hidden;
+		detail.boardHidden = hidden;
+	}
 	if (!Object.keys(set).length) throw new ApiError(400, 'Nothing to update.');
 	set.updatedAt = new Date();
 	await env.db.update(organizations).set(set).where(eq(organizations.id, org.id));
-	if (set.boardOpens !== undefined) forgetSeasons(org.id);
+	if (set.boardOpens !== undefined || set.boardHidden !== undefined) forgetSeasons(org.id);
 	await writeAudit(env, req, {
 		actor,
 		orgId: org.id,

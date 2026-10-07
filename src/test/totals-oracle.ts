@@ -1,8 +1,10 @@
 // The all-time and ranged reads as they were before player_totals and player_days (main at
 // edf2aab), word for word, for the exactness tests to hold the totals against: each sums every
 // session and every line of an ended match on the servers asked about, since `from` (the epoch for
-// all time). A finished season's read is the same sums cut at its end (seasonSums). Frozen on
-// purpose: if the reads' meaning changes, this file changes with it in the same commit,
+// all time). A finished season's read is the same sums cut at its end (seasonSums). The time
+// behind the cash (cash_minutes) is each counted session's whole length, from its join; the rows
+// below compare its value, not its scale (parts that cancel sum to 0.000000 where this reads 0).
+// Frozen on purpose: if the reads' meaning changes, this file changes with it in the same commit,
 // deliberately. totalsRows, rangeRows and seasonRows, at the end, are the other side.
 import { sql, type SQL } from 'drizzle-orm';
 import type { DbOrTx } from '$lib/server/db';
@@ -40,6 +42,7 @@ const base = (ids: string[], from: Date, steamIds: string[] | null = null) => sq
 	sess AS (
 		SELECT steam_id,
 		       SUM(EXTRACT(EPOCH FROM (COALESCE(left_at, now()) - GREATEST(joined_at, ${from}::timestamptz)))) / 60 AS minutes,
+		       SUM(EXTRACT(EPOCH FROM (COALESCE(left_at, now()) - joined_at))) / 60 AS cash_minutes,
 		       SUM(seed_seconds) / 60.0 AS seed_minutes, MAX(last_seen) AS last_seen,
 		       SUM(cash) AS cash
 		  FROM player_sessions WHERE server_id IN ${ids} AND last_seen >= ${from}
@@ -58,8 +61,8 @@ const base = (ids: string[], from: Date, steamIds: string[] | null = null) => sq
 		  FROM lines GROUP BY steam_id),
 	base AS (
 		SELECT steam_id,
-		       COALESCE(sess.minutes, 0) AS minutes, COALESCE(sess.seed_minutes, 0) AS seed_minutes,
-		       COALESCE(sess.cash, 0) AS cash, sess.last_seen,
+		       COALESCE(sess.minutes, 0) AS minutes, COALESCE(sess.cash_minutes, 0) AS cash_minutes,
+		       COALESCE(sess.seed_minutes, 0) AS seed_minutes, COALESCE(sess.cash, 0) AS cash, sess.last_seen,
 		       COALESCE(mt.kills, 0) AS kills, COALESCE(mt.deaths, 0) AS deaths,
 		       COALESCE(mt.headshots, 0) AS headshots, COALESCE(mt.team_kills, 0) AS team_kills,
 		       COALESCE(mt.suicides, 0) AS suicides, COALESCE(mt.vehicle_kills, 0) AS vehicle_kills,
@@ -78,6 +81,8 @@ const seasonSums = (ids: string[], from: Date, to: Date) => sql`
 		SELECT steam_id,
 		       SUM(EXTRACT(EPOCH FROM (LEAST(COALESCE(left_at, now()), ${to}::timestamptz)
 		                               - GREATEST(joined_at, ${from}::timestamptz)))) / 60 AS minutes,
+		       COALESCE(SUM(EXTRACT(EPOCH FROM (left_at - joined_at))) FILTER (WHERE left_at < ${to}), 0) / 60
+		         AS cash_minutes,
 		       COALESCE(SUM(seed_seconds) FILTER (WHERE left_at < ${to}), 0) / 60.0 AS seed_minutes,
 		       COALESCE(SUM(cash) FILTER (WHERE left_at < ${to}), 0) AS cash
 		  FROM player_sessions WHERE server_id IN ${ids} AND last_seen >= ${from}
@@ -95,8 +100,9 @@ const seasonSums = (ids: string[], from: Date, to: Date) => sql`
 		  FROM lines GROUP BY steam_id),
 	base AS (
 		SELECT steam_id,
-		       COALESCE(sess.minutes, 0) AS minutes, COALESCE(sess.seed_minutes, 0) AS seed_minutes,
-		       COALESCE(sess.cash, 0) AS cash, NULL::timestamptz AS last_seen,
+		       COALESCE(sess.minutes, 0) AS minutes, COALESCE(sess.cash_minutes, 0) AS cash_minutes,
+		       COALESCE(sess.seed_minutes, 0) AS seed_minutes, COALESCE(sess.cash, 0) AS cash,
+		       NULL::timestamptz AS last_seen,
 		       COALESCE(mt.kills, 0) AS kills, COALESCE(mt.deaths, 0) AS deaths,
 		       COALESCE(mt.headshots, 0) AS headshots, COALESCE(mt.team_kills, 0) AS team_kills,
 		       COALESCE(mt.suicides, 0) AS suicides, COALESCE(mt.vehicle_kills, 0) AS vehicle_kills,
@@ -115,7 +121,8 @@ const METRIC_SQL: Record<BoardMetric, SQL> = {
 	matches: sql`matches`,
 	wins: sql`wins`,
 	winRate: sql`CASE WHEN wins + losses + draws > 0 THEN wins::float / (wins + losses + draws) ELSE NULL END`,
-	cash: sql`cash`
+	cash: sql`cash`,
+	cashPerMin: sql`CASE WHEN cash_minutes - seed_minutes > 0 THEN cash::float / (cash_minutes - seed_minutes) ELSE NULL END`
 };
 
 /** Every all-time base row over these servers (or these players), each column as text. */
@@ -137,7 +144,8 @@ export async function oracleRangeBase(
 	if (!ids.length) return [];
 	return (await db.execute(sql`
 		WITH ${base(ids, from, steamIds)}
-		SELECT steam_id, minutes::text, seed_minutes::text, cash::text, last_seen::text, kills::text, deaths::text,
+		SELECT steam_id, minutes::text, trim_scale(cash_minutes)::text AS cash_minutes, seed_minutes::text,
+		       cash::text, last_seen::text, kills::text, deaths::text,
 		       headshots::text, team_kills::text, suicides::text, vehicle_kills::text, kill_streak::text,
 		       death_streak::text, matches::text, wins::text, losses::text, draws::text
 		  FROM base ORDER BY steam_id`)) as Record<string, string | null>[];
@@ -164,7 +172,8 @@ export async function oracleBoard(
 			 WHERE minutes >= ${q.minMinutes}
 			 ORDER BY ${METRIC_SQL[q.sort]} ${order}, kills DESC, steam_id
 			 LIMIT ${limit} OFFSET ${offset})
-		SELECT r.steam_id AS "steamId", r.minutes::text, r.seed_minutes::text AS "seedMinutes", r.cash::text,
+		SELECT r.steam_id AS "steamId", r.minutes::text, r.cash_minutes::text AS "cashMinutes",
+		       r.seed_minutes::text AS "seedMinutes", r.cash::text,
 		       r.last_seen AS "lastSeen", r.kills::text, r.headshots::text, r.team_kills::text AS "teamKills",
 		       r.deaths::text, r.suicides::text, r.vehicle_kills::text AS "vehicleKills",
 		       r.kill_streak::text AS "killStreak", r.death_streak::text AS "deathStreak", r.matches::text,
@@ -218,7 +227,8 @@ export async function totalsRows(
 	if (!ids.length) return [];
 	return (await db.execute(sql`
 		WITH ${totalsBase(ids, steamIds)}
-		SELECT steam_id, minutes::text, seed_minutes::text, cash::text, last_seen::text, kills::text, deaths::text,
+		SELECT steam_id, minutes::text, trim_scale(cash_minutes)::text AS cash_minutes, seed_minutes::text,
+		       cash::text, last_seen::text, kills::text, deaths::text,
 		       headshots::text, team_kills::text, suicides::text, vehicle_kills::text, kill_streak::text,
 		       death_streak::text, matches::text, wins::text, losses::text, draws::text
 		  FROM base ORDER BY steam_id`)) as Record<string, string | null>[];
@@ -234,7 +244,8 @@ export async function oracleSeasonBase(
 	if (!ids.length) return [];
 	return (await db.execute(sql`
 		WITH ${seasonSums(ids, from, to)}
-		SELECT steam_id, minutes::text, seed_minutes::text, cash::text, last_seen::text, kills::text, deaths::text,
+		SELECT steam_id, minutes::text, trim_scale(cash_minutes)::text AS cash_minutes, seed_minutes::text,
+		       cash::text, last_seen::text, kills::text, deaths::text,
 		       headshots::text, team_kills::text, suicides::text, vehicle_kills::text, kill_streak::text,
 		       death_streak::text, matches::text, wins::text, losses::text, draws::text
 		  FROM base ORDER BY steam_id`)) as Record<string, string | null>[];
@@ -249,7 +260,8 @@ export async function rangeRows(
 	if (!ids.length) return [];
 	return (await db.execute(sql`
 		WITH ${rangeBase(ids, from)}
-		SELECT steam_id, minutes::text, seed_minutes::text, cash::text, last_seen::text, kills::text, deaths::text,
+		SELECT steam_id, minutes::text, trim_scale(cash_minutes)::text AS cash_minutes, seed_minutes::text,
+		       cash::text, last_seen::text, kills::text, deaths::text,
 		       headshots::text, team_kills::text, suicides::text, vehicle_kills::text, kill_streak::text,
 		       death_streak::text, matches::text, wins::text, losses::text, draws::text
 		  FROM base ORDER BY steam_id`)) as Record<string, string | null>[];
@@ -265,7 +277,8 @@ export async function seasonRows(
 	if (!ids.length) return [];
 	return (await db.execute(sql`
 		WITH ${seasonBase(ids, from, to)}
-		SELECT steam_id, minutes::text, seed_minutes::text, cash::text, last_seen::text, kills::text, deaths::text,
+		SELECT steam_id, minutes::text, trim_scale(cash_minutes)::text AS cash_minutes, seed_minutes::text,
+		       cash::text, last_seen::text, kills::text, deaths::text,
 		       headshots::text, team_kills::text, suicides::text, vehicle_kills::text, kill_streak::text,
 		       death_streak::text, matches::text, wins::text, losses::text, draws::text
 		  FROM base ORDER BY steam_id`)) as Record<string, string | null>[];

@@ -1,13 +1,15 @@
 <script lang="ts">
-	// The organisation's seasons: what its boards open on, the official seasons (Warcon's list),
-	// and its own, each running until the next one starts. A season that has not begun can be
-	// moved or deleted; one that has keeps its start, so its standings never move.
+	// The organisation's seasons: what its boards open on, the columns its public boards show, the
+	// official seasons (Warcon's list), and its own, each running until the next one starts. A
+	// season that has not begun can be moved or deleted; one that has keeps its start, so its
+	// standings never move.
 	import { invalidateAll } from '$app/navigation';
 	import { api, errorMessage } from '$lib/api';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import Modal from '$lib/components/Modal.svelte';
+	import BoardColumnsPanel from '../BoardColumnsPanel.svelte';
 	import {
 		BOARD_OPENS,
 		currentSeason,
@@ -130,6 +132,8 @@
 			still pick another season or range on the board.
 		</p>
 	</div>
+
+	<BoardColumnsPanel org={data.org} hidden={data.hidden} />
 
 	<div class="panel">
 		<span class="label-sm">Official seasons</span>

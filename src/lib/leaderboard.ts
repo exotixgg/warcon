@@ -1,4 +1,4 @@
-// Leaderboards and careers: the vocabulary (ranges, seasons, scopes, metrics), how a board
+// Leaderboards and careers: the vocabulary (ranges, seasons, scopes, metrics, columns), how a board
 // request travels in a query string, and the maths that turns stored counts into a result, a
 // streak or a ratio. Pure and client-safe; the queries live in $lib/server/leaderboards.ts and
 // mirror the result rule below in SQL where they aggregate.
@@ -22,7 +22,8 @@ export type BoardMetric =
 	| 'matches'
 	| 'wins'
 	| 'winRate'
-	| 'cash';
+	| 'cash'
+	| 'cashPerMin';
 export type SortDir = 'asc' | 'desc';
 
 export const BOARD_RANGES: { key: FixedRange; label: string; ms: number | null }[] = [
@@ -41,7 +42,8 @@ export const BOARD_METRICS: { key: BoardMetric; label: string }[] = [
 	{ key: 'matches', label: 'Matches' },
 	{ key: 'wins', label: 'Wins' },
 	{ key: 'winRate', label: 'Win rate' },
-	{ key: 'cash', label: 'Cash' }
+	{ key: 'cash', label: 'Cash' },
+	{ key: 'cashPerMin', label: 'Cash per minute' }
 ];
 const METRIC_KEYS = new Set<string>(BOARD_METRICS.map((m) => m.key));
 const RANGE_KEYS = new Set<string>(BOARD_RANGES.map((r) => r.key));
@@ -91,6 +93,12 @@ export interface BoardRow {
 	/** the name last seen with, or the id when no session has one */
 	name: string;
 	minutes: number;
+	/**
+	 * the whole time of the sessions the cash came from, what cash per minute divides by: a session
+	 * that began before the range or season counts all of its cash, so all of its minutes too, and
+	 * one still going when a season ended counts in neither; the playtime itself on all time
+	 */
+	cashMinutes: number;
 	/** minutes on with the server low, as the Seeding reward counts them (0 without a rule) */
 	seedMinutes: number;
 	kills: number;
@@ -171,6 +179,60 @@ export function boardQueryParams(q: BoardQuery): Record<string, string> {
 	return out;
 }
 
+/**
+ * The board's columns after rank and player, in table order: what each is called on the Seasons
+ * tab and above the column, and the metric its header sorts by. Kills always show, since a board
+ * opens ranked by them; an organisation's owners may leave any other out of its public boards.
+ */
+export const BOARD_COLUMNS = [
+	{ key: 'playtime', label: 'Playtime', head: 'Playtime', sort: 'playtime' },
+	{ key: 'seeded', label: 'Seed time', head: 'Seeded', sort: 'seeded' },
+	{ key: 'kills', label: 'Kills', head: 'K', sort: 'kills' },
+	{ key: 'deaths', label: 'Deaths', head: 'D', sort: 'deaths' },
+	{ key: 'kd', label: 'Kills per death', head: 'K/D', sort: 'kd' },
+	{ key: 'perHour', label: 'Kills per hour', head: 'K/h', sort: 'perHour' },
+	{ key: 'headshots', label: 'Headshots', head: 'HS', sort: null },
+	{ key: 'teamKills', label: 'Team kills', head: 'TK', sort: null },
+	{ key: 'matches', label: 'Matches', head: 'Matches', sort: 'matches' },
+	{ key: 'results', label: 'Wins, losses, draws', head: 'W-L-D', sort: 'wins' },
+	{ key: 'winRate', label: 'Win rate', head: 'Win %', sort: 'winRate' },
+	{ key: 'cash', label: 'Cash', head: 'Cash', sort: 'cash' },
+	{ key: 'cashPerMin', label: 'Cash per minute', head: '$/min', sort: 'cashPerMin' },
+	{ key: 'lastSeen', label: 'Last seen', head: 'Last seen', sort: null }
+] as const satisfies readonly {
+	key: string;
+	label: string;
+	head: string;
+	sort: BoardMetric | null;
+}[];
+export type BoardColumn = (typeof BOARD_COLUMNS)[number]['key'];
+/** The column no board leaves out. */
+export const FIXED_COLUMN: BoardColumn = 'kills';
+
+/**
+ * The columns to leave out of an organisation's public boards, as an owner sends them: column
+ * keys, never kills, in the table's order with repeats dropped. Null for anything else.
+ */
+export function hiddenColumns(v: unknown): BoardColumn[] | null {
+	if (!Array.isArray(v)) return null;
+	const keys = new Set<unknown>(v);
+	for (const k of keys)
+		if (k === FIXED_COLUMN || !BOARD_COLUMNS.some((c) => c.key === k)) return null;
+	return BOARD_COLUMNS.filter((c) => keys.has(c.key)).map((c) => c.key);
+}
+
+/** The stored list read back: whatever is not one of today's columns (or is kills) is left out. */
+export const storedHidden = (v: unknown): BoardColumn[] =>
+	Array.isArray(v)
+		? BOARD_COLUMNS.filter((c) => c.key !== FIXED_COLUMN && v.includes(c.key)).map((c) => c.key)
+		: [];
+
+/** A public board's query: a sort by a column the organisation leaves out ranks by kills instead. */
+export function publicQuery(q: BoardQuery, hidden: readonly BoardColumn[]): BoardQuery {
+	const off = BOARD_COLUMNS.some((c) => c.sort === q.sort && hidden.includes(c.key));
+	return off ? { ...q, sort: DEFAULT_BOARD_QUERY.sort, dir: DEFAULT_BOARD_QUERY.dir } : q;
+}
+
 /** Where a rolling range starts; null for all time. */
 export const rangeStart = (range: FixedRange, now = Date.now()): Date | null => {
 	const ms = BOARD_RANGES.find((r) => r.key === range)?.ms ?? null;
@@ -186,6 +248,13 @@ export const kdRatio = (kills: number, deaths: number): number | null =>
 /** Kills per hour of playtime, seed time left out; nothing without playtime beyond it. */
 export const perHour = (kills: number, minutes: number, seedMinutes = 0): number | null =>
 	minutes - seedMinutes > 0 ? kills / ((minutes - seedMinutes) / 60) : null;
+
+/**
+ * Cash per minute of the time it was made in (a board row's cashMinutes), seed time left out as
+ * for kills per hour; nothing without such time.
+ */
+export const perMinute = (cash: number, minutes: number, seedMinutes = 0): number | null =>
+	minutes - seedMinutes > 0 ? cash / (minutes - seedMinutes) : null;
 
 /** Wins over the matches that had a result; nothing without one. */
 export const winRate = (wins: number, losses: number, draws: number): number | null => {
@@ -276,6 +345,8 @@ export function metricValue(row: BoardRow, metric: BoardMetric): number | null {
 			return winRate(row.wins, row.losses, row.draws);
 		case 'cash':
 			return row.cash;
+		case 'cashPerMin':
+			return perMinute(row.cash, row.cashMinutes, row.seedMinutes);
 	}
 }
 
