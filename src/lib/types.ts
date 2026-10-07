@@ -433,6 +433,8 @@ export interface DossierView {
 	steam: SteamView | null;
 	risk: RiskView;
 	watch: { watched: boolean; reason: string; updatedByName: string; updatedAt: string | null };
+	/** every ban that holds the player on the servers the viewer can open */
+	bans: PlayerBanView[];
 	bannedOn: { serverId: string; serverName: string; reason: string; bannedBy: string }[];
 	/** how many servers the organisation runs (for "banned on N of M") */
 	orgServerCount: number;
@@ -448,9 +450,14 @@ export interface DossierView {
 		/** the org's quick reasons for the ban dialog; null unless canBan */
 		banReasons: BanReason[] | null;
 	};
+	/** the org's quick reasons and ban message for the ban dialog; null unless the viewer may ban
+	 *  here (Bans) or on the org's list */
+	banDialog: { reasons: BanReason[]; message: string } | null;
 	summary: {
 		sessions: number;
 		minutes: number;
+		/** of the minutes, those with the server low, as a Seeding reward counts them */
+		seedMinutes: number;
 		kills: number;
 		deaths: number;
 		firstSeen: string | null;
@@ -463,21 +470,74 @@ export interface DossierView {
 		serverName: string;
 		sessions: number;
 		minutes: number;
+		seedMinutes: number;
 		kills: number;
 		deaths: number;
 		lastSeen: string;
 	}[];
 	recent: DossierSession[];
 	notes: PlayerNoteView[];
-	actions: {
-		id: number;
-		ts: string;
-		actorName: string;
-		action: string;
-		serverName: string;
-		outcome: string;
-		message: string;
-	}[];
+	actions: DossierAction[];
+	/** where the player stands with this server's Seeding reward; null unless the viewer holds
+	 *  Automation here and the server has the rule switched on */
+	seedReward: SeedRewardProgress | null;
+}
+
+/** A ban that holds a player on a server the viewer can open, as the dossier lists it. */
+export interface PlayerBanView {
+	/** org: the organisation's ban list; server: one server's own list; game: the game's own list */
+	source: 'org' | 'server' | 'game';
+	/** the server it holds them on; null for the organisation's list, which holds them on every
+	 *  server that takes it */
+	serverId: string | null;
+	serverName: string;
+	reason: string;
+	/** when it was placed, where known */
+	addedAt: string | null;
+	/** when the panel lifts it; null for one with no end (the game's own list keeps none) */
+	expiresAt: string | null;
+	/** who placed it: a panel ban's author only for those who manage bans on that server or edit
+	 *  the org's ban list; the game's own name for one on its list */
+	by: string;
+	/** may the viewer lift it from the dossier (the route it calls checks again) */
+	canUnban: boolean;
+}
+
+/** One row of the dossier's admin actions: the trail row, with the parts of it the table shows. */
+export interface DossierAction {
+	id: number;
+	ts: string;
+	actorName: string;
+	action: string;
+	serverName: string;
+	outcome: string;
+	message: string;
+	/** the reason a hand-sent kick or ban gave */
+	reason: string;
+	/** what a hand-sent whisper said */
+	text: string;
+	/** the list a list row is about */
+	list: ListKind | null;
+	/** how long a ban or slot added or changed lasts: null when the row says nothing of it,
+	 *  `{ until: null }` for one with no end */
+	length: { until: string | null } | null;
+}
+
+/** Where a player stands with a server's Seeding reward, as the rule adds it up. */
+export interface SeedRewardProgress {
+	/** the rule's terms: `minutes` of seed time over the last `windowDays` earn a slot for
+	 *  `slotDays`, here or on every server of the org */
+	minutes: number;
+	windowDays: number;
+	lowAt: number;
+	untilFull: boolean;
+	slotDays: number;
+	scope: 'server' | 'org';
+	/** seed time banked on this server in the window */
+	seconds: number;
+	/** a reserved slot the player holds here, which the rule passes over them for; `until` when
+	 *  the panel lifts it, null for one with no end or one the game holds on its own list */
+	holdsSlot: { until: string | null } | null;
 }
 
 // ---- automation ---------------------------------------------------------------------------------

@@ -8,7 +8,7 @@
 // intact, and re-adding inserts a fresh row. Every org has exactly one list per kind and every
 // server one of each of its own; the lists table and server_lists join exist so a
 // later "subscribe to another org's list" is new rows, not a schema change.
-import { and, asc, count, desc, eq, inArray, isNull, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { ApiError, newId, str } from './http';
 import { writeAudit } from './audit';
@@ -51,6 +51,7 @@ import type {
 	ListSyncSummary,
 	OrgListsView,
 	BanState,
+	PlayerBanView,
 	ReservedSlotState,
 	ServerListsState
 } from '$lib/types';
@@ -919,6 +920,100 @@ export async function importEntries(
 		});
 	const sync = imported ? await gateway().syncOrg(env, org) : { servers: [] };
 	return { imported, skipped: picks.length - imported, sync };
+}
+
+/**
+ * Every ban that holds a player on the servers the reader can open, for the dossier: the org's
+ * list (once, where a server takes it), each server's own list and the game's own list. Who is
+ * banned and why is View, as each server's Bans tab says it; who placed a panel ban is for those
+ * who manage bans on that server or edit the org's ban list, as there, and so is lifting it.
+ */
+export async function playerBans(
+	env: Env,
+	orgId: string,
+	visible: { id: string; name: string; caps: readonly string[] }[],
+	steamId: string,
+	orgBanEditor: boolean,
+	now = new Date()
+): Promise<PlayerBanView[]> {
+	if (!visible.length) return [];
+	const ids = visible.map((s) => s.id);
+	const nameOf = new Map(visible.map((s) => [s.id, s.name]));
+	const bansHere = new Set(visible.filter((s) => s.caps.includes('bans.manage')).map((s) => s.id));
+	const [entries, game] = await Promise.all([
+		env.db
+			.select({
+				serverId: serverLists.serverId,
+				own: lists.serverId,
+				reason: listEntries.reason,
+				addedByName: listEntries.addedByName,
+				addedAt: listEntries.addedAt,
+				expiresAt: listEntries.expiresAt
+			})
+			.from(serverLists)
+			.innerJoin(lists, eq(lists.id, serverLists.listId))
+			.innerJoin(listEntries, eq(listEntries.listId, lists.id))
+			.where(
+				and(
+					inArray(serverLists.serverId, ids),
+					eq(lists.orgId, orgId),
+					eq(lists.kind, 'ban'),
+					eq(listEntries.steamId, steamId),
+					isNull(listEntries.removedAt),
+					or(isNull(listEntries.expiresAt), gt(listEntries.expiresAt, now))
+				)
+			),
+		env.db
+			.select({
+				serverId: serverBans.serverId,
+				reason: serverBans.reason,
+				bannedBy: serverBans.bannedBy,
+				bannedAtUtc: serverBans.bannedAtUtc
+			})
+			.from(serverBans)
+			.where(and(inArray(serverBans.serverId, ids), eq(serverBans.steamId, steamId)))
+	]);
+	const order = (id: string | null) => (id === null ? -1 : ids.indexOf(id));
+	const out: PlayerBanView[] = [];
+	const org = entries.filter((e) => e.own === null);
+	if (org.length) {
+		const e = org[0];
+		out.push({
+			source: 'org',
+			serverId: null,
+			serverName: '',
+			reason: e.reason,
+			addedAt: iso(e.addedAt),
+			expiresAt: iso(e.expiresAt),
+			by: orgBanEditor || org.some((t) => bansHere.has(t.serverId)) ? e.addedByName : '',
+			canUnban: orgBanEditor
+		});
+	}
+	for (const e of entries)
+		if (e.own !== null && e.own === e.serverId)
+			out.push({
+				source: 'server',
+				serverId: e.serverId,
+				serverName: nameOf.get(e.serverId) ?? '',
+				reason: e.reason,
+				addedAt: iso(e.addedAt),
+				expiresAt: iso(e.expiresAt),
+				by: orgBanEditor || bansHere.has(e.serverId) ? e.addedByName : '',
+				canUnban: bansHere.has(e.serverId)
+			});
+	// The game's own list: kept apart from the panel's, since lifting one leaves the other.
+	for (const g of game)
+		out.push({
+			source: 'game',
+			serverId: g.serverId,
+			serverName: nameOf.get(g.serverId) ?? '',
+			reason: g.reason,
+			addedAt: g.bannedAtUtc || null,
+			expiresAt: null,
+			by: g.bannedBy,
+			canUnban: bansHere.has(g.serverId)
+		});
+	return out.sort((a, b) => order(a.serverId) - order(b.serverId));
 }
 
 /** The player's active entries on the org lists named (those the reader edits), for the dossier. */

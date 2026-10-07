@@ -13,17 +13,30 @@ import {
 	type ServerRow,
 	type SessionUser
 } from './access';
-import { orgListMembership } from './lists';
+import { orgListMembership, playerBans } from './lists';
 import { banReasonsFor } from './ban-reasons';
-import { kills, playerMarks, playerNotes, playerSessions, serverBans, servers } from './db/schema';
+import {
+	kills,
+	playerMarks,
+	playerNotes,
+	playerSessions,
+	serverBans,
+	servers,
+	triggers
+} from './db/schema';
 import { getProfiles, isSteamId, steamEnabled, type SteamProfileRow } from './steam';
 import { accountAgeDays, assessRisk, namesResemble, type Risk, type RiskPerformance } from './risk';
 import { riskPerformanceFor } from './leaderboards';
+import { MAX_REASON, type SeedRewardConfig } from './trigger-rules';
+import { MAX_CHAT } from '$lib/chat';
+import { DEFAULT_BAN_MESSAGE } from '$lib/ban-message';
 import type {
+	DossierAction,
 	DossierView,
 	PlayerCombat,
 	PlayerMark,
 	PlayerNoteView,
+	SeedRewardProgress,
 	SteamView,
 	CombatSummary
 } from '$lib/types';
@@ -233,11 +246,13 @@ export async function dossier(
 	const [summary] = await db.execute<{
 		sessions: string;
 		minutes: string | null;
+		seedSeconds: string | null;
 		firstSeen: Date | null;
 		lastSeen: Date | null;
 	}>(sql`
 		SELECT COUNT(*) AS sessions,
 		       SUM(EXTRACT(EPOCH FROM (COALESCE(left_at, now()) - joined_at))) / 60 AS minutes,
+		       SUM(seed_seconds) AS "seedSeconds",
 		       MIN(joined_at) AS "firstSeen", MAX(last_seen) AS "lastSeen"
 		  FROM player_sessions WHERE steam_id = ${steamId} AND server_id IN ${ids.length ? ids : ['']}`);
 	const perServer = ids.length
@@ -245,11 +260,12 @@ export async function dossier(
 				serverId: string;
 				sessions: string;
 				minutes: string;
+				seedSeconds: string;
 				lastSeen: Date;
 			}>(sql`
 			SELECT server_id AS "serverId", COUNT(*) AS sessions,
 			       SUM(EXTRACT(EPOCH FROM (COALESCE(left_at, now()) - joined_at))) / 60 AS minutes,
-			       MAX(last_seen) AS "lastSeen"
+			       SUM(seed_seconds) AS "seedSeconds", MAX(last_seen) AS "lastSeen"
 			  FROM player_sessions WHERE steam_id = ${steamId} AND server_id IN ${ids}
 			 GROUP BY server_id ORDER BY "lastSeen" DESC`)
 		: [];
@@ -335,12 +351,18 @@ export async function dossier(
 	// and the org's quick reasons for those who may ban on its list.
 	const staff = admin || access.caps.has('players.notes');
 	const canBan = !!listsRole?.kinds.includes('ban');
-	const [membership, banReasons] = await Promise.all([
+	// The ban dialog's quick reasons and the message the org wraps its bans in are for those who
+	// may ban here or on the org's list, as on the Bans tab.
+	const banStaff = canBan || access.caps.has('bans.manage');
+	const [membership, reasons, bans, seedReward] = await Promise.all([
 		org && listsRole
 			? orgListMembership(env, org, steamId, listsRole.kinds)
 			: { ban: null, reserve: null },
-		canBan ? banReasonsFor(env, server.orgId) : null
+		banStaff ? banReasonsFor(env, server.orgId) : null,
+		playerBans(env, server.orgId, visible, steamId, canBan),
+		seedProgress(env, server, access, steamId)
 	]);
+	const banReasons = canBan ? reasons : null;
 	return {
 		steamId,
 		name,
@@ -372,10 +394,13 @@ export async function dossier(
 			reason: b.reason,
 			bannedBy: b.bannedBy
 		})),
+		bans,
+		banDialog: reasons ? { reasons, message: org?.banMessage ?? DEFAULT_BAN_MESSAGE } : null,
 		combat,
 		summary: {
 			sessions: num(summary?.sessions),
 			minutes: Math.round(num(summary?.minutes)),
+			seedMinutes: Math.round(num(summary?.seedSeconds) / 60),
 			kills: recordedAll.kills,
 			deaths: recordedAll.deaths,
 			firstSeen: iso(summary?.firstSeen ? new Date(summary.firstSeen) : null),
@@ -386,6 +411,7 @@ export async function dossier(
 			serverName: nameOf.get(r.serverId) || r.serverId,
 			sessions: num(r.sessions),
 			minutes: Math.round(num(r.minutes)),
+			seedMinutes: Math.round(num(r.seedSeconds) / 60),
 			kills: num(recordedOn.get(r.serverId)?.kills),
 			deaths: num(recordedOn.get(r.serverId)?.deaths),
 			lastSeen: new Date(r.lastSeen).toISOString()
@@ -420,8 +446,101 @@ export async function dossier(
 			action: a.action,
 			serverName: a.serverName,
 			outcome: a.outcome,
-			message: a.message
-		}))
+			message: a.message,
+			...actionParts(a.action, a.detail)
+		})),
+		seedReward
+	};
+}
+
+const LIST_ACTIONS = new Set(['list.add', 'list.update', 'list.remove']);
+/** rows whose detail keeps the reason they were given (a list row's is in its message as well) */
+const REASONED = new Set(['rcon.kick', 'rcon.ban', 'list.add', 'list.update']);
+
+/**
+ * What the dossier's table shows of a trail row's detail, picked by name: the reason a hand-sent
+ * kick or ban, or a list entry, was given, a hand-sent whisper's text, and which list a list row is
+ * about and how long its entry lasts. Never the detail itself, which can hold anything an action was sent. The rows are
+ * the reader's own trail rows, so this shows nothing the Audit trail does not.
+ */
+export function actionParts(
+	action: string,
+	detail: unknown
+): Pick<DossierAction, 'reason' | 'text' | 'list' | 'length'> {
+	const d = detail && typeof detail === 'object' ? (detail as Record<string, unknown>) : {};
+	const text = (v: unknown, max: number) => (typeof v === 'string' ? v.slice(0, max) : '');
+	const list =
+		LIST_ACTIONS.has(action) && (d.kind === 'ban' || d.kind === 'reserve') ? d.kind : null;
+	const until = d.expiresAt;
+	return {
+		reason: REASONED.has(action) ? text(d.reason, MAX_REASON) : '',
+		text: action === 'rcon.whisper' ? text(d.message, MAX_CHAT) : '',
+		list,
+		length:
+			list &&
+			action !== 'list.remove' &&
+			'expiresAt' in d &&
+			(until === null || typeof until === 'string')
+				? { until }
+				: null
+	};
+}
+
+/**
+ * Where the player stands with this server's Seeding reward, added up as the rule does it: seed
+ * time banked here over the rule's window, by sessions that ended in it and the one still open.
+ * The rule's terms are how the server is run, so only those who hold Automation here see them.
+ */
+async function seedProgress(
+	env: Env,
+	server: ServerRow,
+	access: ServerAccess,
+	steamId: string,
+	now = new Date()
+): Promise<SeedRewardProgress | null> {
+	if (!access.caps.has('automation.manage')) return null;
+	const [rule] = await env.db
+		.select({ config: triggers.config })
+		.from(triggers)
+		.where(
+			and(
+				eq(triggers.serverId, server.id),
+				eq(triggers.kind, 'seed_reward'),
+				eq(triggers.enabled, true)
+			)
+		)
+		.limit(1);
+	if (!rule) return null;
+	const c = rule.config as SeedRewardConfig;
+	const from = new Date(now.getTime() - c.windowDays * 86400_000);
+	const [[seed], [slot]] = await Promise.all([
+		env.db.execute<{ seconds: string | null }>(sql`
+			SELECT SUM(seed_seconds) AS seconds FROM player_sessions
+			 WHERE server_id = ${server.id} AND steam_id = ${steamId}
+			   AND (left_at IS NULL OR (left_at >= ${from} AND last_seen >= ${from}))`),
+		// The rule passes over a player the server's reserved list holds; how long for is the entry
+		// behind it, when a list this server takes has one (the latest end of them, none if any has none).
+		env.db.execute<{ held: boolean; endless: boolean; until: Date | null }>(sql`
+			SELECT EXISTS (SELECT 1 FROM server_reserved r
+			                WHERE r.server_id = ${server.id} AND r.steam_id = ${steamId}) AS held,
+			       bool_or(e.expires_at IS NULL) AS endless, MAX(e.expires_at) AS until
+			  FROM server_lists sl
+			  JOIN lists l ON l.id = sl.list_id AND l.kind = 'reserve'
+			  JOIN list_entries e ON e.list_id = l.id AND e.steam_id = ${steamId}
+			                     AND e.removed_at IS NULL AND (e.expires_at IS NULL OR e.expires_at > ${now})
+			 WHERE sl.server_id = ${server.id}`)
+	]);
+	return {
+		minutes: c.minutes,
+		windowDays: c.windowDays,
+		lowAt: c.lowAt,
+		untilFull: !!c.untilFull,
+		slotDays: c.slotDays,
+		scope: c.scope === 'server' ? 'server' : 'org',
+		seconds: num(seed?.seconds),
+		holdsSlot: slot?.held
+			? { until: slot.endless || !slot.until ? null : new Date(slot.until).toISOString() }
+			: null
 	};
 }
 
