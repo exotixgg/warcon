@@ -41,6 +41,7 @@
 		hrefFor={(steamId) => `${base}/players/${steamId}`}
 		orgName={data.heading.orgName}
 		orgScope={data.orgScope}
+		hidden={data.hidden}
 		relative
 	/>
 	<p class="note">
