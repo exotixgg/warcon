@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'bun:test';
 import { validateWebhookUrl } from './webhooks';
+import { RULE_KINDS } from '../rule-kinds';
 import {
 	buildEmbed,
 	buildTeamKillEmbed,
@@ -87,6 +88,15 @@ describe('buildEmbed', () => {
 		expect(e.description).toContain('Kicked Nomad.');
 		expect(e.color).toBe(0x7bc462);
 		expect(e.timestamp).toBe('2026-09-09T12:00:00.000Z');
+	});
+	test('a rule posts under the name the webhook dialog gives its kind', () => {
+		for (const { kind, label } of RULE_KINDS) {
+			const e = buildEmbed('Warcon', { ...row, category: 'trigger', action: `trigger.${kind}` });
+			expect({ kind, title: e.title.toLowerCase() }).toEqual({
+				kind,
+				title: `trigger · ${label.toLowerCase()}`
+			});
+		}
 	});
 	test('failures are red and say so', () => {
 		const e = buildEmbed('Warcon', {

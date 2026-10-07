@@ -67,7 +67,7 @@ describe.skipIf(!hasTestDb)('Two-team mode on Discord', () => {
 		const titles = posts.flatMap((body) =>
 			(JSON.parse(body) as { embeds: { title: string }[] }).embeds.map((e) => e.title)
 		);
-		expect(titles).toEqual(['Trigger · two-team mode', 'Trigger · welcome whisper']);
+		expect(titles).toEqual(['Trigger · team balance', 'Trigger · welcome whisper']);
 		const kept = await env.db
 			.select({ outcome: auditLog.outcome })
 			.from(auditLog)
