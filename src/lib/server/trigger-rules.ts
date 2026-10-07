@@ -851,10 +851,20 @@ export interface RiskKickSignals {
 }
 
 /** Why a joiner would be kicked under this config, or null when they pass. */
+/**
+ * A kick's verdict goes into this server's trail, the rule's last result and Discord cards, whose
+ * readers need not be able to open the server that banned the player: it says that one did, never
+ * which or why. The player page shows those to whoever may open that server.
+ */
+const ELSEWHERE = 'banned on another server of this organisation';
+const KICK_TEXT: Record<string, string> = {
+	banned_elsewhere: 'Banned on another server of this organisation',
+	resembles: 'Name resembles a banned player'
+};
+
 export function riskKickVerdict(cfg: RiskKickConfig, s: RiskKickSignals): string | null {
 	if (s.reserved && cfg.spareReserved) return null;
-	if (cfg.bannedElsewhere && s.bannedOn.length)
-		return `banned on ${s.bannedOn[0].serverName}${s.bannedOn[0].reason ? ` (${s.bannedOn[0].reason})` : ''}`;
+	if (cfg.bannedElsewhere && s.bannedOn.length) return ELSEWHERE;
 	if (cfg.watchlist && s.watched)
 		return `on the watchlist${s.watched.reason ? ` (${s.watched.reason})` : ''}`;
 	if (s.steamEnabled && s.profile && !s.profile.error) {
@@ -889,10 +899,14 @@ export function riskKickVerdict(cfg: RiskKickConfig, s: RiskKickSignals): string
 			now: s.now
 		});
 		if (risk.score >= minScore) {
-			const why = [...risk.reasons]
-				.sort((a, b) => b.weight - a.weight)
+			const why = [
+				...new Set(
+					[...risk.reasons]
+						.sort((a, b) => b.weight - a.weight)
+						.map((r) => KICK_TEXT[r.code] ?? r.text)
+				)
+			]
 				.slice(0, 3)
-				.map((r) => r.text)
 				.join('; ');
 			const what =
 				risk.level === 'low' ? `risk ${risk.score}` : `${risk.level} risk (${risk.score})`;
