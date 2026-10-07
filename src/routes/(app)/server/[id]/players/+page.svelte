@@ -16,6 +16,7 @@
 	import { TableSort, matches } from '$lib/table.svelte';
 	import type { LiveView, Player, PlayerMark, ServerListsState, Status } from '$lib/types';
 	import PastPlayers from './PastPlayers.svelte';
+	import TeamsView from './TeamsView.svelte';
 	import type { PageProps, Snapshot } from './$types';
 
 	let { data }: PageProps = $props();
@@ -27,8 +28,10 @@
 	let bans = $derived(can(data.server.caps, 'bans.manage'));
 	let anyAction = $derived(canKick || canKill || canMove || chat || bans);
 	let notes = $derived(can(data.server.caps, 'players.notes'));
-	/** who is on now, or everyone who has played here */
-	let view = $state<'online' | 'past'>('online');
+	/** who is on now, the same players by side, or everyone who has played here */
+	let view = $state<'online' | 'teams' | 'past'>('online');
+	/** the Teams view stays mounted once opened, so its plan survives a look at the other views */
+	let teamsOpened = $state(false);
 	/** may the user write to the organisation's lists? Decides the ban dialog's default scope. */
 	let listState = $state<ServerListsState | null>(null);
 	let banning = $state<Player | null>(null);
@@ -250,12 +253,28 @@
 			onclick={() => (view = 'online')}>Online now · {all.length}</button
 		>
 		<button
+			class="btn {view === 'teams' ? 'btn-primary' : ''}"
+			role="tab"
+			aria-selected={view === 'teams'}
+			onclick={() => {
+				view = 'teams';
+				teamsOpened = true;
+			}}>Teams</button
+		>
+		<button
 			class="btn {view === 'past' ? 'btn-primary' : ''}"
 			role="tab"
 			aria-selected={view === 'past'}
 			onclick={() => (view = 'past')}>Past players</button
 		>
 	</div>
+	{#if teamsOpened}
+		{#key id}
+			<div hidden={view !== 'teams'}>
+				<TeamsView serverId={id} players={all} scores={status?.scores} {marks} {canMove} />
+			</div>
+		{/key}
+	{/if}
 	{#if view === 'past'}
 		<PastPlayers
 			server={{
@@ -269,7 +288,7 @@
 			canOrg={listState?.canEditOrgBans ?? false}
 			reasons={listState?.banReasons ?? []}
 		/>
-	{:else}
+	{:else if view === 'online'}
 		<div class="mb-3 flex flex-wrap items-center gap-2">
 			<div class="join w-full sm:w-auto sm:min-w-[320px]">
 				<input

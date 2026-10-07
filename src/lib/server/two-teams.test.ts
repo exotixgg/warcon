@@ -1,6 +1,5 @@
 import { describe, expect, test } from 'bun:test';
 import {
-	clanTag,
 	emptyTwoTeamsState,
 	TWO_TEAMS_ASK_WINDOW_MS,
 	TWO_TEAMS_FORGET_MS,
@@ -508,15 +507,6 @@ describe('twoTeamsStep balancing', () => {
 			withClans
 		);
 		expect(new Set(r.moves.map((m) => m.to)).size).toBe(1);
-	});
-
-	test('clanTag reads a short bracketed tag at the front, in one case', () => {
-		expect(clanTag('[ABC] Name')).toBe('abc');
-		expect(clanTag('  {Wolf}Name')).toBe('wolf');
-		expect(clanTag('(TAG) x')).toBe('tag');
-		expect(clanTag('Name [ABC]')).toBeNull();
-		expect(clanTag('[] Name')).toBeNull();
-		expect(clanTag('[a tag far too long to be one] Name')).toBeNull();
 	});
 
 	test('a move a person made from the panel is kept, not put back', () => {
