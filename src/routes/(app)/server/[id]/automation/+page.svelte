@@ -1,6 +1,6 @@
 <script lang="ts">
 	import { untrack } from 'svelte';
-	import { invalidateAll } from '$app/navigation';
+	import { invalidate, invalidateAll } from '$app/navigation';
 	import { api, errorMessage } from '$lib/api';
 	import { MAX_CHAT } from '$lib/chat';
 	import { fmtAgo, fmtSpan, fmtTime, mapLabel } from '$lib/format';
@@ -108,7 +108,12 @@
 			() => {},
 			() => {
 				clearTimeout(deliveriesTimer);
-				deliveriesTimer = setTimeout(() => void refreshDeliveries(), 300);
+				deliveriesTimer = setTimeout(() => {
+					void refreshDeliveries();
+					// a Bounty rule's open bounty is set, claimed and lapsed by its actions
+					if (untrack(() => data.triggers.some((t) => t.kind === 'bounty' && t.enabled)))
+						void invalidate('warcon:triggers');
+				}, 300);
 			}
 		);
 	});
@@ -138,7 +143,13 @@
 						? 'kill'
 						: action === 'kill_distance_skip'
 							? 'not counted'
-							: action;
+							: action === 'bounty_claim'
+								? 'claimed'
+								: action === 'bounty_lapse'
+									? 'lapsed'
+									: action === 'bounty_reward'
+										? 'reserved slot'
+										: action;
 	const label = (kind: TriggerKind) => KINDS.find((k) => k.kind === kind)?.label ?? kind;
 	const blurb = (kind: TriggerKind) => KINDS.find((k) => k.kind === kind)?.blurb ?? '';
 	/** Why a kind cannot run on this server yet, or '' when it can. */
@@ -159,6 +170,12 @@
 				return canSlotHere || canSlotOrg
 					? ''
 					: 'Saving needs the Reserved slots capability (or Org reserved slots, for a slot on every server) as well as Automation.';
+			case 'bounty':
+				return !data.feed
+					? 'Needs the kill feed, which is off on this server. Turn it on under Config.'
+					: !canChat
+						? 'Saving needs the Chat capability as well as Automation: the bounty is announced to the server.'
+						: '';
 			default:
 				return '';
 		}
@@ -252,11 +269,34 @@
 		kind === 'team_kill' ||
 		kind === 'kill_rate' ||
 		kind === 'kill_distance' ||
-		kind === 'name_change'
+		kind === 'name_change' ||
+		(kind === 'bounty' && !data.feed)
 			? 'needs the kill feed'
-			: kind === 'risk_kick'
-				? 'needs a Steam key'
-				: '';
+			: kind === 'bounty'
+				? 'needs Chat'
+				: kind === 'risk_kick'
+					? 'needs a Steam key'
+					: '';
+	/** A Bounty rule's texts until they are written: a slot is named, an announcement-only rule asks. */
+	const bountyTexts = (reward: 'slot' | 'none') =>
+		reward === 'slot'
+			? {
+					setMessage: 'BOUNTY on {name}: {streak} kills without dying. Kill them for {reward}.',
+					claimMessage: "{name} ended {target}'s run of {streak} and takes {reward}.",
+					whisper: 'Bounty claimed. Your reserved slot lasts until {until}.'
+				}
+			: {
+					setMessage: 'BOUNTY on {name}: {streak} kills without dying. Who ends the run?',
+					claimMessage: "{name} ended {target}'s run of {streak}.",
+					whisper: ''
+				};
+	/** Switching the reward swaps the texts still as the rule began them. */
+	const swapBounty = (f: Form) => {
+		const from = bountyTexts(f.bountyReward === 'slot' ? 'none' : 'slot');
+		const to = bountyTexts(f.bountyReward);
+		for (const k of ['setMessage', 'claimMessage', 'whisper'] as const)
+			if (f[k] === from[k]) f[k] = to[k];
+	};
 	let addOpen = $state(false);
 
 	// The status lines count up on their own: a minute clock, only while the page is open.
@@ -394,6 +434,11 @@
 		banScope: 'server' | 'org';
 		stopAt: number;
 		doneMessage: string;
+		streak: number;
+		bountyReward: 'slot' | 'none';
+		setMessage: string;
+		claimMessage: string;
+		whisper: string;
 	}
 	/** WARDOGS' factions, offered for Team balance; a name the game adds later can still be typed. */
 	const FACTIONS = ['Lonestar', 'Valkyra', 'Manticore'];
@@ -476,6 +521,9 @@
 						: canChat
 							? 'warn'
 							: 'kick';
+		// a new Bounty rule gives a slot when its author may reserve one, and announces only otherwise
+		const bountyReward: Form['bountyReward'] =
+			c.reward === 'none' || (!t && !canSlotHere && !canSlotOrg) ? 'none' : 'slot';
 		form = {
 			id: copy ? null : (t?.id ?? null),
 			kind,
@@ -501,7 +549,7 @@
 				? (c.messages as string[]).join('\n')
 				: 'Join our Discord for events and support.\nNo team-killing. Admins are watching.',
 			everyMinutes: n('everyMinutes', kind === 'afk_protection' ? 3 : 15),
-			minPlayers: n('minPlayers', 1),
+			minPlayers: n('minPlayers', kind === 'bounty' ? 20 : 1),
 			maxPlayers: typeof c.maxPlayers === 'number' ? c.maxPlayers : null,
 			afterMinutes: n('afterMinutes', 20),
 			cooldownMinutes: n('cooldownMinutes', 30),
@@ -548,7 +596,7 @@
 			fullAt: typeof c.fullAt === 'number' ? c.fullAt : null,
 			minutes: n('minutes', 60),
 			windowDays: n('windowDays', 7),
-			slotDays: n('slotDays', 7),
+			slotDays: n('slotDays', kind === 'bounty' ? 1 : 7),
 			// a rule saved before the scope existed hands out org-wide slots; a new one, this server's
 			slotScope: c.scope === 'server' ? 'server' : t ? 'org' : canSlotHere ? 'server' : 'org',
 			characters: c.characters === 'ascii' || c.characters === 'off' ? c.characters : 'latin',
@@ -590,7 +638,12 @@
 			// a new rule bans where its author may: this server's list first
 			banScope: c.banScope === 'org' ? 'org' : t || canBanHere || !canBanOrg ? 'server' : 'org',
 			stopAt: n('stopAt', 20),
-			doneMessage: s('doneMessage', 'Thanks for seeding {server}! The match is live.')
+			doneMessage: s('doneMessage', 'Thanks for seeding {server}! The match is live.'),
+			streak: n('streak', 15),
+			bountyReward,
+			setMessage: s('setMessage', bountyTexts(bountyReward).setMessage),
+			claimMessage: s('claimMessage', bountyTexts(bountyReward).claimMessage),
+			whisper: s('whisper', bountyTexts(bountyReward).whisper)
 		};
 		dry = null;
 		pendingSel =
@@ -755,6 +808,17 @@
 					slotDays: Number(f.slotDays),
 					scope: f.slotScope,
 					message: f.message
+				};
+			case 'bounty':
+				return {
+					streak: Number(f.streak),
+					minPlayers: Number(f.minPlayers),
+					reward: f.bountyReward,
+					slotDays: Number(f.slotDays),
+					scope: f.slotScope,
+					setMessage: f.setMessage,
+					claimMessage: f.claimMessage,
+					whisper: f.whisper
 				};
 		}
 	}
@@ -966,6 +1030,19 @@
 			}
 			case 'afk_protection':
 				return `kill everyone every ${c.everyMinutes} min while fewer than ${c.stopAt} are on and no side has scored · then off until the server empties or restarts${c.message ? ' · with a broadcast' : ''}${c.doneMessage ? ' · thanks at the start' : ''}`;
+			case 'bounty': {
+				const days = Number(c.slotDays);
+				return [
+					`${c.streak} kills without dying, with ${c.minPlayers}+ on`,
+					c.reward === 'none'
+						? 'announced only'
+						: `reserved slot ${c.scope === 'org' ? 'on every server' : 'here'} for ${days} day${days === 1 ? '' : 's'}`,
+					c.claimMessage ? 'announces the claim' : '',
+					c.whisper ? 'whispers the claimer' : ''
+				]
+					.filter(Boolean)
+					.join(' · ');
+			}
 			case 'seed_reward':
 				return `${c.minutes} min with ${c.lowAt} or fewer on${c.untilFull === false ? '' : `, staying until ${typeof c.fullAt === 'number' ? `${c.fullAt}+ on` : 'it fills'}`}, within ${c.windowDays} day${c.windowDays === 1 ? '' : 's'} · slot ${c.scope === 'server' ? 'here' : 'on every server'} for ${c.slotDays} day${c.slotDays === 1 ? '' : 's'}${c.message ? ' · with a whisper' : ''}`;
 		}
@@ -1104,6 +1181,17 @@
 					<div class="mt-0.5 line-clamp-2 text-[13px] text-mist-400">
 						{describe(t.kind, t.config)}
 					</div>
+					{#if t.kind === 'bounty' && t.enabled && t.bounty}
+						{@const b = t.bounty}
+						<div class="mt-0.5 text-[12px] text-mist-100">
+							Open: <a
+								class="link"
+								href="/server/{id}/players/{b.steamId}"
+								data-sveltekit-preload-data="tap">{b.name}</a
+							>, marked at {b.streak} kills without dying · set
+							<span title={fmtTime(b.setAt)}>{fmtAgo(b.setAt, now)}</span>
+						</div>
+					{/if}
 					{#if t.kind === 'afk_protection' && t.enabled && t.phase}
 						{@const phase = t.phase}
 						<!-- Where it stands: acting while the server seeds, or off since a match went live. -->
@@ -1240,6 +1328,13 @@
 					class={r.fires ? 'text-warn' : 'text-ok'}>{r.fires}</b
 				>
 				name{r.fires === 1 ? '' : 's'}</span
+			>
+		{:else if r.kind === 'bounty'}
+			<span
+				>Replayed the last 24 h on this server: would have set <b
+					class={r.fires ? 'text-warn' : 'text-ok'}>{r.fires}</b
+				>
+				bount{r.fires === 1 ? 'y' : 'ies'}</span
 			>
 		{:else}
 			<span
@@ -2391,6 +2486,142 @@
 						every server goes on the organisation's, which this server applies at once and the
 						others at their next sync. Either lapses on its own and can be earned again. Players who
 						already hold a reserved slot here are skipped.
+					</p>
+				{:else if f.kind === 'bounty'}
+					<fieldset class="space-y-1.5 text-[13px]">
+						<legend class="field-label">Who gets a bounty</legend>
+						<div class="flex flex-wrap items-center gap-2">
+							A player who gets
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="3"
+								max="200"
+								bind:value={f.streak}
+								aria-label="Kills in a row without dying"
+								required
+							/>
+							kills in a row without dying in one match,
+						</div>
+						<div class="flex flex-wrap items-center gap-2">
+							while at least
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="0"
+								max="1000"
+								bind:value={f.minPlayers}
+								aria-label="At least, players on"
+							/>
+							players are on
+						</div>
+						<p class="text-[12px] text-mist-600">
+							Team kills do not add to a run; any death ends it. One bounty at a time: the next goes
+							to whoever is on a run once this one ends.
+						</p>
+					</fieldset>
+					<fieldset class="space-y-1.5 text-[13px]">
+						<legend class="field-label">Reward for the first to kill them</legend>
+						<div class="flex flex-wrap items-center gap-2">
+							<label
+								class="flex items-center gap-2 {canSlotHere || canSlotOrg ? '' : 'text-mist-600'}"
+								><input
+									type="radio"
+									bind:group={f.bountyReward}
+									value="slot"
+									disabled={!canSlotHere && !canSlotOrg}
+									onchange={() => swapBounty(f)}
+								/> A reserved slot for</label
+							>
+							<input
+								class="input w-20 text-right"
+								type="number"
+								min="1"
+								max="365"
+								bind:value={f.slotDays}
+								aria-label="Reserved slot lasts, days"
+								disabled={f.bountyReward !== 'slot'}
+							/>
+							days
+						</div>
+						<div class="flex flex-wrap gap-x-4 gap-y-1 pl-5">
+							<label
+								class="flex items-center gap-2 {canSlotHere && f.bountyReward === 'slot'
+									? ''
+									: 'text-mist-600'}"
+								><input
+									type="radio"
+									bind:group={f.slotScope}
+									value="server"
+									disabled={!canSlotHere || f.bountyReward !== 'slot'}
+								/> on this server only</label
+							>
+							<label
+								class="flex items-center gap-2 {canSlotOrg && f.bountyReward === 'slot'
+									? ''
+									: 'text-mist-600'}"
+								><input
+									type="radio"
+									bind:group={f.slotScope}
+									value="org"
+									disabled={!canSlotOrg || f.bountyReward !== 'slot'}
+								/> on every server in the organisation</label
+							>
+						</div>
+						<label class="flex items-center gap-2"
+							><input
+								type="radio"
+								bind:group={f.bountyReward}
+								value="none"
+								onchange={() => swapBounty(f)}
+							/> Nothing but the announcement</label
+						>
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">Announce the bounty</legend>
+						<input
+							class="input"
+							type="text"
+							bind:value={f.setMessage}
+							maxlength={MAX_CHAT}
+							aria-label="Announce the bounty"
+							required
+						/>
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">Announce the claim, blank for none</legend>
+						<input
+							class="input"
+							type="text"
+							bind:value={f.claimMessage}
+							maxlength={MAX_CHAT}
+							aria-label="Announce the claim"
+						/>
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">Whisper the claimer, blank for none</legend>
+						<input
+							class="input"
+							type="text"
+							bind:value={f.whisper}
+							maxlength={MAX_CHAT}
+							aria-label="Whisper the claimer"
+						/>
+					</fieldset>
+					{@render placeholders('bounty', [f.setMessage, f.claimMessage, f.whisper])}
+					<p class="note">
+						{'{name}'} is the marked player when the bounty is set and the claimer after;
+						{'{target}'} is always the marked player, {'{streak}'} their run{#if f.bountyReward === 'slot'},
+							{'{reward}'} “a reserved slot for {Number(f.slotDays)}
+							day{Number(f.slotDays) === 1 ? '' : 's'}”{/if}. The bounty and the claim are broadcast
+						to the whole server.
+					</p>
+					<p class="note">
+						The first enemy to kill the marked player claims it. Team kills, suicides and deaths to
+						the environment never end a bounty, so nobody can clear their own or have a friend do
+						it. It lapses if the player leaves or the match ends, and saving the rule calls off one
+						in progress. A claimer who already holds a slot keeps whichever lasts longer. Kills come
+						from the game's kill feed.
 					</p>
 				{/if}
 
