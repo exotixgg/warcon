@@ -5,7 +5,14 @@
 	import { MAX_CHAT } from '$lib/chat';
 	import { fmtAgo, fmtSpan, fmtTime, mapLabel } from '$lib/format';
 	import { can } from '$lib/capabilities';
-	import { causeKind, causeLabel, knownCauses, TEAM_KILL_NOT_COUNTED } from '$lib/causes';
+	import {
+		causeKind,
+		causeLabel,
+		knownCauses,
+		notCountedLabel,
+		TEAM_KILL_NOT_COUNTED,
+		VEHICLE_CRASH
+	} from '$lib/causes';
 	import { placeholdersFor, unfilled, type PlaceholderGroupKey } from '$lib/placeholders';
 	import { isSteamId } from '$lib/steam-profiles';
 	import { toast } from '$lib/toast.svelte';
@@ -226,9 +233,18 @@
 	const openAtFirst = (open: () => boolean) => (node: HTMLDetailsElement) => {
 		node.open = untrack(open);
 	};
-	/** What a Team kill limit can leave out of its count: things placed that a teammate runs into. */
+	/**
+	 * What a Team kill limit can leave out of its count: things placed that a teammate runs into,
+	 * and crashes.
+	 */
 	const notCountedChoices = (chosen: string[]) =>
-		causeChoices((c) => causeKind(c) === 'buildable' || PLACED.has(c.toLowerCase()), chosen);
+		[
+			...causeChoices(
+				(c) => causeKind(c) === 'buildable' || PLACED.has(c.toLowerCase()),
+				chosen.filter((c) => !holds([VEHICLE_CRASH], c))
+			),
+			{ cause: VEHICLE_CRASH, label: notCountedLabel(VEHICLE_CRASH) }
+		].sort((a, b) => a.label.localeCompare(b.label));
 	const holds = (list: string[], cause: string) =>
 		list.some((c) => c.toLowerCase() === cause.toLowerCase());
 	/** A kind that lacks what it needs stays in the menu, greyed, with the reason in a few words. */
@@ -898,7 +914,7 @@
 					left.length > 3
 						? `${left.length} causes not counted`
 						: left.length
-							? `${left.map((x) => causeLabel(x)).join(', ')} not counted`
+							? `${left.map((x) => notCountedLabel(x)).join(', ')} not counted`
 							: ''
 				]
 					.filter(Boolean)
