@@ -2,14 +2,15 @@
 // event bus (the SSE route fans them to browsers; in the split roles every web process gets them
 // through the relay stream), and the team-kill rules get their turn. Their intents go through
 // the same outbox as every other trigger, so delivery, audit and the Discord mirror are shared.
-// The Kill rate, Kill distance and Name change rules see every batch; the rest of the work is for
-// batches with team kills.
+// The Kill rate, Kill distance, Name change and Bounty rules see every batch; the rest of the work is
+// for batches with team kills.
 import { and, eq, gte, inArray, isNull, lte, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { emit } from './events';
 import { kills, matches } from './db/schema';
 import { killsOfMatch } from './matches';
 import {
+	bountyLapse,
 	enabledTriggers,
 	killDistanceAct,
 	renderTemplate,
@@ -20,7 +21,7 @@ import {
 	type Evaluation,
 	type StatsRead
 } from './triggers';
-import { messageVars, serverVars, type MessageVars } from './message-vars';
+import { keptVars, messageVars, serverVars, type MessageVars } from './message-vars';
 import { mapName } from '$lib/format';
 import { countsForTeamKill, MAX_REASON, type TeamKillConfig } from './trigger-rules';
 import { MAX_CHAT } from '$lib/chat';
@@ -61,7 +62,20 @@ import { applyTriggerUpdates, enqueueIntents, wakeDelivery } from './outbox';
 import { LostOwnership, withOwnedTransaction } from './leadership';
 import { memoryOf } from './observe';
 import { publicMessage } from './http';
-import { notifyTeamKills } from './webhook-delivery';
+import { notifyBounty, notifyTeamKills, type BountyCard } from './webhook-delivery';
+import {
+	BOUNTY_CLAIM,
+	BOUNTY_REWARD,
+	bountyState,
+	fromEarlierMatch,
+	bountyStep,
+	bountyTrack,
+	keepBounties,
+	rewardWords,
+	type BountyConfig,
+	type BountyKill,
+	type BountyPlayer
+} from './bounty';
 import { isDemoServer } from './env';
 import { drainMockFeed } from './mockgame';
 import { ingestBatch } from './feed';
@@ -101,6 +115,12 @@ export async function onKillsIngested(
 	} catch (err) {
 		if (!(err instanceof LostOwnership))
 			console.warn(`[warcon] name-change rules on ${serverId}:`, publicMessage(err));
+	}
+	try {
+		await actOnBounty(env, serverId, kills, vars);
+	} catch (err) {
+		if (!(err instanceof LostOwnership))
+			console.warn(`[warcon] bounty rules on ${serverId}:`, publicMessage(err));
 	}
 	const teamKills = kills.filter((k) => k.teamKill && k.killer);
 	if (!teamKills.length) return;
@@ -539,6 +559,227 @@ async function actOnNameChange(
 	} catch (err) {
 		for (const undo of undos.reverse()) undo();
 		throw err;
+	}
+}
+
+/** A kill as the Bounty rule reads it. */
+const bountyKill = (k: KillView): BountyKill => ({
+	eventId: k.eventId,
+	killer: k.killer
+		? { steamId: k.killer.steamId, name: k.killer.name, faction: k.killer.faction }
+		: null,
+	victim: { steamId: k.victim.steamId, name: k.victim.name, faction: k.victim.faction },
+	suicide: k.suicide,
+	teamKill: k.teamKill
+});
+
+const dateOf = (d: Date) => d.toISOString().slice(0, 10);
+
+/**
+ * The Bounty rule (one per server) over a batch: runs grow and end in the order the game played the
+ * kills, a run that reaches the rule's count while enough players are on and no bounty is open sets
+ * one (announced), and the first enemy kill of the marked player claims it (noted, announced when the
+ * rule says, the claimer whispered when it says, and the reserved slot queued). The open bounty is
+ * written to the rule's row with the actions; if they cannot be written, the bounty in memory goes
+ * back to what it was. Players of the Bounties channel get a card once it is written.
+ */
+async function actOnBounty(
+	env: Env,
+	serverId: string,
+	batch: KillView[],
+	vars: KillerVars
+): Promise<void> {
+	const rows = (await enabledTriggers(env, serverId)).filter((r) => r.kind === 'bounty');
+	keepBounties(serverId, new Set(rows.map((r) => r.id)));
+	if (!rows.length) return;
+	const m = memoryOf(serverId);
+	// The most anyone says is on: a status a few seconds old must not hide a full list.
+	const on = Math.max(m?.status?.playerCount || 0, m?.players.length ?? 0);
+	const sorted = [...batch].sort((a, b) => a.eventTime - b.eventTime);
+	const inOrder = sorted.map(bountyKill);
+	const byEvent = new Map(sorted.map((k) => [k.eventId, k]));
+	const serverName = m?.status?.serverName || m?.server.name || '';
+	const now = Date.now();
+	for (const row of rows) {
+		const cfg = row.config as BountyConfig;
+		const { version, track } = bountyTrack(row);
+		const before = track.open;
+		const out: Evaluation = { intents: [], updates: [] };
+		const cards: BountyCard[] = [];
+		// The match this batch was stamped with, read only when a bounty is set or its player dies.
+		let stamped: string | undefined;
+		const batchMatch = async () =>
+			(stamped ??= matchKey(await stampedMatch(env, serverId, batch), Date.parse(batch[0].ts)));
+		// A bounty read back after a restart can be from a match that ended while no worker watched:
+		// the batch that could claim it says which match it is in, and an earlier match's lapses.
+		const open = track.open;
+		if (
+			open?.match.startsWith('m') &&
+			inOrder.some((k) => k.victim.steamId === open.steamId) &&
+			fromEarlierMatch(open.match, await batchMatch()) &&
+			track.open === open
+		) {
+			track.open = null;
+			track.runs.clear();
+			const lapse = bountyLapse(row, cfg, version, open, 'match', new Date(now), sorted[0].map);
+			out.intents.push(lapse.intent);
+			out.updates.push(lapse.update);
+			cards.push(lapse.card);
+		}
+		const events = bountyStep(cfg, track, inOrder, { canMark: on >= cfg.minPlayers, now });
+		if (!events.length && !out.intents.length) continue;
+		// a bounty set here is of the batch's match
+		for (const e of events) if (e.kind === 'set') e.bounty.match = await batchMatch();
+		const reward = rewardWords(cfg);
+		const slot = cfg.reward === 'slot';
+		const until = slot ? dateOf(new Date(now + cfg.slotDays * 86400_000)) : '';
+		const own = (target: string, streak: number, map: string) => ({
+			target,
+			streak,
+			reward,
+			days: slot ? cfg.slotDays : '',
+			until,
+			...(map ? { map: mapName(map) } : {})
+		});
+		// said to the whole server, or to the claimer, so no org-wide stats (keptVars)
+		const stats = await vars.stats(
+			events.flatMap((e) =>
+				e.kind === 'set'
+					? [{ steamId: e.bounty.steamId, text: cfg.setMessage }]
+					: [
+							{ steamId: e.claimer.steamId, text: cfg.claimMessage },
+							{ steamId: e.claimer.steamId, text: cfg.whisper }
+						]
+			),
+			{ org: false }
+		);
+		const say = (text: string, who: BountyPlayer, extra: MessageVars, max: number) =>
+			renderTemplate(text, keptVars(vars.about(who, stats, extra)), max);
+		const card = { reward, orgWide: slot && cfg.scope === 'org', at: new Date(now).toISOString() };
+		for (const e of events) {
+			const k = byEvent.get(e.kill.eventId)!;
+			const dedupe = (what: string) => [row.id, what, k.eventId].join(':');
+			if (e.kind === 'set') {
+				const b = e.bounty;
+				const message = say(cfg.setMessage, b, own(b.name, b.streak, k.map), MAX_CHAT);
+				out.intents.push({
+					trigger: row,
+					action: 'broadcast',
+					params: { message },
+					target: b.steamId,
+					okMessage: `Announced the bounty on ${b.name} (${b.streak} kills).`,
+					detail: { name: b.name, streak: b.streak, stage: 'set', eventId: k.eventId },
+					steamId: null,
+					dedupeKey: dedupe('set')
+				});
+				out.updates.push({
+					id: row.id,
+					lastFiredAt: new Date(now),
+					lastResult: `Bounty on ${b.name} (${b.streak} kills)`
+				});
+				cards.push({
+					...card,
+					kind: 'set',
+					map: k.map || null,
+					name: b.name,
+					faction: b.faction,
+					streak: b.streak
+				});
+				continue;
+			}
+			const b = e.bounty;
+			const c = e.claimer;
+			const claimer = c.name || c.steamId;
+			const claimed = `${claimer} claimed the bounty on ${b.name} (a run of ${b.best}).`;
+			const extra = own(b.name, b.best, k.map);
+			out.intents.push({
+				trigger: row,
+				action: BOUNTY_CLAIM,
+				params: {},
+				target: c.steamId,
+				okMessage: claimed,
+				detail: {
+					name: claimer,
+					target: b.name,
+					targetSteamId: b.steamId,
+					run: b.best,
+					eventId: k.eventId
+				},
+				steamId: null,
+				dedupeKey: dedupe('claim')
+			});
+			if (cfg.claimMessage)
+				out.intents.push({
+					trigger: row,
+					action: 'broadcast',
+					params: { message: say(cfg.claimMessage, c, extra, MAX_CHAT) },
+					target: c.steamId,
+					okMessage: `Announced ${claimer}'s claim on ${b.name}.`,
+					detail: { name: claimer, target: b.name, stage: 'claim', eventId: k.eventId },
+					steamId: null,
+					dedupeKey: dedupe('claimed')
+				});
+			if (slot)
+				out.intents.push({
+					trigger: row,
+					action: BOUNTY_REWARD,
+					params: {
+						steamId: c.steamId,
+						name: claimer,
+						reason: `Bounty on ${b.name}, ${serverName}`.slice(0, 200),
+						slotDays: cfg.slotDays,
+						scope: cfg.scope
+					},
+					target: c.steamId,
+					okMessage: `Reserved a slot for ${claimer}.`,
+					detail: { name: claimer, target: b.name, slotDays: cfg.slotDays },
+					// The slot was won; it is granted even if the claimer leaves before delivery.
+					steamId: null,
+					dedupeKey: dedupe('reward')
+				});
+			if (cfg.whisper)
+				out.intents.push({
+					trigger: row,
+					action: 'whisper',
+					params: { steamId: c.steamId, message: say(cfg.whisper, c, extra, MAX_CHAT) },
+					target: c.steamId,
+					okMessage: `Whispered ${claimer}.`,
+					detail: { name: claimer },
+					steamId: c.steamId,
+					dedupeKey: dedupe('whisper')
+				});
+			out.updates.push({
+				id: row.id,
+				lastFiredAt: new Date(now),
+				lastResult: claimed.slice(0, -1)
+			});
+			cards.push({
+				...card,
+				kind: 'claim',
+				map: k.map || null,
+				claimer,
+				target: b.name,
+				run: b.best
+			});
+		}
+		// The open bounty as it stands after the batch, on the last update (they are applied in order).
+		const state = bountyState(version, track.open);
+		out.updates[out.updates.length - 1].state = state;
+		const after = track.open;
+		let queued = 0;
+		try {
+			await withOwnedTransaction(env, async (tx) => {
+				queued = await enqueueIntents(tx, serverId, out.intents);
+				await applyTriggerUpdates(tx, out.updates);
+			});
+		} catch (err) {
+			// Not written: the bounty goes back to what it was, unless a look has moved it on since.
+			if (track.open === after) track.open = before;
+			throw err;
+		}
+		row.state = state;
+		if (queued) wakeDelivery();
+		void notifyBounty(env, serverId, serverName, cards);
 	}
 }
 

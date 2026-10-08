@@ -647,6 +647,12 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 						recovered: wasOffline,
 						// the lines the match stage will write, for the broadcast's {mvp} and {top}
 						matchLines: matchEnd ? closeTallies(m.tallies, prevStatusAt).rows : [],
+						// the sessions open after this look: a leaver's, gone past the grace, closes at it
+						// (the map itself follows when the look is written)
+						present: {
+							has: (steamId: string) =>
+								m.presence.open.has(steamId) && !diff.left.some((s) => s.steamId === steamId)
+						},
 						ts
 					},
 					rows

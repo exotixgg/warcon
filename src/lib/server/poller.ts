@@ -39,6 +39,7 @@ import { phaseOffset, pickDue, withHold } from './poller-schedule';
 import { rollupSamples } from './rollups';
 import { liveView } from './live';
 import { feedDemoKills, forgetKillDistance, forgetNameChange } from './feed-events';
+import { forgetBounties } from './bounty';
 import { startAliasFill } from './aliases';
 import { publicMessage } from './http';
 import * as metrics from './metrics';
@@ -290,6 +291,7 @@ async function refreshRoster(env: Env, s: Scheduler, now: number): Promise<void>
 			forgetMemory(m.server.id);
 			forgetKillDistance(m.server.id);
 			forgetNameChange(m.server.id);
+			forgetBounties(m.server.id);
 		}
 	if (now - s.expiryAt >= EXPIRY_MS) {
 		s.expiryAt = now;

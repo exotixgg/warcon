@@ -33,6 +33,7 @@ import { deliveries } from './metrics';
 import { NAME_FLAG } from './name-filter';
 import { KILL_RATE_FLAG } from './kill-rate';
 import { KILL_DISTANCE_FLAG, KILL_DISTANCE_SKIP } from './kill-distance';
+import { BOUNTY_CLAIM, BOUNTY_LAPSE, BOUNTY_REWARD } from './bounty';
 import { writeAudit } from './audit';
 import { PANEL_BAN, type PanelBanParams } from './rule-ban';
 import { killAndTell, RULE_KILL, RULE_KILL_MAX_AGE_MS } from './rule-kill';
@@ -54,7 +55,10 @@ const PANEL_ACTIONS = new Set([
 	NAME_FLAG,
 	KILL_RATE_FLAG,
 	KILL_DISTANCE_FLAG,
-	KILL_DISTANCE_SKIP
+	KILL_DISTANCE_SKIP,
+	BOUNTY_REWARD,
+	BOUNTY_CLAIM,
+	BOUNTY_LAPSE
 ]);
 
 /** The most rows one claim takes, oldest first. */
@@ -470,15 +474,18 @@ async function release(env: Env, row: OutboxRow): Promise<void> {
  */
 async function deliverOne(env: Env, row: OutboxRow): Promise<'held' | 'refused' | void> {
 	if (row.action === 'seed_reward') return deliverSeedReward(env, row);
+	if (row.action === BOUNTY_REWARD) return deliverBountyReward(env, row);
 	if (row.action === PANEL_BAN) return deliverPanelBan(env, row);
-	// An alert-only Name filter match, a Name change, Kill rate or Kill distance flag, or a Kill
-	// distance rule's note of a kill it left out: the audit row (and, but for the note, its Discord
-	// card) is the whole delivery.
+	// An alert-only Name filter match, a Name change, Kill rate or Kill distance flag, a Kill
+	// distance rule's note of a kill it left out, or a bounty claimed or lapsed: the audit row (and,
+	// but for the Kill distance note, its Discord card) is the whole delivery.
 	if (
 		row.action === NAME_FLAG ||
 		row.action === KILL_RATE_FLAG ||
 		row.action === KILL_DISTANCE_FLAG ||
-		row.action === KILL_DISTANCE_SKIP
+		row.action === KILL_DISTANCE_SKIP ||
+		row.action === BOUNTY_CLAIM ||
+		row.action === BOUNTY_LAPSE
 	) {
 		const holds = await stillHolds(env, row);
 		if (holds === null) return release(env, row);
@@ -641,6 +648,75 @@ async function deliverSeedReward(env: Env, row: OutboxRow): Promise<void> {
 	} catch (err) {
 		if (err instanceof LostOwnership) return; // the lease sweep marks it unknown
 		await finish(env, row, 'failed', err instanceof Error ? err.message : String(err));
+	} finally {
+		stats.inFlight--;
+	}
+}
+
+/**
+ * A claimed bounty's slot, like a Seeding reward's: the claimer goes on this server's reserved list or
+ * the organisation's for the rule's number of days from now, and the server is nudged to sync. A
+ * claimer who already holds a slot there that ends sooner has it made to last as long; one whose slot
+ * lasts as long or longer (or for good) keeps it as it is. Won slots do not go stale.
+ */
+async function deliverBountyReward(env: Env, row: OutboxRow): Promise<void> {
+	const p = row.params as {
+		steamId: string;
+		name: string;
+		reason: string;
+		slotDays: number;
+		scope: 'server' | 'org';
+	};
+	stats.inFlight++;
+	try {
+		if (!isOwner()) throw new LostOwnership();
+		const m = memoryOf(row.serverId);
+		const server = m?.server ?? (await getServer(env, row.serverId));
+		const org = m?.org ?? (server ? await getOrg(env, server.orgId) : null);
+		if (!server || !org) return await finish(env, row, 'skipped', 'Server no longer exists.');
+		const here = p.scope !== 'org';
+		const list = here
+			? await serverListOf(env, server, 'reserve')
+			: await listOf(env, org.id, 'reserve');
+		const expiresAt = new Date(Date.now() + p.slotDays * 86400_000);
+		const { added, lengthened } = await grantEntry(
+			env,
+			list,
+			{
+				steamId: p.steamId,
+				reason: p.reason,
+				expiresAt,
+				addedByName: `trigger: ${row.triggerName}`
+			},
+			{ lengthen: true }
+		);
+		if (!added && !lengthened)
+			return await finish(
+				env,
+				row,
+				'skipped',
+				`${p.name} already holds a reserved slot ${here ? `on ${server.name}` : `in ${org.name}`} that lasts as long or longer.`
+			);
+		// The next sync puts the slot on the server; this server syncs at its next look.
+		m?.reserved.add(p.steamId);
+		if (m) {
+			m.syncAt = 0;
+			gateway().observeSoon(row.serverId, { lists: true });
+		}
+		const until = expiresAt.toISOString().slice(0, 10);
+		await finish(
+			env,
+			row,
+			'delivered',
+			added
+				? `Reserved a slot for ${p.name} until ${until}.`
+				: `${p.name}'s reserved slot now lasts until ${until}.`
+		);
+	} catch (err) {
+		if (err instanceof LostOwnership) return; // the lease sweep marks it unknown
+		// the error goes to the log, a fixed phrase to the row: it may name what it failed on
+		console.error('[warcon] bounty reward', forLog(err));
+		await finish(env, row, 'failed', 'Could not write the reserved slot.');
 	} finally {
 		stats.inFlight--;
 	}
