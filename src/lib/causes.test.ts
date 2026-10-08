@@ -1,5 +1,12 @@
 import { describe, expect, test } from 'bun:test';
-import { causeKind, causeLabel, knownCauses } from './causes';
+import {
+	causeKind,
+	causeLabel,
+	isVehicleCrash,
+	knownCauses,
+	notCountedLabel,
+	VEHICLE_CRASH
+} from './causes';
 
 describe('causeLabel', () => {
 	test('named weapons, tools, buildables and vehicles', () => {
@@ -88,5 +95,33 @@ describe('causeKind', () => {
 		expect(causeKind('Vehicle.Variant.Air.Rotary.Littlebird.Default')).toBe('vehicle');
 		expect(causeKind('Id.Buildable.Gate')).toBe('buildable');
 		expect(causeKind(null)).toBe('none');
+	});
+});
+
+describe('isVehicleCrash', () => {
+	test("a vehicle's own blast is a crash; a weapon that blows one up, or a roadkill, is not", () => {
+		const heli = 'Vehicle.Variant.Air.Rotary.ROT_04.Default';
+		expect(isVehicleCrash({ cause: heli, tags: ['VehicleExplosion'] })).toBe(true);
+		expect(
+			isVehicleCrash({ cause: heli.toUpperCase(), tags: ['Penetration', 'VehicleExplosion'] })
+		).toBe(true);
+		expect(isVehicleCrash({ cause: heli, tags: [] })).toBe(false);
+		expect(isVehicleCrash({ cause: heli, tags: ['RoadKill'] })).toBe(false);
+		expect(isVehicleCrash({ cause: 'Id.Item.C4Explosive', tags: ['VehicleExplosion'] })).toBe(
+			false
+		);
+		expect(
+			isVehicleCrash({
+				cause: 'Id.Vehicle.WeaponExtension.TNK_01.Artillery',
+				tags: ['VehicleExplosion']
+			})
+		).toBe(false);
+		expect(isVehicleCrash({ cause: null, tags: ['VehicleExplosion'] })).toBe(false);
+	});
+
+	test("the Team kill limit's entry for crashes is named in any case, the rest by their cause", () => {
+		expect(notCountedLabel(VEHICLE_CRASH)).toBe('Vehicle crash');
+		expect(notCountedLabel('vehicleexplosion')).toBe('Vehicle crash');
+		expect(notCountedLabel('Id.Buildable.BarbedWire')).toBe('Barbed wire');
 	});
 });

@@ -520,7 +520,11 @@ describe.skipIf(!hasTestDb)('access', () => {
 				['name_filter', { characters: 'ascii' }, 'players.kick'],
 				['name_filter', { characters: 'ascii', action: 'alert' }, 'players.kick'],
 				['team_kill', { kickAt: 3 }, 'players.kick'],
-				['team_kill', { kickAt: 3, notCounted: ['Id.Item.Claymore'] }, 'players.kick'],
+				[
+					'team_kill',
+					{ kickAt: 3, notCounted: ['Id.Item.Claymore', 'VehicleExplosion'] },
+					'players.kick'
+				],
 				['kill_rate', { maxKills: 20 }, 'players.kick'],
 				['kill_distance', { causes: [DEFIB], action: 'flag' }, 'players.kick'],
 				['kill_distance', { causes: [DEFIB], action: 'warn' }, 'chat.send'],

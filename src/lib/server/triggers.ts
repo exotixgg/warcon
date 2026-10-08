@@ -134,7 +134,7 @@ import {
 } from './kill-distance';
 import { banNeeds, PANEL_BAN, type PanelBanParams } from './rule-ban';
 import { RULE_KILL, RULE_KILL_NEEDS, type RuleKillParams } from './rule-kill';
-import { causeLabel } from '$lib/causes';
+import { causeLabel, isVehicleCrash, notCountedLabel, VEHICLE_CRASH } from '$lib/causes';
 import {
 	emptyTwoTeamsState,
 	teamName,
@@ -1978,11 +1978,18 @@ export async function dryRun(
 		const c = cfg as TeamKillConfig;
 		// Each team kill in the window, with the killer's running count in the match it arrived in:
 		// the rows carrying that match from two minutes before it opened (killsOfMatch), else, for
-		// a kill that came in with no match open, the other such kills of the hour before. A kill by
-		// a cause the rule does not count adds to no count and comes back with none.
-		const notCounted = JSON.stringify(teamKillNotCounted(c).map((x) => x.toLowerCase()));
-		const counts = (cause: SQL) =>
-			sql`(${cause} IS NULL OR lower(${cause}) NOT IN (SELECT jsonb_array_elements_text(${notCounted}::text::jsonb)))`;
+		// a kill that came in with no match open, the other such kills of the hour before. A kill the
+		// rule does not count (by its cause, or a crash) adds to no count and comes back with none.
+		const listed = teamKillNotCounted(c).map((x) => x.toLowerCase());
+		const notCounted = JSON.stringify(listed);
+		const crashes = listed.includes(VEHICLE_CRASH.toLowerCase());
+		// countsForTeamKill over the kill row `k`, with isVehicleCrash in SQL: no cause is no crash
+		const counts = (k: SQL) =>
+			sql`(${k}.cause IS NULL OR lower(${k}.cause) NOT IN (SELECT jsonb_array_elements_text(${notCounted}::text::jsonb)))${
+				crashes
+					? sql` AND NOT COALESCE(${k}.cause ILIKE 'Vehicle.%' AND ${k}.tags ? ${VEHICLE_CRASH}::text, false)`
+					: sql``
+			}`;
 		const rows = await env.db.execute<{
 			ts: Date;
 			killerName: string;
@@ -1990,14 +1997,15 @@ export async function dryRun(
 			victimName: string;
 			map: string | null;
 			cause: string | null;
+			tags: string[];
 			n: string | null;
 		}>(sql`
 			SELECT k.ts, k.killer_name AS "killerName", k.killer_steam_id AS "killerSteamId",
-			       k.victim_name AS "victimName", k.map, k.cause,
-			       CASE WHEN ${counts(sql`k.cause`)} THEN
+			       k.victim_name AS "victimName", k.map, k.cause, k.tags,
+			       CASE WHEN ${counts(sql`k`)} THEN
 			       (SELECT COUNT(*) FROM kills k2
 			         WHERE k2.server_id = k.server_id AND k2.killer_steam_id = k.killer_steam_id
-			           AND k2.team_kill AND ${counts(sql`k2.cause`)} AND k2.ts <= k.ts
+			           AND k2.team_kill AND ${counts(sql`k2`)} AND k2.ts <= k.ts
 			           AND k2.match_row IS NOT DISTINCT FROM k.match_row
 			           AND k2.ts >= COALESCE((SELECT m.started_at - interval '2 minutes' FROM matches m
 			                                    WHERE m.id = k.match_row AND m.server_id = k.server_id),
@@ -2010,7 +2018,10 @@ export async function dryRun(
 		const left = new Map<string, number>();
 		for (const r of rows) {
 			if (r.n === null) {
-				const label = causeLabel(r.cause);
+				const label =
+					crashes && isVehicleCrash({ cause: r.cause, tags: r.tags })
+						? notCountedLabel(VEHICLE_CRASH)
+						: causeLabel(r.cause);
 				left.set(label, (left.get(label) ?? 0) + 1);
 				continue;
 			}

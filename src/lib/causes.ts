@@ -118,6 +118,19 @@ const LABELS: Record<string, string> = {
  * runs into a teammate's barbed wire is reported as killed by whoever built it.
  */
 export const TEAM_KILL_NOT_COUNTED: readonly string[] = ['Id.Buildable.BarbedWire'];
+/**
+ * The entry of a Team kill limit's list that leaves out crashes, by the feed's own tag: a vehicle
+ * that blows up kills whoever is aboard, and the feed reports each death as a kill by its driver
+ * or pilot, with the vehicle as the cause. A vehicle blown up by a weapon has that weapon as the
+ * cause instead, so a teammate's charge or rocket is not a crash.
+ */
+export const VEHICLE_CRASH = 'VehicleExplosion';
+/** Whether a kill is a crash: a vehicle's own blast, reported as its driver's or pilot's kill. */
+export const isVehicleCrash = (k: { cause: string | null; tags: readonly string[] }): boolean =>
+	causeKind(k.cause) === 'vehicle' && k.tags.includes(VEHICLE_CRASH);
+/** An entry of a Team kill limit's list by name. */
+export const notCountedLabel = (entry: string): string =>
+	entry.toLowerCase() === VEHICLE_CRASH.toLowerCase() ? 'Vehicle crash' : causeLabel(entry);
 
 /** The table by lower-case tag, for a lookup in any case. */
 const BY_TAG = new Map(
