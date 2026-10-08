@@ -102,6 +102,7 @@ import {
 	type WelcomeConfig
 } from './trigger-rules';
 import { MAX_CHAT } from '$lib/chat';
+import { notifyBounty, type BountyCard } from './webhook-delivery';
 import { NAME_FLAG, nameFilterTargets, nameVerdict, type NameFilterConfig } from './name-filter';
 import {
 	nameChangeSettingsKey,
@@ -158,6 +159,24 @@ import {
 	afkStep,
 	type AfkProtectionConfig
 } from './afk-protection';
+import {
+	BOUNTY_LAPSE,
+	bountyReplay,
+	bountyReward,
+	bountyScope,
+	bountyState,
+	bountyTrack,
+	forgetBounties,
+	lapseWords,
+	rewardWords,
+	savedBounty,
+	bountyVersion,
+	type BountyConfig,
+	type BountyKill,
+	type BountyLapse,
+	type BountyReplayEvent,
+	type OpenBounty
+} from './bounty';
 import { fmtUptime, RESTART_AFTER_HOURS, restartWindow } from '$lib/uptime';
 import { DEFAULT_SCORE_CAP } from '$lib/match';
 import { mapName } from '$lib/format';
@@ -199,8 +218,17 @@ const shape = (t: TriggerRow): TriggerView => ({
 	lastResult: t.lastResult,
 	fireCount: t.fireCount,
 	createdAt: t.createdAt ? t.createdAt.toISOString() : null,
-	...(t.kind === 'afk_protection' ? { phase: afkPhase(t.state) } : {})
+	...(t.kind === 'afk_protection' ? { phase: afkPhase(t.state) } : {}),
+	...(t.kind === 'bounty' ? { bounty: openBounty(t) } : {})
 });
+
+/** A Bounty rule's open bounty, as its row shows it: the one its last save holds, if any. */
+function openBounty(t: TriggerRow): TriggerView['bounty'] {
+	const b = savedBounty(t.state, bountyVersion(t));
+	return b
+		? { steamId: b.steamId, name: b.name, streak: b.streak, setAt: new Date(b.setAt).toISOString() }
+		: null;
+}
 
 /** Where an AFK protection rule stands, as its row shows it; null until the worker has looked. */
 function afkPhase(state: unknown): TriggerView['phase'] {
@@ -233,7 +261,7 @@ async function triggerOf(env: Env, serverId: string, id: string): Promise<Trigge
  * need to do the same by hand: a rule that kicks needs Kick, not only Automation.
  */
 const RULE_NEEDS: Record<
-	Exclude<TriggerKind, 'seed_reward' | 'kill_distance'>,
+	Exclude<TriggerKind, 'seed_reward' | 'kill_distance' | 'bounty'>,
 	[Capability, string]
 > = {
 	welcome: ['chat.send', 'messages players'],
@@ -252,16 +280,27 @@ const RULE_NEEDS: Record<
 	name_change: ['players.kick', 'flags or kicks players']
 };
 
+/** What a reserved slot a rule hands out needs: one here, or on the organisation's list. */
+const SLOT_NEEDS: Record<'server' | 'org', [Capability, string]> = {
+	org: ['lists.reserve', "edits the organisation's reserved-slot list"],
+	server: ['slots.manage', 'reserves slots on this server']
+};
+
 /**
  * What one rule needs of whoever saves it. The Seeding reward reserves slots: here, or on the
  * organisation's list. A Kill distance rule flags, warns, kills (and whispers), kicks, or bans:
- * here, or on the organisation's ban list.
+ * here, or on the organisation's ban list. A Bounty broadcasts, and reserves the claimer a slot when
+ * it has a reward.
  */
 export function ruleNeeds(kind: TriggerKind, config: unknown): [Capability, string] {
 	if (kind === 'seed_reward')
-		return (config as Partial<SeedRewardConfig> | null)?.scope !== 'server'
-			? ['lists.reserve', "edits the organisation's reserved-slot list"]
-			: ['slots.manage', 'reserves slots on this server'];
+		return SLOT_NEEDS[
+			(config as Partial<SeedRewardConfig> | null)?.scope !== 'server' ? 'org' : 'server'
+		];
+	if (kind === 'bounty')
+		return bountyReward(config) === 'slot'
+			? SLOT_NEEDS[bountyScope(config)]
+			: ['chat.send', 'messages players'];
 	if (kind === 'kill_distance') {
 		const action = killDistanceAction(config);
 		if (action === 'ban') return banNeeds(killDistanceBanScope(config));
@@ -278,6 +317,8 @@ export function ruleNeeds(kind: TriggerKind, config: unknown): [Capability, stri
  */
 function ruleAlsoNeeds(kind: TriggerKind, config: unknown): [Capability, string] | null {
 	if (kind === 'kill_distance' && killDistanceAction(config) === 'kill') return RULE_KILL_NEEDS[1];
+	if (kind === 'bounty' && bountyReward(config) === 'slot')
+		return ['chat.send', 'messages players'];
 	if (kind === 'two_teams' && str((config as Partial<TwoTeamsConfig> | null)?.message))
 		return ['chat.send', 'whispers players'];
 	const afk = config as Partial<AfkProtectionConfig> | null;
@@ -319,9 +360,14 @@ export async function createTrigger(
 	const row = await env.db.transaction(async (tx) => {
 		// Seed time is one count per server, taken against one threshold, so one rule holds it. Two
 		// Team balance rules would move a player back and forth, killing them at every move; two AFK
-		// protection rules would kill everyone twice a round. Saves to one server take turns, so two at
-		// once cannot both find none.
-		if (kind === 'seed_reward' || kind === 'two_teams' || kind === 'afk_protection') {
+		// protection rules would kill everyone twice a round; two Bounty rules would mark two players at
+		// once. Saves to one server take turns, so two at once cannot both find none.
+		if (
+			kind === 'seed_reward' ||
+			kind === 'two_teams' ||
+			kind === 'afk_protection' ||
+			kind === 'bounty'
+		) {
 			await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`triggers:${server.id}`}))`);
 			const [other] = await tx
 				.select({ name: triggers.name })
@@ -380,6 +426,8 @@ export async function updateTrigger(
 	if (body.config !== undefined) set.config = validateConfig(row.kind, body.config);
 	if (row.kind === 'ping_kick' && (body.config !== undefined || body.enabled !== undefined))
 		set.state = null;
+	// Any save of a Bounty rule calls off its open bounty: the worker starts it over (bounty.ts).
+	if (row.kind === 'bounty') set.state = null;
 	// Switched on again, a Team balance rule starts over in the worker (its memory is keyed on this):
 	// who switched sides while it was off is unknown, so whoever is on then counts as placed. Whether
 	// it was off is the row's at the write, not the read above, so a switch-off landing between them
@@ -523,6 +571,9 @@ export interface TickContext {
 	recovered?: boolean;
 	/** at a boundary, every player's line of the match that ended, from the worker's tallies */
 	matchLines: MatchLineVars[];
+	/** the players with an open session: on, or gone for less than the leave grace; absent, nobody
+	 *  is known to have left */
+	present?: { has(steamId: string): boolean };
 	ts: Date;
 }
 
@@ -757,6 +808,10 @@ export async function evaluateTriggers(
 					break;
 				case 'afk_protection':
 					evalAfkProtection(ctx, row, row.config as AfkProtectionConfig, out);
+					break;
+				case 'bounty':
+					// Kills move it on as they arrive (feed-events.ts); a look ends it.
+					evalBounty(env, ctx, row, row.config as BountyConfig, out);
 					break;
 			}
 		} catch (err) {
@@ -1451,6 +1506,93 @@ function evalAfkProtection(
 	out.updates.push(update);
 }
 
+/**
+ * A Bounty rule at each look: a match end starts the runs over, and an open bounty lapses when the
+ * match ends, when its player's session closes (gone past the leave grace, so a map change's empty
+ * list is no leave), or at the first look after the server was out of reach (whatever happened
+ * meanwhile, its 24-hour restart among it, is unknown). Kills set and claim bounties as they arrive
+ * (feed-events.ts). The bounty is let go here, before the look is written, so no kill claims it
+ * meanwhile; a look whose write fails leaves it open on the rule's row only, where a restart reads
+ * it back and the next look or claim lapses it (a claim checks the bounty's match).
+ */
+function evalBounty(
+	env: Env,
+	ctx: TickContext,
+	row: TriggerRow,
+	cfg: BountyConfig,
+	out: Evaluation
+) {
+	const { version, track } = bountyTrack(row);
+	if (ctx.matchEnd || ctx.recovered) track.runs.clear();
+	const open = track.open;
+	if (!open) return;
+	const why: BountyLapse | null = ctx.matchEnd
+		? 'match'
+		: ctx.recovered
+			? 'lost'
+			: ctx.playersObserved && ctx.present && !ctx.present.has(open.steamId)
+				? 'left'
+				: null;
+	if (!why) return;
+	track.open = null;
+	const lapse = bountyLapse(
+		row,
+		cfg,
+		version,
+		open,
+		why,
+		ctx.ts,
+		ctx.matchEnd?.map ?? ctx.status.map
+	);
+	out.intents.push(lapse.intent);
+	out.updates.push(lapse.update);
+	const serverName = ctx.status.serverName || ctx.server.name;
+	(out.afterCommit ??= []).push(
+		() => void notifyBounty(env, ctx.server.id, serverName, [lapse.card])
+	);
+}
+
+/**
+ * What a bounty lapsing writes: the note in the trail (Recent actions, the Automation mirror), the
+ * rule's row with no bounty open, and the card for a Bounties channel, posted once it is written.
+ */
+export function bountyLapse(
+	row: TriggerRow,
+	cfg: BountyConfig,
+	version: string,
+	open: OpenBounty,
+	why: BountyLapse,
+	at: Date,
+	map: string | null
+): { intent: Intent; update: TriggerUpdate; card: BountyCard } {
+	const state = bountyState(version, null);
+	row.state = state;
+	const message = lapseWords(open, why);
+	return {
+		intent: {
+			trigger: row,
+			action: BOUNTY_LAPSE,
+			params: {},
+			target: open.steamId,
+			okMessage: message,
+			detail: { name: open.name, streak: open.streak, run: open.best, why },
+			steamId: null,
+			dedupeKey: key(row, 'lapse', open.steamId, open.setAt)
+		},
+		update: { id: row.id, lastFiredAt: at, lastResult: message, state },
+		card: {
+			kind: 'lapse',
+			at: at.toISOString(),
+			map: map || null,
+			reward: rewardWords(cfg),
+			orgWide: cfg.reward === 'slot' && cfg.scope === 'org',
+			name: open.name,
+			run: open.best,
+			why
+		}
+	};
+}
+
 // A match boundary is one tick, so the rule keeps no state: the end message then the start
 // message, each an outbox row keyed on the tick.
 // A match end the rule is holding until the server has its players on again, per rule (in memory
@@ -1464,6 +1606,7 @@ export function forgetRuleMemory(): void {
 	twoTeamsMemory.clear();
 	staffMoves.clear();
 	afkEmpty.clear();
+	forgetBounties();
 }
 
 function evalMatchBroadcast(
@@ -1825,6 +1968,26 @@ const REPLAY_ROWS_MAX = 5000;
 /** The risk dry run judges at most this many players (the latest on), for its Steam lookups. */
 const RISK_REPLAY_MAX = 2000;
 
+/**
+ * Where a replay of a per-match rule starts: the start of the match already running at `from` (two
+ * minutes before it, as killsOfMatch reads a match), at most six hours back, else `from`.
+ */
+async function matchStartBefore(env: Env, serverId: string, from: Date): Promise<Date> {
+	const [open] = await env.db.execute<{ startedAt: Date | null }>(sql`
+		SELECT MIN(started_at) AS "startedAt" FROM matches
+		 WHERE server_id = ${serverId} AND started_at < ${from}
+		   AND (ended_at IS NULL OR ended_at >= ${from})`);
+	return new Date(
+		Math.max(
+			Math.min(
+				from.getTime(),
+				open?.startedAt ? new Date(open.startedAt).getTime() - 120_000 : Infinity
+			),
+			from.getTime() - 6 * 3600_000
+		)
+	);
+}
+
 /** Replays the last 24 hours of this server's history against a rule. Touches nobody. */
 export async function dryRun(
 	env: Env,
@@ -1846,6 +2009,10 @@ export async function dryRun(
 	};
 	const push = (at: Date, text: string) => {
 		result.fires++;
+		note(at, text);
+	};
+	/** a line of the replay that is not a firing of its own (a bounty claimed or lapsed) */
+	const note = (at: Date, text: string) => {
 		if (result.items.length < 50) result.items.push({ at: at.toISOString(), text });
 	};
 	const joins = (withFaction = false) =>
@@ -2116,24 +2283,137 @@ export async function dryRun(
 			);
 		return result;
 	}
+	if (kind === 'bounty') {
+		const c = cfg as BountyConfig;
+		// Every kill of the window through the live rule's own step, batch by batch as they came in,
+		// from the start of a match already running when the window opens (at most six hours back), so
+		// a run at the window's edge is the live one. Each batch is judged against the player count of
+		// the server's last sample before it, and a marked player's bounty lapses when their session
+		// closed. Only what happened in the window is listed.
+		const since = await matchStartBefore(env, server.id, from);
+		const rows = await env.db.execute<{
+			ts: Date;
+			eventId: string;
+			matchRow: number | null;
+			killer: string | null;
+			killerName: string | null;
+			killerFaction: string | null;
+			victim: string;
+			victimName: string;
+			victimFaction: string | null;
+			suicide: boolean;
+			teamKill: boolean;
+		}>(sql`
+			SELECT ts, event_id AS "eventId", match_row AS "matchRow", killer_steam_id AS killer,
+			       killer_name AS "killerName", killer_faction AS "killerFaction",
+			       victim_steam_id AS victim, victim_name AS "victimName",
+			       victim_faction AS "victimFaction", suicide, team_kill AS "teamKill"
+			  FROM kills
+			 WHERE server_id = ${server.id} AND ts >= ${since}
+			 ORDER BY ts ASC, event_time ASC LIMIT ${KILL_RATE_REPLAY_MAX}`);
+		const counts = await env.db.execute<{ ts: Date; n: number | null }>(sql`
+			SELECT ts, player_count AS n FROM samples
+			 WHERE server_id = ${server.id} AND ok AND ts >= ${new Date(since.getTime() - 10 * 60_000)}
+			 ORDER BY ts ASC`);
+		const leaves = await env.db.execute<{ steamId: string; leftAt: Date }>(sql`
+			SELECT steam_id AS "steamId", left_at AS "leftAt" FROM player_sessions
+			 WHERE server_id = ${server.id} AND left_at >= ${since}
+			 ORDER BY left_at ASC LIMIT ${NAME_SESSIONS_MAX}`);
+		const sampled = counts.map((r) => ({ at: new Date(r.ts).getTime(), n: Number(r.n ?? 0) }));
+		let next = 0;
+		let on = 0;
+		const events: BountyReplayEvent[] = [];
+		for (let i = 0; i < rows.length;) {
+			const at = new Date(rows[i].ts).getTime();
+			let j = i;
+			while (j < rows.length && new Date(rows[j].ts).getTime() === at) j++;
+			for (; next < sampled.length && sampled[next].at <= at; next++) on = sampled[next].n;
+			const batch = rows.slice(i, j);
+			events.push({
+				kind: 'kills',
+				at,
+				match: matchKey(batch[0].matchRow === null ? null : Number(batch[0].matchRow), at),
+				players: on,
+				kills: batch.map((r): BountyKill => ({
+					eventId: r.eventId,
+					killer: r.killer
+						? { steamId: r.killer, name: r.killerName || r.killer, faction: r.killerFaction }
+						: null,
+					victim: { steamId: r.victim, name: r.victimName, faction: r.victimFaction },
+					suicide: !!r.suicide,
+					teamKill: !!r.teamKill
+				}))
+			});
+			i = j;
+		}
+		for (const l of leaves)
+			events.push({ kind: 'left', at: new Date(l.leftAt).getTime(), steamId: l.steamId });
+		// a leave dated to the same moment as a batch comes after it: a player is seen, then gone
+		events.sort((a, b) => a.at - b.at || (a.kind === b.kind ? 0 : a.kind === 'kills' ? -1 : 1));
+		const { outcomes, open } = bountyReplay(c, events);
+		const reward = rewardWords(c);
+		const slot = c.reward === 'slot';
+		const counted = { set: 0, claim: 0, lapse: 0 };
+		for (const o of outcomes) {
+			if (o.at < from.getTime()) continue;
+			counted[o.kind]++;
+			const at = new Date(o.at);
+			const b = o.bounty;
+			if (o.kind === 'set') {
+				const v = keptVars(
+					dryRunVars(
+						server.name,
+						{ name: b.name, steamId: b.steamId },
+						{
+							target: b.name,
+							streak: b.streak,
+							reward,
+							days: slot ? c.slotDays : '',
+							until: slot ? dateOf(new Date(o.at + c.slotDays * 86400_000)) : ''
+						}
+					)
+				);
+				push(
+					at,
+					`bounty on ${b.name} (${b.streak} kills, ${o.players} on): ${renderTemplate(c.setMessage, v, MAX_CHAT)}`
+				);
+			} else if (o.kind === 'claim')
+				note(
+					at,
+					`claimed by ${o.claimer.name || o.claimer.steamId}: ${b.name} after a run of ${b.best}${slot ? `, ${reward}` : ''}`
+				);
+			else
+				note(
+					at,
+					o.why === 'left'
+						? `lapsed: ${b.name} left (a run of ${b.best})`
+						: `lapsed: the match ended, ${b.name} on a run of ${b.best}`
+				);
+		}
+		const [feed] = await env.db
+			.select({ configured: sql<boolean>`feed_token_hash IS NOT NULL` })
+			.from(servers)
+			.where(eq(servers.id, server.id));
+		if (!feed?.configured)
+			result.notes.push(
+				'This server has no kill feed set up (Config tab), so the rule cannot see any kills.'
+			);
+		const n = (x: number, one: string, many = `${one}s`) => `${x} ${x === 1 ? one : many}`;
+		result.notes.push(
+			`${n(counted.set, 'bounty', 'bounties')} set, ${counted.claim} claimed, ${counted.lapse} lapsed${open ? ', one still open' : ''}. Runs start over at each match, and nobody is marked while the server's samples show fewer than ${c.minPlayers} on.`
+		);
+		if (rows.length >= KILL_RATE_REPLAY_MAX)
+			result.notes.push(
+				`Replayed the first ${KILL_RATE_REPLAY_MAX.toLocaleString('en')} kills only.`
+			);
+		return result;
+	}
 	if (kind === 'kill_distance') {
 		const c = cfg as KillDistanceConfig;
 		// The kills of the window the rule counts, per match as the live rule counts them, from the
 		// start of a match already running when the window opens (at most six hours back), so a count
 		// at the window's edge is the live one. Only what happened in the window is listed.
-		const [open] = await env.db.execute<{ startedAt: Date | null }>(sql`
-			SELECT MIN(started_at) AS "startedAt" FROM matches
-			 WHERE server_id = ${server.id} AND started_at < ${from}
-			   AND (ended_at IS NULL OR ended_at >= ${from})`);
-		const since = new Date(
-			Math.max(
-				Math.min(
-					from.getTime(),
-					open?.startedAt ? new Date(open.startedAt).getTime() - 120_000 : Infinity
-				),
-				from.getTime() - 6 * 3600_000
-			)
-		);
+		const since = await matchStartBefore(env, server.id, from);
 		// from 0 m a kill without a distance counts too
 		const far = c.minDistanceM > 0 ? sql`AND distance_m >= ${c.minDistanceM}` : sql``;
 		const rows = await env.db.execute<{

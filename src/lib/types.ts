@@ -556,7 +556,8 @@ export type TriggerKind =
 	| 'two_teams'
 	| 'kill_distance'
 	| 'afk_protection'
-	| 'name_change';
+	| 'name_change'
+	| 'bounty';
 
 export interface TriggerView {
 	id: string;
@@ -570,6 +571,8 @@ export interface TriggerView {
 	createdAt: string | null;
 	/** an AFK protection rule's standing: acting while the server seeds, or off since a match went live */
 	phase?: { on: boolean; since: string | null; why: string } | null;
+	/** a Bounty rule's open bounty: on whom, the run that set it, and when */
+	bounty?: { steamId: string; name: string; streak: number; setAt: string } | null;
 }
 
 export interface DryRunResult {

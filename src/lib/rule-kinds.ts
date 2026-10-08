@@ -93,6 +93,13 @@ export const RULE_KINDS: { kind: TriggerKind; group: RuleGroup; label: string; b
 		blurb: 'Give players who stay while the server is quiet a reserved slot.'
 	},
 	{
+		kind: 'bounty',
+		group: 'Players',
+		label: 'Bounty',
+		blurb:
+			'Put a bounty on a player on a kill streak; whoever kills them first gets a reserved slot.'
+	},
+	{
 		kind: 'afk_protection',
 		group: 'Players',
 		label: 'AFK protection',

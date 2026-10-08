@@ -536,7 +536,8 @@ describe.skipIf(!hasTestDb)('access', () => {
 				['name_change', { takenOnly: true }, 'players.kick'],
 				['name_change', { action: 'kick' }, 'players.kick'],
 				['seed_reward', { minutes: 60, scope: 'server' }, 'slots.manage'],
-				['seed_reward', { minutes: 60, scope: 'org' }, 'lists.reserve']
+				['seed_reward', { minutes: 60, scope: 'org' }, 'lists.reserve'],
+				['bounty', { reward: 'none' }, 'chat.send']
 			];
 			for (const [kind, config, cap] of rules) {
 				await holds([]);
@@ -665,6 +666,76 @@ describe.skipIf(!hasTestDb)('access', () => {
 				});
 				expect([action, got.status]).toEqual([action, 403]);
 			}
+		});
+
+		test('a Bounty rule broadcasts, so Chat; a reward needs the reserved list it goes on as well', async () => {
+			const w = await seedWorld(env);
+			const params = { id: w.server.id };
+			const holds = (caps: string[]) =>
+				env.db
+					.update(orgRoles)
+					.set({ capabilities: ['server.view', 'automation.manage', ...caps] })
+					.where(eq(orgRoles.id, w.roles.viewer));
+			const routes = ['POST api/servers/[id]/triggers', 'POST api/servers/[id]/triggers/dry-run'];
+			const slot = (scope: string) => ({ kind: 'bounty', config: { reward: 'slot', scope } });
+			// nobody outside the server reaches the rule at all, with or without a reward
+			for (const [who, status] of [
+				['anon', 401],
+				['outsider', 404],
+				['elsewhere', 404],
+				['keyView', 403],
+				['viewer', 403]
+			] as const)
+				for (const route of routes)
+					for (const body of [slot('server'), { kind: 'bounty', config: { reward: 'none' } }])
+						expect([who, route, (await api(w, who, route, { params, body })).status]).toEqual([
+							who,
+							route,
+							status
+						]);
+			// a slot here needs Reserved slots and Chat, one on every server Org reserved slots and Chat:
+			// neither alone, nor the other list's
+			for (const [caps, scope] of [
+				[['slots.manage'], 'server'],
+				[['chat.send'], 'server'],
+				[['lists.reserve', 'chat.send'], 'server'],
+				[['lists.reserve'], 'org'],
+				[['chat.send'], 'org'],
+				[['slots.manage', 'chat.send'], 'org']
+			] as const) {
+				await holds([...caps]);
+				for (const route of routes) {
+					const got = await api(w, 'viewer', route, { params, body: slot(scope) });
+					expect([caps, scope, route, got.status]).toEqual([caps, scope, route, 403]);
+				}
+			}
+			for (const [caps, scope] of [
+				[['slots.manage', 'chat.send'], 'server'],
+				[['lists.reserve', 'chat.send'], 'org']
+			] as const) {
+				await holds([...caps]);
+				const got = await api(w, 'viewer', routes[1], { params, body: slot(scope) });
+				expect([caps, scope, got.status]).toEqual([caps, scope, 200]);
+			}
+			// an announcement-only rule needs Chat alone, and its author cannot give it a slot by an edit
+			await holds(['chat.send']);
+			const made = await api(w, 'viewer', routes[0], {
+				params,
+				body: { kind: 'bounty', config: { reward: 'none' } }
+			});
+			expect(made.status).toBe(201);
+			const triggerId = (made.body as { trigger: { id: string } }).trigger.id;
+			for (const scope of ['server', 'org']) {
+				const edit = await api(w, 'viewer', 'PATCH api/servers/[id]/triggers/[triggerId]', {
+					params: { id: w.server.id, triggerId },
+					body: { config: { reward: 'slot', scope } }
+				});
+				expect([scope, edit.status]).toEqual([scope, 403]);
+			}
+			// one per server: two would put two bounties up at once
+			await holds(['chat.send', 'slots.manage']);
+			const second = await api(w, 'viewer', routes[0], { params, body: slot('server') });
+			expect(second.status).toBe(409);
 		});
 
 		test('a Name filter rule: who may save, dry-run and switch it on', async () => {

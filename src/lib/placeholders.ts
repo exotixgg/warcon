@@ -61,8 +61,9 @@ interface MessageRule {
 	fields: readonly string[];
 	own: readonly string[];
 	player: boolean;
-	/** its text can be kept where staff read it (a Kill distance reason becomes a ban reason), so it
-	 *  has no org-wide stats: staff of this server may not see the organisation's other servers */
+	/** its text can be kept where staff read it (a Kill distance reason becomes a ban reason), or is
+	 *  said to the whole server (a Bounty's), so it has no org-wide stats: staff of this server may
+	 *  not see the organisation's other servers, and a player's are told to them alone */
 	kept?: boolean;
 }
 
@@ -92,7 +93,15 @@ export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> 
 	seed_reward: { fields: ['message'], own: ['minutes', 'until', 'days'], player: true },
 	afk_protection: { fields: ['message', 'doneMessage'], own: ['goal'], player: false },
 	// the name the player had before the change
-	name_change: { fields: ['reason'], own: ['previous'], player: true }
+	name_change: { fields: ['reason'], own: ['previous'], player: true },
+	// said to the whole server, so no org-wide stats: `{name}` is the marked player when the bounty is
+	// set and the claimer after, `{target}` always the marked player
+	bounty: {
+		fields: ['setMessage', 'claimMessage', 'whisper'],
+		own: ['target', 'streak', 'reward', 'days', 'until'],
+		player: true,
+		kept: true
+	}
 };
 
 export type PlaceholderGroupKey = 'own' | 'player' | 'stats' | 'org' | 'server';
