@@ -596,19 +596,20 @@ function killerVars(env: Env, serverId: string) {
 }
 type KillerVars = ReturnType<typeof killerVars>;
 
-/** A player's team kills in a match by one cause (null for none), as a rule counts them. */
+/** A player's team kills in a match by one cause (null for none) and tags, as a rule counts them. */
 interface CauseCount {
 	cause: string | null;
+	tags: string[];
 	n: number;
 }
 
 /**
  * How many team kills each of these players has in the match the batch arrived in, up to and
- * including the batch, by cause: the rows that carry that match, as its match page counts them.
- * Leaving and joining again does not start the count over, and a batch acted on late does not
- * count the ones that came after it. A batch that came in while no match was open (a server's
- * first seconds, or just after its stats were purged) counts with the other such kills of the
- * hour before.
+ * including the batch, by cause and tags: the rows that carry that match, as its match page
+ * counts them. Leaving and joining again does not start the count over, and a batch acted on late
+ * does not count the ones that came after it. A batch that came in while no match was open (a
+ * server's first seconds, or just after its stats were purged) counts with the other such kills
+ * of the hour before.
  */
 async function teamKillsThisMatch(
 	env: Env,
@@ -635,7 +636,12 @@ async function teamKillsThisMatch(
 			? killsOfMatch(stamp.row, stamp.startedAt, stamp.endedAt)
 			: null;
 	const rows = await env.db
-		.select({ steamId: kills.killerSteamId, cause: kills.cause, n: sql<number>`COUNT(*)` })
+		.select({
+			steamId: kills.killerSteamId,
+			cause: kills.cause,
+			tags: kills.tags,
+			n: sql<number>`COUNT(*)`
+		})
 		.from(kills)
 		.where(
 			and(
@@ -647,11 +653,11 @@ async function teamKillsThisMatch(
 				lte(kills.ts, at)
 			)
 		)
-		.groupBy(kills.killerSteamId, kills.cause);
+		.groupBy(kills.killerSteamId, kills.cause, kills.tags);
 	const out = new Map<string, CauseCount[]>();
 	for (const r of rows) {
 		const list = out.get(r.steamId!) ?? out.set(r.steamId!, []).get(r.steamId!)!;
-		list.push({ cause: r.cause, n: Number(r.n) });
+		list.push({ cause: r.cause, tags: r.tags as string[], n: Number(r.n) });
 	}
 	return out;
 }
@@ -669,8 +675,7 @@ async function actOnTeamKills(
 		.map((row) => {
 			const cfg = row.config as TeamKillConfig;
 			const byKiller = new Map<string, KillView>();
-			for (const k of teamKills)
-				if (countsForTeamKill(cfg, k.cause)) byKiller.set(k.killer!.steamId, k);
+			for (const k of teamKills) if (countsForTeamKill(cfg, k)) byKiller.set(k.killer!.steamId, k);
 			return { row, cfg, byKiller };
 		})
 		.filter((r) => r.byKiller.size);
@@ -682,7 +687,7 @@ async function actOnTeamKills(
 	for (const { row, cfg, byKiller } of rules) {
 		const acts = [...byKiller].flatMap(([steamId, k]) => {
 			const count = (counts.get(steamId) ?? []).reduce(
-				(n, c) => (countsForTeamKill(cfg, c.cause) ? n + c.n : n),
+				(n, c) => (countsForTeamKill(cfg, c) ? n + c.n : n),
 				0
 			);
 			const stage = teamKillStage(cfg, count);

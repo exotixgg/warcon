@@ -12,7 +12,7 @@ import { validateNameChange, type NameChangeConfig } from './name-change';
 import { causeTags } from './cause-tags';
 import { RESTART_AFTER_HOURS, restartWindow } from '$lib/uptime';
 import { MAX_CHAT } from '$lib/chat';
-import { TEAM_KILL_NOT_COUNTED } from '$lib/causes';
+import { isVehicleCrash, TEAM_KILL_NOT_COUNTED, VEHICLE_CRASH } from '$lib/causes';
 import { mapName } from '$lib/format';
 import { UNKNOWN } from './message-vars';
 import type { SteamProfileRow } from './db/schema';
@@ -151,9 +151,9 @@ export interface RestartNoticeConfig {
 /**
  * Acts on team kills the kill feed reports, counted per killer within each match: a whisper
  * from `warnAt` team kills on (0 = never), a kick at `kickAt` (0 = never). Team kills by a cause
- * in `notCounted` (feed tags, any case) are left out of the count and never acted on; they stay
- * team kills everywhere else. A rule saved before the list existed has none and leaves out
- * TEAM_KILL_NOT_COUNTED.
+ * in `notCounted` (feed tags, any case) are left out of the count and never acted on, and so are
+ * crashes when it holds VEHICLE_CRASH; they stay team kills everywhere else. A rule saved before
+ * the list existed has none and leaves out TEAM_KILL_NOT_COUNTED.
  */
 export interface TeamKillConfig {
 	warnAt: number;
@@ -550,14 +550,14 @@ export function broadcastWanted(
 export const teamKillNotCounted = (cfg: Pick<TeamKillConfig, 'notCounted'>): readonly string[] =>
 	Array.isArray(cfg.notCounted) ? cfg.notCounted : TEAM_KILL_NOT_COUNTED;
 
-/** Whether a team-kill rule counts a team kill by this cause: one with no cause always counts. */
+/** Whether a team-kill rule counts a team kill: one with no cause always counts. */
 export function countsForTeamKill(
 	cfg: Pick<TeamKillConfig, 'notCounted'>,
-	cause: string | null | undefined
+	k: { cause: string | null; tags: readonly string[] }
 ): boolean {
-	if (!cause) return true;
-	const lower = cause.toLowerCase();
-	return !teamKillNotCounted(cfg).some((c) => c.toLowerCase() === lower);
+	const left = teamKillNotCounted(cfg).map((c) => c.toLowerCase());
+	if (left.includes(VEHICLE_CRASH.toLowerCase()) && isVehicleCrash(k)) return false;
+	return !k.cause || !left.includes(k.cause.toLowerCase());
 }
 
 /** What a team-kill rule does once the killer's count this match has reached `count`. */
