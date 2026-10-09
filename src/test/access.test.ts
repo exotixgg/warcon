@@ -14,6 +14,7 @@ import {
 } from '$lib/server/access';
 import { resolveBearer } from '$lib/server/apikeys';
 import { queryAudit } from '$lib/server/audit';
+import { ONE_PER_SERVER } from '$lib/rule-kinds';
 import {
 	apiKeys,
 	auditLog,
@@ -1288,6 +1289,30 @@ describe.skipIf(!hasTestDb)('access', () => {
 				});
 			const got = await Promise.all([save('Lonestar'), save('Valkyra')]);
 			expect(got.map((r) => r.status).sort()).toEqual([201, 409]);
+		});
+
+		test('one rule per server of each kind the picker opens instead, two of any other', async () => {
+			const w = await seedWorld(env);
+			const configs: Record<string, Record<string, unknown>> = {
+				seed_reward: { minutes: 60, scope: 'server' },
+				two_teams: { closedFaction: 'Lonestar' },
+				afk_protection: {},
+				bounty: {}
+			};
+			const save = (kind: string, name: string, config: Record<string, unknown>) =>
+				api(w, 'owner', 'POST api/servers/[id]/triggers', {
+					params: { id: w.server.id },
+					body: { kind, name, config }
+				});
+			expect(Object.keys(configs).sort()).toEqual([...ONE_PER_SERVER].sort());
+			for (const kind of ONE_PER_SERVER) {
+				expect([kind, (await save(kind, 'First', configs[kind])).status]).toEqual([kind, 201]);
+				const again = await save(kind, 'Second', configs[kind]);
+				expect([kind, again.status, again.code]).toEqual([kind, 409, 'duplicate']);
+				expect(again.message).toContain('"First"');
+			}
+			for (const name of ['One', 'Two'])
+				expect((await save('welcome', name, { message: 'Hi' })).status).toBe(201);
 		});
 
 		test('a Team balance rule that whispers needs Chat as well', async () => {

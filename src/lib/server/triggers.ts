@@ -61,6 +61,7 @@ import { gateway } from './gateway';
 import type { SessionUser } from './access';
 import type { ServerAccess } from './access-resolve';
 import { CAPABILITY_INFO, type Capability } from '$lib/capabilities';
+import { ONE_PER_SERVER } from '$lib/rule-kinds';
 import type { DryRunResult, Player, Status, TriggerKind, TriggerView } from '$lib/types';
 import {
 	broadcastWanted,
@@ -358,16 +359,9 @@ export async function createTrigger(
 	requireRuleCaps(kind, config, server, access);
 	const name = str(body.name, 60) || TRIGGER_LABELS[kind];
 	const row = await env.db.transaction(async (tx) => {
-		// Seed time is one count per server, taken against one threshold, so one rule holds it. Two
-		// Team balance rules would move a player back and forth, killing them at every move; two AFK
-		// protection rules would kill everyone twice a round; two Bounty rules would mark two players at
-		// once. Saves to one server take turns, so two at once cannot both find none.
-		if (
-			kind === 'seed_reward' ||
-			kind === 'two_teams' ||
-			kind === 'afk_protection' ||
-			kind === 'bounty'
-		) {
+		// One rule of these kinds per server ($lib/rule-kinds says why). Saves to one server take turns,
+		// so two at once cannot both find none.
+		if (ONE_PER_SERVER.includes(kind)) {
 			await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`triggers:${server.id}`}))`);
 			const [other] = await tx
 				.select({ name: triggers.name })
