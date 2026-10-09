@@ -95,6 +95,29 @@ test('a rule whose check fails on a query records a fixed phrase, and the log ha
 	expect(text).toContain('deadlock detected');
 });
 
+test("Better Auth's own log of a failed query leaves the parameters out", async () => {
+	const { initAuth } = await import('./auth');
+	const auth = initAuth({
+		ORIGIN: 'http://localhost:5173',
+		BETTER_AUTH_SECRET: 'fixture-secret-0123456789-fixture-secret',
+		db: {}
+	} as unknown as Env);
+	const { logger } = await auth.$context;
+	const failed = new DrizzleQueryError(
+		'insert into "session" ("token", "user_id") values ($1, $2)',
+		['fixture-session-token', 'u_fixture'],
+		new Error('could not extend file: No space left on device')
+	);
+	const text = await logged(async () => {
+		// the two ways its endpoint error handler logs a failure
+		logger.error(failed.name, failed);
+		logger.error(failed.message);
+	});
+	expect(text).not.toContain('fixture-session-token');
+	expect(text).not.toContain('u_fixture');
+	expect(text).toContain('No space left on device');
+});
+
 // ---- every console call on the server ----------------------------------------------------------
 
 const SRC = join(import.meta.dir, '..', '..');

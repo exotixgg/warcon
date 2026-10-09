@@ -32,17 +32,18 @@ export function normalizeError(err: unknown): ApiError | null {
 	return null;
 }
 
+const PARAMS = /\nparams: [\s\S]*?(?=\n\s+at |$)/;
+
 /**
  * An error as it goes to the process log: its stack, and the cause's message. A failed query's
  * message lists its parameters, and for the servers table those are the stored RCON password (as
  * ciphertext) and the address, so the parameters are left out.
  */
 export function forLog(err: unknown): unknown {
+	// a message passed on by itself (Better Auth logs some that way) is cut the same way
+	if (typeof err === 'string') return err.replace(PARAMS, '\nparams: (not logged)');
 	if (!(err instanceof Error)) return err;
-	const text = (err.stack || err.message).replace(
-		/\nparams: [\s\S]*?(?=\n\s+at |$)/,
-		'\nparams: (not logged)'
-	);
+	const text = (err.stack || err.message).replace(PARAMS, '\nparams: (not logged)');
 	const cause = (err as { cause?: unknown }).cause;
 	return cause instanceof Error ? `${text}\ncause: ${cause.message}` : text;
 }

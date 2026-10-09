@@ -146,6 +146,12 @@ function build(env: Env) {
 		appName: env.APP_NAME || 'Warcon',
 		baseURL: env.ORIGIN,
 		secret: env.BETTER_AUTH_SECRET,
+		// Better Auth logs a failed endpoint's error as it is, and a failed query's message lists its
+		// parameters (a session token, a password hash): it goes through forLog like ours.
+		logger: {
+			log: (level, message, ...args) =>
+				console[level]('[Better Auth]', forLog(message), ...args.map(forLog))
+		},
 		database: drizzleAdapter(env.db, {
 			provider: 'pg',
 			schema: {
