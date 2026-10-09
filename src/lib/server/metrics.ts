@@ -9,6 +9,7 @@
 import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from 'prom-client';
 import { buildInfo, type BuildInfo } from './build-info';
 import { timingSafeEqualStr } from './crypto';
+import { forLog } from './http';
 
 export const registry = new Registry();
 collectDefaultMetrics({ register: registry });
@@ -245,7 +246,7 @@ export async function renderMetrics(): Promise<string> {
 			try {
 				await fn();
 			} catch (err) {
-				console.warn('[warcon] metrics collector:', err instanceof Error ? err.message : err);
+				console.warn('[warcon] metrics collector:', forLog(err));
 			}
 		})
 	);

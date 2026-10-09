@@ -1,7 +1,7 @@
 // The /api/servers/:id/rcon/:action handler: capability check, action dispatch, audit row.
 import type { RequestEvent } from '@sveltejs/kit';
 import { flag, getEnv } from './env';
-import { ApiError, apiJson, readJson } from './http';
+import { ApiError, apiJson, forLog, readJson } from './http';
 import { writeAudit } from './audit';
 import { getServer, requireUser, serverAccessFor } from './access';
 import { CAPABILITY_INFO } from '../capabilities';
@@ -122,7 +122,7 @@ export async function runAction(
 			await noteLocalEdit(env, server.id, listEdit.kind, listEdit.op, target, {
 				reason: typeof params?.reason === 'string' ? params.reason.slice(0, 200) : '',
 				pendingRestart: !!(result as { pendingRestart?: unknown } | null)?.pendingRestart
-			}).catch((err) => console.error('[warcon] list mirror', err));
+			}).catch((err) => console.error('[warcon] list mirror', forLog(err)));
 		}
 		if (def.mutating) gateway().observeSoon(server.id, { lists: !!listEdit });
 		// A new document may change MaxReservedSlots, which the worker otherwise re-reads hourly.
@@ -200,12 +200,13 @@ export async function runAction(
 				});
 			throw err;
 		}
-		const message = err instanceof Error ? err.message : String(err);
+		// The panel's own failure: the trail keeps a fixed phrase (a failed query's message lists its
+		// parameters); the error goes on to the route, which logs it without them.
 		await writeAudit(env, req, {
 			...base,
 			outcome: 'error',
 			status: 500,
-			message,
+			message: 'Internal error.',
 			detail: def.mutating ? detail : undefined,
 			durationMs
 		});

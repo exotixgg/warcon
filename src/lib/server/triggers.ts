@@ -825,9 +825,11 @@ export async function evaluateTriggers(
 					break;
 			}
 		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			console.error(`[warcon] trigger ${row.name}`, message);
-			out.updates.push({ id: row.id, lastResult: `Error: ${message}`.slice(0, 300) });
+			// The rule shows a fixed phrase unless the panel refused in its own words; the error goes
+			// to the log (a failed query's message lists its parameters).
+			console.error(`[warcon] trigger ${row.name}`, forLog(err));
+			const why = err instanceof ApiError ? err.message : 'the rule could not be checked.';
+			out.updates.push({ id: row.id, lastResult: `Error: ${why}`.slice(0, 300) });
 		}
 	}
 	return out;

@@ -6,6 +6,7 @@
 // removed; a webhook Discord no longer knows shows as failing on the org page like the mirror.
 import { and, asc, eq, inArray } from 'drizzle-orm';
 import type { Env } from './env';
+import { forLog } from './http';
 import { organizations, servers, webhooks, type WebhookRow } from './db/schema';
 import { isOwner } from './leadership';
 import { memoryOf } from './observe';
@@ -81,7 +82,7 @@ async function tick(env: Env): Promise<void> {
 	try {
 		await refreshStatusMessages(env);
 	} catch (err) {
-		console.error('[warcon] status messages', err);
+		console.error('[warcon] status messages', forLog(err));
 	} finally {
 		ticking = false;
 	}
@@ -118,7 +119,7 @@ export async function refreshStatusMessages(env: Env, now = Date.now()): Promise
 			const only = hook.serverIds as string[] | null;
 			const list = only && only.length ? all.filter((s) => only.includes(s.id)) : all;
 			return refreshHook(env, hook, orgName, list, now).catch((err) =>
-				console.error(`[warcon] status messages ${hook.label}`, err)
+				console.error(`[warcon] status messages ${hook.label}`, forLog(err))
 			);
 		})
 	);
