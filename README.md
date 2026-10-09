@@ -1738,6 +1738,17 @@ settings) · `serverLog` (Audit trail) · `raw` (Raw RCON).
   transaction that disables the `player_totals_*` triggers on those tables, loads, runs
   `SELECT player_totals_rebuild();` (both kinds of totals; it refuses to run over a closed session
   that breaks the rule) and enables them again: writers wait for it, readers do not.
+- Matches played before the panel kept a row per player per match got their rows once, from the
+  sessions, which cannot split a session's kills and deaths between the matches it spanned. The
+  migration that recounts that history from the kill feed gives those rows the feed's kills and
+  deaths where the feed saw the whole match, keeps whatever a session's own counters held beyond
+  the feed on another of its matches (nobody's totals go down), and gives a row that held none of
+  the match's teams the feed's side, so the boards' kills, deaths and results for that history
+  change once. A session it cannot place keeps what it had, and an install that upgrades from
+  before match rows existed straight past it keeps the sessions' numbers, as its worker has
+  written no row yet to tell that history by. It works out the new counts first, then holds
+  sessions, matches and match rows against writes while it writes them and rebuilds the totals as
+  a bulk load does: on a busy install a minute or two in which observation waits.
 - Audit rows are never deleted by the panel. Prune them with SQL if you need to. Deleting an
   account pseudonymises its rows rather than removing them (see
   [Accounts and personal data](#accounts-and-personal-data)).
