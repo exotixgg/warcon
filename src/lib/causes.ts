@@ -92,7 +92,7 @@ const LABELS: Record<string, string> = {
 	'Vehicle.Variant.Stationary.Phalanx': 'Vanguard CIWS',
 	'Vehicle.Variant.Stationary.Mortar': 'L81 mortar',
 	'Vehicle.Variant.Stationary.MistralAA': 'Talon 9K-SAM',
-	'Vehicle.Variant.Stationary.STN_05': 'STN 05',
+	'Vehicle.Variant.Stationary.STN_05': 'Drone',
 	'Vehicle.Variant.Stationary.Loudspeaker': 'Loudspeaker',
 	// Vehicle weapons
 	'Id.Vehicle.WeaponExtension.ROT_02.30mmCannon': 'Havoc 2A42 autocannon',
@@ -109,9 +109,10 @@ const LABELS: Record<string, string> = {
 	'Id.Vehicle.WeaponExtension.WHL_05.RingMinigun': 'Humvee minigun',
 	'Id.Vehicle.WeaponExtension.WHL_07.MachineGun': 'Ural Defender M249',
 	'Id.Vehicle.WeaponExtension.STN_01.MistralAA': 'Talon 9K-SAM',
-	'Id.Vehicle.WeaponExtension.STN_02.MainCannon': 'STN 02 main cannon',
-	'Id.Vehicle.WeaponExtension.STN_03.MainBarrel': 'STN 03 main gun',
-	'Id.Vehicle.WeaponExtension.STN_05.MainBarrel': 'STN 05 main gun'
+	'Id.Vehicle.WeaponExtension.STN_02.MainCannon': 'Vanguard CIWS',
+	// the mortar's shells; Vehicle.Variant.Stationary.Mortar is the mortar itself (a roadkill, its blast)
+	'Id.Vehicle.WeaponExtension.STN_03.MainBarrel': 'L81 mortar',
+	'Id.Vehicle.WeaponExtension.STN_05.MainBarrel': 'Drone'
 };
 /**
  * What a Team kill limit leaves out of its count unless its settings say otherwise: a player who

@@ -38,6 +38,10 @@ describe('causeLabel', () => {
 		expect(causeLabel('Vehicle.Variant.Air.Rotary.Littlebird.Default')).toBe('MH-6');
 		expect(causeLabel('Vehicle.Variant.Land.Tracked.SpawnVehicle.Lonestar')).toBe('M113 APC');
 		expect(causeLabel('Vehicle.Variant.Stationary.Phalanx')).toBe('Vanguard CIWS');
+		expect(causeLabel('Id.Vehicle.WeaponExtension.STN_03.MainBarrel')).toBe('L81 mortar');
+		expect(causeLabel('Id.Vehicle.WeaponExtension.STN_02.MainCannon')).toBe('Vanguard CIWS');
+		expect(causeLabel('Vehicle.Variant.Stationary.STN_05')).toBe('Drone');
+		expect(causeLabel('Id.Vehicle.WeaponExtension.STN_05.MainBarrel')).toBe('Drone');
 		expect(causeLabel('Id.Vehicle.WeaponExtension.WHL_02.SUV.RingTurret')).toBe('Kodiak M249');
 		expect(causeLabel('Id.Vehicle.WeaponExtension.ROT_02.30mmCannon')).toBe(
 			'Havoc 2A42 autocannon'
@@ -52,10 +56,8 @@ describe('causeLabel', () => {
 	});
 
 	test('tags the game sends that have no name are listed in their own words', () => {
-		expect(causeLabel('Vehicle.Variant.Stationary.STN_05')).toBe('STN 05');
 		expect(causeLabel('ID.Item.RepairTool.Drill.Light')).toBe('Light drill');
 		expect(causeLabel('Vehicle.Variant.Land.Wheeled.Humvee.Default')).toBe('Humvee');
-		expect(causeLabel('Id.Vehicle.WeaponExtension.STN_05.MainBarrel')).toBe('STN 05 main gun');
 		const listed = new Set(knownCauses().map((c) => c.cause.toLowerCase()));
 		for (const tag of ['Id.Item.MMGL', 'Id.Item.Mosin', 'Vehicle.Variant.Stationary.STN_05'])
 			expect([tag, listed.has(tag.toLowerCase())]).toEqual([tag, true]);
