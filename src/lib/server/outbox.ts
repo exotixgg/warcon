@@ -562,7 +562,12 @@ async function deliverOne(env: Env, row: OutboxRow): Promise<'held' | 'refused' 
 		else if (OWN_WORDS.has(row.action)) await finish(env, row, 'failed', refusal(err));
 		else if (err instanceof GameError || err instanceof ApiError)
 			await finish(env, row, 'failed', err.message);
-		else await finish(env, row, 'failed', err instanceof Error ? err.message : String(err));
+		else {
+			// the panel's own failure: the error goes to the log, a fixed phrase to the row (a failed
+			// query's message lists its parameters)
+			console.error('[warcon] delivery', forLog(err));
+			await finish(env, row, 'failed', 'The panel failed while sending it.');
+		}
 	} finally {
 		stats.inFlight--;
 	}
@@ -648,7 +653,10 @@ async function deliverSeedReward(env: Env, row: OutboxRow): Promise<void> {
 		);
 	} catch (err) {
 		if (err instanceof LostOwnership) return; // the lease sweep marks it unknown
-		await finish(env, row, 'failed', err instanceof Error ? err.message : String(err));
+		if (err instanceof ApiError) return await finish(env, row, 'failed', err.message);
+		// the error goes to the log, a fixed phrase to the row: a failed query lists its parameters
+		console.error('[warcon] seed reward', forLog(err));
+		await finish(env, row, 'failed', 'Could not write the reserved slot.');
 	} finally {
 		stats.inFlight--;
 	}
