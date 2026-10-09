@@ -373,7 +373,10 @@
 				{#if !viaDoc}
 					<button
 						class="btn"
-						disabled={!matchControl}
+						disabled={!matchControl || !data.features.rotationEdit}
+						title={data.features.rotationEdit
+							? ''
+							: 'This server build serves no rotation edit routes, so a next map cannot be queued.'}
 						onclick={() =>
 							withSel((i) => act('setNextMap', entryToSelection(rows[i]), { after: refresh }))}
 						>Play next</button

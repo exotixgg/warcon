@@ -955,3 +955,30 @@ test('the live build refuses 257 characters, and the broadcast action never send
 		else process.env.MOCK_LIVE_BUILD = before;
 	}
 });
+
+// ---- next map on a live build -----------------------------------------------------------------
+
+// The live builds read the rotation but serve none of its edit routes, so the panel disables Play
+// next and Set as next map there (issue #50). The action itself has no other way to queue a map.
+test('setNextMap on the live build answers 404 no_route and leaves the rotation as it was', async () => {
+	const { WardogsClient } = await import('./rcon');
+	const before = process.env.MOCK_LIVE_BUILD;
+	process.env.MOCK_LIVE_BUILD = 'true';
+	try {
+		const server = { id: 'next-live', host: 'demo', port: 1, scheme: 'http' as const };
+		const client = new WardogsClient({} as any, server, 'demo', 'next-live');
+		const rotation: any = await ACTIONS.rotation.run(client, {});
+		expect(rotation.entries.length).toBeGreaterThan(2);
+		// one already in the rotation (moved up) and one that is not (added, then moved)
+		const picks = [rotation.entries.at(-1), { map: 'Europe', experiences: ['KOTH_Hardcore'] }];
+		for (const sel of picks) {
+			const err: any = await ACTIONS.setNextMap.run(client, sel).catch((e) => e);
+			expect(err).toBeInstanceOf(GameError);
+			expect([err.status, err.code]).toEqual([404, 'no_route']);
+		}
+		expect(await ACTIONS.rotation.run(client, {})).toEqual(rotation);
+	} finally {
+		if (before === undefined) delete process.env.MOCK_LIVE_BUILD;
+		else process.env.MOCK_LIVE_BUILD = before;
+	}
+});
