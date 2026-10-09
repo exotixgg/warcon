@@ -319,7 +319,9 @@ export async function writeSnapshot(
 	ts = new Date()
 ): Promise<void> {
 	await env.db.transaction(async (tx) => {
-		const banIds = observed.bans.map((b) => b.steamId);
+		// one row per player: a ban list naming one twice would fail the upsert, and with it every sync
+		const bans = [...new Map(observed.bans.map((b) => [b.steamId, b])).values()];
+		const banIds = bans.map((b) => b.steamId);
 		await tx
 			.delete(serverBans)
 			.where(
@@ -331,7 +333,7 @@ export async function writeSnapshot(
 			await tx
 				.insert(serverBans)
 				.values(
-					observed.bans.map((b) => ({
+					bans.map((b) => ({
 						serverId,
 						steamId: b.steamId,
 						reason: b.reason || '',

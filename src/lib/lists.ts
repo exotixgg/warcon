@@ -81,19 +81,28 @@ export function groupState(
 	return { kind: 'off', text: never ? 'Off' : `Off since ${whenShort(g.onUntil!, now)}`, tone: '' };
 }
 
-/** One line for a toast: where a list change landed. */
+/**
+ * One line for a toast: where a list change landed, and why not where it did not, in the fixed
+ * phrase the sync answers (syncPhrase). A run the server stopped answering part-way is `ok` with
+ * its phrase in `error`: it did not land either.
+ */
 export function describeSync(sync: ListSyncSummary, done: string): string {
 	const s = sync.servers;
 	if (!s.length) return `${done} Servers pick it up on the next poll.`;
-	const applied = s.filter((x) => x.ok && !x.failed).length;
+	const applied = s.filter((x) => x.ok && !x.failed && !x.error).length;
 	const parts = [
 		`${done} Applied on ${applied} of ${s.length} server${s.length === 1 ? '' : 's'}.`
 	];
 	const pending = s.filter((x) => x.pending).map((x) => x.serverName);
-	const down = s.filter((x) => !x.ok && !x.pending).map((x) => x.serverName);
+	const why = new Map<string, string[]>();
+	for (const x of s)
+		if (!x.pending && (!x.ok || x.error)) {
+			const phrase = x.error || 'The sync failed.';
+			why.set(phrase, [...(why.get(phrase) ?? []), x.serverName]);
+		}
 	const failed = s.filter((x) => x.ok && x.failed).map((x) => x.serverName);
 	if (pending.length) parts.push(`Still syncing: ${pending.join(', ')}.`);
-	if (down.length) parts.push(`Unreachable, will retry: ${down.join(', ')}.`);
+	for (const [phrase, names] of why) parts.push(`Not synced on ${names.join(', ')}: ${phrase}`);
 	if (failed.length) parts.push(`Refused by: ${failed.join(', ')} (see the list page).`);
 	return parts.join(' ');
 }
