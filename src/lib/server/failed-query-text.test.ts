@@ -5,6 +5,9 @@ import { expect, test } from 'bun:test';
 import { DrizzleQueryError } from 'drizzle-orm/errors';
 import { stage, type ServerMemory } from './observe';
 import { serializeError, type RelayError } from './relay';
+import { evaluateTriggers, validateConfig, type Evaluation, type TickContext } from './triggers';
+import type { TriggerRow } from './db/schema';
+import type { Env } from './env';
 
 const failedQuery = () =>
 	new DrizzleQueryError(
@@ -51,5 +54,41 @@ test('the worker sends the web a fixed phrase for its own failure, and logs it w
 	expect(JSON.stringify(sent)).not.toContain('Quiet Fixture');
 	expect(sent).toEqual({ kind: 'other', status: 500, message: 'Internal error.' });
 	expect(text).not.toContain('76561190000000001');
+	expect(text).toContain('deadlock detected');
+});
+
+test('a rule whose check fails on a query records a fixed phrase, and the log has no parameters', async () => {
+	const row = {
+		id: 'rule-reset',
+		name: 'Fixture reset',
+		kind: 'empty_reset',
+		config: validateConfig('empty_reset', { map: 'Fixture map', afterMinutes: 10 }),
+		state: null,
+		lastFiredAt: null
+	} as unknown as TriggerRow;
+	const ctx = {
+		server: { id: 'srv', name: 'Fixture server' },
+		status: { map: 'Other map', experiences: [], playerCount: 0 },
+		players: [],
+		ts: new Date()
+	} as unknown as TickContext;
+	// the samples read fails
+	const env = {
+		db: {
+			select: () => {
+				throw failedQuery();
+			}
+		}
+	} as unknown as Env;
+	let ev: Evaluation | undefined;
+	const text = await logged(async () => {
+		ev = await evaluateTriggers(env, ctx, [row]);
+	});
+	expect(JSON.stringify(ev)).not.toContain('76561190000000001');
+	expect(ev?.updates).toEqual([
+		{ id: 'rule-reset', lastResult: 'Error: the rule could not be checked.' }
+	]);
+	expect(text).not.toContain('76561190000000001');
+	expect(text).toContain('Fixture reset');
 	expect(text).toContain('deadlock detected');
 });
