@@ -1,11 +1,17 @@
 // What the list sync keeps of a failure is a fixed phrase for its kind: the game's own words never
 // reach a slot's stored error, the server's last sync error, the audit trail or the state route
-// every viewer of the server reads.
+// every viewer of the server reads. A game whose ban list names a player twice is no failure.
 import { beforeAll, describe, expect, test } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
 import { getOrg, getServer } from '$lib/server/access';
-import { auditLog, listEntries, serverListState, serverListSync } from '$lib/server/db/schema';
+import {
+	auditLog,
+	listEntries,
+	serverBans,
+	serverListState,
+	serverListSync
+} from '$lib/server/db/schema';
 import { newId } from '$lib/server/http';
 import { listOf } from '$lib/server/lists';
 import { reconcileServer } from '$lib/server/lists-sync';
@@ -17,6 +23,7 @@ import { callApi, stubGateway } from './call';
 import { seedWorld, type World } from './world';
 
 const PLAYER = '76561198000000501';
+const BANNED = '76561198000000502';
 /** what a game might put in its refusal: an address, a token, anything */
 const GAME_TEXT = 'listener on 198.20.4.4 refused bearer tok_live_abc';
 
@@ -36,6 +43,23 @@ function refusingGame(status: number, code: string): WardogsClient {
 		if (method === 'GET' && path === '/v1/bans') return { bans: [] };
 		if (method === 'GET' && path === '/v1/reserved-slots') return { reservedSlots: [] };
 		throw new GameError(status, GAME_TEXT, code);
+	};
+	return { serverId: 'fake', json } as unknown as WardogsClient;
+}
+
+/** A game whose ban list holds one player twice, and that takes every reserved slot it is given. */
+function doubledBanGame(): WardogsClient {
+	const json = async (method: string, path: string) => {
+		if (method === 'GET' && path === '/v1/bans')
+			return {
+				bans: [
+					{ steamId: BANNED, reason: 'first' },
+					{ steamId: BANNED, reason: 'again' }
+				]
+			};
+		if (method === 'GET' && path === '/v1/reserved-slots') return { reservedSlots: [] };
+		if (method === 'POST' && path === '/v1/reserved-slots') return { ok: true };
+		throw new GameError(404, GAME_TEXT, 'not_found');
 	};
 	return { serverId: 'fake', json } as unknown as WardogsClient;
 }
@@ -110,5 +134,17 @@ describe.skipIf(!hasTestDb)('list sync errors', () => {
 		expect((shown.body as { sync: { lastError: string } }).sync.lastError).toBe(
 			'The server failed to answer.'
 		);
+	});
+
+	test('a ban list holding one player twice is kept as one row and stops nothing', async () => {
+		const result = await sync(doubledBanGame());
+		expect(result.error).toBe('');
+		expect(result.added).toBe(1);
+		const rows = await env.db
+			.select({ steamId: serverBans.steamId })
+			.from(serverBans)
+			.where(eq(serverBans.serverId, w.server.id));
+		expect(rows).toEqual([{ steamId: BANNED }]);
+		expect((await stored()).lastError).toBe('');
 	});
 });
