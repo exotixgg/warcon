@@ -100,7 +100,10 @@ into `server_live`, so the header, the Discord status cards and the list sync sh
 Servers → Test reads them fresh and drops the caches. Set `MOCK_LIVE_BUILD=true` to make the demo
 servers behave like this build (routes, pinned `ServerName`/`Port`, the live build string), and
 `MOCK_RATE_LIMIT_EVERY=N` to have the demo answer every Nth request with a 429 and `Retry-After: 2`
-so the worker's hold can be watched. The
+so the worker's hold can be watched. Where a live build's rotation pointer goes when the document
+rewrites the rotation mid-match has not been seen: the demo keeps it on the entry being played,
+`MOCK_ROTATION_POINTER=index` keeps its place instead and `=top` goes to the top of the list at the
+next map change (the Rotation shuffle rule reads the rotation back to tell which). The
 authoritative list for any server is its own `routes` array; Warcon shows it under Servers, Test,
 "Routes this build serves".
 

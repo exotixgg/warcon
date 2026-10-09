@@ -538,7 +538,8 @@ describe.skipIf(!hasTestDb)('access', () => {
 				['name_change', { action: 'kick' }, 'players.kick'],
 				['seed_reward', { minutes: 60, scope: 'server' }, 'slots.manage'],
 				['seed_reward', { minutes: 60, scope: 'org' }, 'lists.reserve'],
-				['bounty', { reward: 'none' }, 'chat.send']
+				['bounty', { reward: 'none' }, 'chat.send'],
+				['rotation_shuffle', { maps: ['Europe', 'Kavkazi'] }, 'config.apply']
 			];
 			for (const [kind, config, cap] of rules) {
 				await holds([]);
@@ -1297,7 +1298,8 @@ describe.skipIf(!hasTestDb)('access', () => {
 				seed_reward: { minutes: 60, scope: 'server' },
 				two_teams: { closedFaction: 'Lonestar' },
 				afk_protection: {},
-				bounty: {}
+				bounty: {},
+				rotation_shuffle: {}
 			};
 			const save = (kind: string, name: string, config: Record<string, unknown>) =>
 				api(w, 'owner', 'POST api/servers/[id]/triggers', {
