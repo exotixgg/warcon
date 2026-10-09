@@ -145,6 +145,13 @@ const MAX_BODY_BYTES = 65536;
 // AFK protection can be watched at work, and lowering the minimum starts the match.
 const prematch = () => /^(1|true|yes)$/i.test(process.env.MOCK_PREMATCH || '');
 const PREMATCH_MINIMUM = 60;
+// Where the rotation's pointer goes when the document rewrites it, which no live build has been
+// seen doing: by default it stays on the entry now playing; MOCK_ROTATION_POINTER=index keeps the
+// place it had, =top goes to the top of the list at the next map change.
+const rotationPointer = () =>
+	/^(index|top)$/i.test(process.env.MOCK_ROTATION_POINTER || '')
+		? (process.env.MOCK_ROTATION_POINTER as string).toLowerCase()
+		: 'entry';
 const prematchMinimum = (text: string): number => {
 	const n = Number(
 		getScalar(
@@ -1159,11 +1166,13 @@ export function mockHandle(
 				s.sponsorUrl = img[1].trim().replace(/^"|"$/g, '');
 			}
 			// Like the live build: the rotation section is "rebuilt immediately; used from the next
-			// map change". The entry now playing keeps its place by identity, or the pointer resets.
+			// map change". The entry now playing keeps its place by identity, or the pointer resets
+			// (see MOCK_ROTATION_POINTER for the other ways a build might do it).
 			const rot = rotationFromText(text);
 			s.rotation.enabled = rot.enabled;
 			s.rotation.mode = rot.mode;
-			const playing = s.rotation.entries[s.rotation.nowIndex];
+			const was = s.rotation.nowIndex;
+			const playing = s.rotation.entries[was];
 			s.rotation.entries = rot.entries.map((e) => ({
 				...e,
 				denied: e.experiences.some((id) => !EXPERIENCES.some((x) => x.id === id))
@@ -1173,10 +1182,19 @@ export function mockHandle(
 						(e) =>
 							e.map === playing.map &&
 							e.lighting === playing.lighting &&
+							(e.zoneAlternator || '') === (playing.zoneAlternator || '') &&
 							e.experiences.join('+') === playing.experiences.join('+')
 					)
 				: -1;
-			s.rotation.nowIndex = keep >= 0 ? keep : 0;
+			const pointer = rotationPointer();
+			s.rotation.nowIndex =
+				pointer === 'top'
+					? Math.max(0, s.rotation.entries.length - 1)
+					: pointer === 'index'
+						? Math.min(Math.max(was, 0), Math.max(0, s.rotation.entries.length - 1))
+						: keep >= 0
+							? keep
+							: 0;
 			s.rotation.nextIndex = s.rotation.entries.length
 				? (s.rotation.nowIndex + 1) % s.rotation.entries.length
 				: -1;

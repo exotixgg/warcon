@@ -5,9 +5,11 @@
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import {
+		mapsInOrder,
 		rotationFromText,
 		rotationIntoText,
 		setModifierOnAll,
+		shuffleFor,
 		type RotationDoc
 	} from '$lib/rotation-doc';
 	import Badge from '$lib/components/Badge.svelte';
@@ -29,7 +31,9 @@
 	let matchControl = $derived(can(data.server.caps, 'match.control'));
 	let rotationSave = $derived(can(data.server.caps, 'rotation.save'));
 	let configApply = $derived(can(data.server.caps, 'config.apply'));
+	let automation = $derived(can(data.server.caps, 'automation.manage'));
 	let configHref = $derived(`/server/${encodeURIComponent(id)}/config`);
+	let automationHref = $derived(`/server/${encodeURIComponent(id)}/automation`);
 
 	// Live build CL-499480 serves none of the rotation edit routes. On such a build this tab edits
 	// the rotation section of the config document instead: the same table and buttons, staged
@@ -247,6 +251,27 @@
 				: ` Left on ${n(out.skipped)}: nothing else is set on ${one ? 'it' : 'them'}.`;
 		toast(msg, out.changed ? 'ok' : 'err');
 	}
+	// The staged entries in a new order: the maps in turn, in the order the rotation first has them,
+	// each map's control zones in turn, starting with the map after the one on and the entry on last
+	// (see shuffleFor). Played in order, so the mode goes to Ordered.
+	function shuffle() {
+		const on = rotation?.entries[rotation.nowIndex] ?? null;
+		staged.entries = shuffleFor(staged.entries, mapsInOrder(staged.entries), on);
+		selected = -1;
+		const twice = staged.entries.filter(
+			(e, i) => i > 0 && e.map.toLowerCase() === staged.entries[i - 1].map.toLowerCase()
+		).length;
+		const was = staged.mode;
+		staged.mode = 'ordered';
+		toast(
+			`Shuffled ${staged.entries.length} entries: ${
+				twice
+					? 'one map has over half of them, so it still comes twice in a row in places'
+					: 'no map plays twice in a row'
+			}.${was === 'random' ? ' Set to Ordered, so the server plays them in this order.' : ''}`,
+			twice ? '' : 'ok'
+		);
+	}
 	function discard() {
 		staged = clone(base);
 		selected = -1;
@@ -386,6 +411,16 @@
 			</div>
 		{/if}
 		{#if viaDoc}
+			<div class="field-group">
+				<span class="field-label">Order</span>
+				<div class="join w-full">
+					<button
+						class="btn w-full"
+						disabled={!canEdit || busy || rows.length < 2}
+						onclick={shuffle}>Shuffle</button
+					>
+				</div>
+			</div>
 			<div class="join join-stack w-full sm:ml-auto sm:w-auto">
 				<button class="btn" disabled={!dirty || busy} onclick={discard}>Discard</button>
 				<button class="btn btn-primary" disabled={!dirty || !canApply || busy} onclick={applyDoc}
@@ -456,6 +491,13 @@
 			config so a restart keeps them (needs the server launched with -StandaloneConfig).
 		{/if}
 	</p>
+	{#if viaDoc && canApply}
+		<p class="note">
+			Shuffle deals the maps out in turn, so the same map never plays twice in a row.
+			{#if automation}For a new order every day, add a
+				<a class="link" href={automationHref}>Rotation shuffle</a> rule on the Automation tab.{/if}
+		</p>
+	{/if}
 </div>
 
 <div class="mt-4 panel">

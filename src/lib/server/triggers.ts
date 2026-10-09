@@ -179,6 +179,13 @@ import {
 	type OpenBounty
 } from './bounty';
 import { fmtUptime, RESTART_AFTER_HOURS, restartWindow } from '$lib/uptime';
+import {
+	ROTATION_SHUFFLE,
+	rotationShuffleState,
+	shuffleStep,
+	type RotationShuffleConfig,
+	type ShuffleWhen
+} from './rotation-shuffle';
 import { DEFAULT_SCORE_CAP } from '$lib/match';
 import { mapName } from '$lib/format';
 import { statsIn, usesStats } from '$lib/placeholders';
@@ -278,7 +285,8 @@ const RULE_NEEDS: Record<
 	kill_rate: ['players.kick', 'flags players'],
 	two_teams: ['players.move', 'moves players between teams'],
 	afk_protection: ['players.kill', 'kills players'],
-	name_change: ['players.kick', 'flags or kicks players']
+	name_change: ['players.kick', 'flags or kicks players'],
+	rotation_shuffle: ['config.apply', 'rewrites the rotation in the config document']
 };
 
 /** What a reserved slot a rule hands out needs: one here, or on the organisation's list. */
@@ -422,6 +430,9 @@ export async function updateTrigger(
 		set.state = null;
 	// Any save of a Bounty rule calls off its open bounty: the worker starts it over (bounty.ts).
 	if (row.kind === 'bounty') set.state = null;
+	// A Rotation shuffle rule's settings saved (its order may have changed): it shuffles once more,
+	// as it does when switched on again (below).
+	if (row.kind === 'rotation_shuffle' && body.config !== undefined) set.state = null;
 	// Switched on again, a Team balance rule starts over in the worker (its memory is keyed on this):
 	// who switched sides while it was off is unknown, so whoever is on then counts as placed. Whether
 	// it was off is the row's at the write, not the read above, so a switch-off landing between them
@@ -432,7 +443,9 @@ export async function updateTrigger(
 	const switchOn =
 		row.kind === 'two_teams' && set.enabled === true
 			? sql`CASE WHEN ${triggers.enabled} THEN ${triggers.state} ELSE (${JSON.stringify({ enabledAt: Date.now() })}::text)::jsonb END`
-			: row.kind === 'afk_protection' && set.enabled === true
+			: (row.kind === 'afk_protection' ||
+						(row.kind === 'rotation_shuffle' && set.state === undefined)) &&
+				  set.enabled === true
 				? sql`CASE WHEN ${triggers.enabled} THEN ${triggers.state} ELSE NULL END`
 				: undefined;
 	requireRuleCaps(row.kind, set.config ?? row.config, server, access);
@@ -806,6 +819,9 @@ export async function evaluateTriggers(
 				case 'bounty':
 					// Kills move it on as they arrive (feed-events.ts); a look ends it.
 					evalBounty(env, ctx, row, row.config as BountyConfig, out);
+					break;
+				case 'rotation_shuffle':
+					evalRotationShuffle(ctx, row, row.config as RotationShuffleConfig, out);
 					break;
 			}
 		} catch (err) {
@@ -1409,6 +1425,58 @@ function evalRestartNotice(
 		lastFiredAt: ctx.ts,
 		lastResult: `Sending: ${message}`,
 		state: hit.state
+	});
+}
+
+const SHUFFLE_WHEN: Record<ShuffleWhen, string> = {
+	now: 'now',
+	'before-restart': 'for after the restart',
+	'after-restart': 'after the restart'
+};
+
+/** Once a run, and once when saved: see shuffleStep. The shuffle itself is the delivery's. */
+function evalRotationShuffle(
+	ctx: TickContext,
+	row: TriggerRow,
+	cfg: RotationShuffleConfig,
+	out: Evaluation
+) {
+	const now = ctx.ts.getTime();
+	const w = ctx.startedAt
+		? restartWindow(new Date(ctx.startedAt).toISOString(), RESTART_AFTER_HOURS, now)
+		: null;
+	const prev = rotationShuffleState(row.state);
+	const step = shuffleStep(prev, { startedAt: ctx.startedAt, restartDue: !!w?.due });
+	if (!step) return;
+	row.state = step.state;
+	if (!step.when) {
+		out.updates.push({ id: row.id, state: step.state });
+		return;
+	}
+	out.intents.push({
+		trigger: row,
+		action: ROTATION_SHUFFLE,
+		params: {
+			maps: cfg.maps,
+			when: step.when,
+			playing: ctx.status.map,
+			now: ctx.status.rotationNow
+		},
+		target: 'rotation',
+		okMessage: 'Rotation shuffled.',
+		detail: { when: step.when, startedAt: new Date(ctx.startedAt).toISOString() },
+		steamId: null,
+		// once a run before or after a restart; one on saving (no state yet, whenever in the run it
+		// comes), every time it is saved
+		dedupeKey: key(row, step.when, step.state.boot, prev ? 0 : ctx.ts.getTime())
+	});
+	// Marked now, with the state, so a slow delivery cannot shuffle twice.
+	row.lastFiredAt = ctx.ts;
+	out.updates.push({
+		id: row.id,
+		lastFiredAt: ctx.ts,
+		lastResult: `Shuffling ${SHUFFLE_WHEN[step.when]}.`,
+		state: step.state
 	});
 }
 
@@ -2589,6 +2657,32 @@ export async function dryRun(
 			result.notes.push(
 				`Read the first ${NAME_SESSIONS_MAX.toLocaleString('en')} sessions of the window only; players of later ones were not judged.`
 			);
+		return result;
+	}
+	if (kind === 'rotation_shuffle') {
+		const c = cfg as RotationShuffleConfig;
+		const [live] = await env.db
+			.select({ startedAt: serverLive.startedAt })
+			.from(serverLive)
+			.where(eq(serverLive.serverId, server.id))
+			.limit(1);
+		const w = live?.startedAt
+			? restartWindow(live.startedAt.toISOString(), RESTART_AFTER_HOURS, to.getTime())
+			: null;
+		if (!w || !live?.startedAt)
+			result.notes.push(
+				'The worker has not read this server’s uptime yet (GET /v1/health), so there is nothing to project.'
+			);
+		else {
+			const dueAt = new Date(live.startedAt.getTime() + RESTART_AFTER_HOURS * 3600_000);
+			push(w.due ? to : dueAt, 'shuffle in the last round, for after the restart');
+			result.notes.push(
+				`Up ${fmtUptime(w.upMs)}; ${w.due ? 'the 24-hour restart comes when this round ends' : `the 24-hour restart is due in ${fmtUptime(w.untilDueMs ?? 0)}`}. A restart that comes first (a set restart time, a crash, one from the host's panel) is followed by a shuffle once the server is back.`
+			);
+		}
+		result.notes.push(
+			`Maps in turn: ${c.maps.length ? `${c.maps.map(mapName).join(', ')}, then any other in the order the rotation has it` : 'in the order the rotation has them'}; each map's control zones in turn as well. Saving the rule shuffles once straight away.`
+		);
 		return result;
 	}
 	if (kind === 'restart_notice') {

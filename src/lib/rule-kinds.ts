@@ -116,20 +116,27 @@ export const RULE_KINDS: { kind: TriggerKind; group: RuleGroup; label: string; b
 		group: 'Server',
 		label: 'Empty-server map reset',
 		blurb: 'Put an empty server back on a chosen map after a while.'
+	},
+	{
+		kind: 'rotation_shuffle',
+		group: 'Server',
+		label: 'Rotation shuffle',
+		blurb: 'A new rotation order every day, the maps in turn so none plays twice in a row.'
 	}
 ];
 
 /**
  * Kinds a server holds one rule of (createTrigger refuses a second): seed time is one count per
  * server, two Team balance rules would move players back and forth, two AFK protection rules would
- * kill everyone twice a round, two Bounty rules would mark two players at once. The picker opens the
- * one a server has.
+ * kill everyone twice a round, two Bounty rules would mark two players at once, two Rotation shuffle
+ * rules would each undo the other's order. The picker opens the one a server has.
  */
 export const ONE_PER_SERVER: TriggerKind[] = [
 	'seed_reward',
 	'two_teams',
 	'afk_protection',
-	'bounty'
+	'bounty',
+	'rotation_shuffle'
 ];
 
 /**

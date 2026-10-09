@@ -160,6 +160,7 @@ const ACTION_TITLES: Record<string, string> = {
 	'trigger.afk_protection': 'Trigger · AFK protection',
 	'trigger.name_change': 'Trigger · name change watch',
 	'trigger.bounty': 'Trigger · bounty',
+	'trigger.rotation_shuffle': 'Trigger · rotation shuffle',
 	'player.note': 'Player note',
 	'player.watch': 'Watchlist',
 	'list.add': 'Org list · added',

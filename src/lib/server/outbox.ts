@@ -37,6 +37,7 @@ import { BOUNTY_CLAIM, BOUNTY_LAPSE, BOUNTY_REWARD } from './bounty';
 import { writeAudit } from './audit';
 import { PANEL_BAN, type PanelBanParams } from './rule-ban';
 import { killAndTell, RULE_KILL, RULE_KILL_MAX_AGE_MS } from './rule-kill';
+import { ROTATION_SHUFFLE, shuffleOnServer } from './rotation-shuffle';
 import { queueEvent } from './json-webhook-queue';
 import { seedRewardGranted } from './json-webhook-events';
 import {
@@ -528,7 +529,7 @@ async function deliverOne(env: Env, row: OutboxRow): Promise<'held' | 'refused' 
 			env,
 			row,
 			'delivered',
-			((row.action === RULE_KILL || !OWN_WORDS.has(row.action)) && messageOf(result)) ||
+			((OWN_RESULT.has(row.action) || !OWN_WORDS.has(row.action)) && messageOf(result)) ||
 				row.okMessage
 		);
 		// Done, but a later step was refused for sending too fast (a rule kill's whisper): hold the
@@ -828,9 +829,12 @@ const retryAfterOf = (r: unknown): number =>
  * A rule's whisper, kick or kill carries what it tells one player, their stats across the
  * organisation among it: what became of it is told in the panel's own words, never the game's,
  * which staff of this server read (Recent actions, the audit trail, Discord) and which might repeat
- * the text. A kill says in its own fixed words whether the player was killed and told.
+ * the text. A kill says in its own fixed words whether the player was killed and told. A rotation
+ * shuffle writes the config document, whose refusals can quote the file.
  */
-const OWN_WORDS = new Set(['whisper', 'kick', RULE_KILL]);
+const OWN_WORDS = new Set(['whisper', 'kick', RULE_KILL, ROTATION_SHUFFLE]);
+/** Of those, the ones whose result is the panel's own account (names, counts), kept as it is. */
+const OWN_RESULT = new Set([RULE_KILL, ROTATION_SHUFFLE]);
 
 /** Why the game refused a whisper or kick, as a fixed phrase: its status and its code. */
 function refusal(err: unknown): string {
@@ -932,6 +936,7 @@ async function execute(client: WardogsClient, row: OutboxRow): Promise<unknown> 
 	const params = (row.params as Record<string, unknown>) ?? {};
 	if (row.action === AFK_ROUND) return afkRound(client, params, memoryOf(row.serverId));
 	if (row.action === RULE_KILL) return killAndTell(client, params);
+	if (row.action === ROTATION_SHUFFLE) return shuffleOnServer(client, params);
 	if (row.action === 'empty_reset') {
 		let rotationOn = false;
 		try {

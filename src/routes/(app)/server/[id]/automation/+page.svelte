@@ -148,7 +148,9 @@
 									? 'lapsed'
 									: action === 'bounty_reward'
 										? 'reserved slot'
-										: action;
+										: action === 'rotation_shuffle'
+											? 'shuffle'
+											: action;
 	const label = (kind: TriggerKind) => KINDS.find((k) => k.kind === kind)?.label ?? kind;
 	const blurb = (kind: TriggerKind) => KINDS.find((k) => k.kind === kind)?.blurb ?? '';
 	/** Why a kind cannot run on this server yet, or '' when it can. */
@@ -175,6 +177,10 @@
 					: !canChat
 						? 'Saving needs the Chat capability as well as Automation: the bounty is announced to the server.'
 						: '';
+			case 'rotation_shuffle':
+				return canConfig
+					? ''
+					: 'Saving needs the Config & settings capability as well as Automation: the rule rewrites the rotation in the config document.';
 			default:
 				return '';
 		}
@@ -193,6 +199,8 @@
 	let canChat = $derived(can(data.server.caps, 'chat.send'));
 	let canKill = $derived(can(data.server.caps, 'players.kill'));
 	let canBanHere = $derived(can(data.server.caps, 'bans.manage'));
+	/** a Rotation shuffle rule rewrites the rotation in the config document */
+	let canConfig = $derived(can(data.server.caps, 'config.apply'));
 	let canBanOrg = $derived(can(data.server.caps, 'lists.ban'));
 	/** Charges that are placed and set off from anywhere: how far away the killer was says nothing. */
 	const PLACED = new Set([
@@ -279,7 +287,9 @@
 						? 'Needs a Steam key'
 						: kind === 'seed_reward'
 							? 'Needs Reserved slots'
-							: '';
+							: kind === 'rotation_shuffle'
+								? 'Needs Config & settings'
+								: '';
 	/** A Bounty rule's texts until they are written: a slot is named, an announcement-only rule asks. */
 	const bountyTexts = (reward: 'slot' | 'none') =>
 		reward === 'slot'
@@ -449,6 +459,8 @@
 		setMessage: string;
 		claimMessage: string;
 		whisper: string;
+		/** a Rotation shuffle rule's map ids, in the order they take turns */
+		mapOrder: string[];
 	}
 	/** WARDOGS' factions, offered for Team balance; a name the game adds later can still be typed. */
 	const FACTIONS = ['Lonestar', 'Valkyra', 'Manticore'];
@@ -508,6 +520,26 @@
 			void picker.setFrom(sel);
 		}
 	});
+
+	/** A Rotation shuffle rule's turn: the maps it names, then the game's other maps. */
+	function mapTurn(named: unknown): string[] {
+		const seen = new Set<string>();
+		const out: string[] = [];
+		for (const id of [
+			...(Array.isArray(named) ? (named as string[]) : []),
+			...data.catalog.maps.map((m) => m.id)
+		])
+			if (!seen.has(id.toLowerCase())) {
+				seen.add(id.toLowerCase());
+				out.push(id);
+			}
+		return out;
+	}
+	function moveMap(f: Form, i: number, by: -1 | 1) {
+		const list = f.mapOrder.slice();
+		[list[i], list[i + by]] = [list[i + by], list[i]];
+		f.mapOrder = list;
+	}
 
 	/** The editor for a new rule of a kind, an existing rule, or a copy of one (`copy`). */
 	function open(kind: TriggerKind, t?: TriggerView, copy = false) {
@@ -654,7 +686,8 @@
 			bountyReward,
 			setMessage: s('setMessage', bountyTexts(bountyReward).setMessage),
 			claimMessage: s('claimMessage', bountyTexts(bountyReward).claimMessage),
-			whisper: s('whisper', bountyTexts(bountyReward).whisper)
+			whisper: s('whisper', bountyTexts(bountyReward).whisper),
+			mapOrder: mapTurn(c.maps)
 		};
 		dry = null;
 		pendingSel =
@@ -671,11 +704,13 @@
 	const dryLabel = (kind: TriggerKind) =>
 		kind === 'restart_notice'
 			? 'Preview next cycle'
-			: kind === 'name_filter'
-				? 'Dry run, past players'
-				: kind === 'ping_kick'
-					? 'Check dry-run limits'
-					: 'Dry run, last 24 h';
+			: kind === 'rotation_shuffle'
+				? 'Preview next shuffle'
+				: kind === 'name_filter'
+					? 'Dry run, past players'
+					: kind === 'ping_kick'
+						? 'Check dry-run limits'
+						: 'Dry run, last 24 h';
 	const lines = (text: string) =>
 		text
 			.split(/[\n,]/)
@@ -831,6 +866,8 @@
 					claimMessage: f.claimMessage,
 					whisper: f.whisper
 				};
+			case 'rotation_shuffle':
+				return { maps: f.mapOrder };
 		}
 	}
 
@@ -1056,6 +1093,10 @@
 			}
 			case 'seed_reward':
 				return `${c.minutes} min with ${c.lowAt} or fewer on${c.untilFull === false ? '' : `, staying until ${typeof c.fullAt === 'number' ? `${c.fullAt}+ on` : 'it fills'}`}, within ${c.windowDays} day${c.windowDays === 1 ? '' : 's'} · slot ${c.scope === 'server' ? 'here' : 'on every server'} for ${c.slotDays} day${c.slotDays === 1 ? '' : 's'}${c.message ? ' · with a whisper' : ''}`;
+			case 'rotation_shuffle': {
+				const maps = Array.isArray(c.maps) ? (c.maps as string[]) : [];
+				return `${maps.length ? maps.map((m) => mapLabel(data.catalog, m)).join(', ') : 'The maps'} in turn · zones in turn · a new order every day`;
+			}
 		}
 	}
 </script>
@@ -1279,13 +1320,23 @@
 {#snippet dryResult(r: DryRunResult, title: string)}
 	<div class="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-[13px]">
 		<span class="caps text-accent"
-			>{r.kind === 'restart_notice' ? 'Next cycle' : 'Dry run'} · {title}</span
+			>{r.kind === 'restart_notice'
+				? 'Next cycle'
+				: r.kind === 'rotation_shuffle'
+					? 'Next shuffle'
+					: 'Dry run'} · {title}</span
 		>
 		{#if r.kind === 'restart_notice'}
 			<span
 				><b class={r.fires ? 'text-warn' : 'text-ok'}>{r.fires}</b> broadcast{r.fires === 1
 					? ''
 					: 's'}</span
+			>
+		{:else if r.kind === 'rotation_shuffle'}
+			<span
+				><b class={r.fires ? 'text-warn' : 'text-ok'}>{r.fires}</b> shuffle{r.fires === 1
+					? ''
+					: 's'} before the next restart</span
 			>
 		{:else if r.kind === 'name_filter'}
 			<span
@@ -1492,6 +1543,77 @@
 						Fires when nobody has been on for that long and the server is on a different map or
 						mode. With a rotation the target is set as next and the match ended; without one the map
 						is requested directly.
+					</p>
+				{:else if f.kind === 'rotation_shuffle'}
+					<div>
+						<span class="field-label">Map order</span>
+						<ol class="border-t border-white/6">
+							{#each f.mapOrder as m, i (m)}
+								{@const name = mapLabel(data.catalog, m)}
+								<li class="flex items-center gap-2.5 border-b border-white/6 py-2 pr-2 pl-1">
+									<span class="w-4 shrink-0 text-right text-[12px] text-mist-600 tabular"
+										>{i + 1}</span
+									>
+									<span class="min-w-0 grow truncate text-[13px]">{name}</span>
+									<span class="inline-flex shrink-0 gap-1">
+										<button
+											type="button"
+											class="btn w-9 px-0 pointer-coarse:size-11"
+											aria-label="Move {name} up"
+											disabled={i === 0}
+											onclick={() => moveMap(f, i, -1)}
+											><svg
+												width="16"
+												height="16"
+												viewBox="0 0 24 24"
+												fill="none"
+												stroke="currentColor"
+												stroke-width="2"
+												stroke-linecap="round"
+												stroke-linejoin="round"
+												aria-hidden="true"><path d="M12 19V5M5 12l7-7 7 7" /></svg
+											></button
+										>
+										<button
+											type="button"
+											class="btn w-9 px-0 pointer-coarse:size-11"
+											aria-label="Move {name} down"
+											disabled={i === f.mapOrder.length - 1}
+											onclick={() => moveMap(f, i, 1)}
+											><svg
+												width="16"
+												height="16"
+												viewBox="0 0 24 24"
+												fill="none"
+												stroke="currentColor"
+												stroke-width="2"
+												stroke-linecap="round"
+												stroke-linejoin="round"
+												aria-hidden="true"><path d="M12 5v14M19 12l-7 7-7-7" /></svg
+											></button
+										>
+									</span>
+								</li>
+							{/each}
+						</ol>
+						<p class="note">
+							Every match a different map, in this order. Each map's control zones take turns too,
+							and its times of day come in a new order every day.
+						</p>
+					</div>
+					<div class="space-y-1.5 text-[13px]">
+						<span class="field-label">When</span>
+						<p>
+							Once when you save it, then once a day: in the last round before the 24-hour restart,
+							so the server comes back up on a new order, or straight after a restart it could not
+							see coming.
+						</p>
+					</div>
+					<p class="note">
+						The rotation is set to Ordered, since a Random one would play the entries in any order.
+						Only the rotation in the config document is written, as Apply on the Map rotation tab
+						does. The new order is turned so the map that follows the one on comes next. One rule
+						per server.
 					</p>
 				{:else if f.kind === 'restart_notice'}
 					<fieldset class="space-y-2">
