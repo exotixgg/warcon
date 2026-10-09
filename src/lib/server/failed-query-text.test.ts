@@ -4,6 +4,7 @@
 import { expect, test } from 'bun:test';
 import { DrizzleQueryError } from 'drizzle-orm/errors';
 import { stage, type ServerMemory } from './observe';
+import { serializeError, type RelayError } from './relay';
 
 const failedQuery = () =>
 	new DrizzleQueryError(
@@ -38,5 +39,17 @@ test('a housekeeping stage that fails on a query logs it without the parameters'
 	expect(text).not.toContain('Quiet Fixture');
 	expect(text).toContain('lists Fixture server');
 	expect(text).toContain('insert into "player_names"');
+	expect(text).toContain('deadlock detected');
+});
+
+test('the worker sends the web a fixed phrase for its own failure, and logs it without the parameters', async () => {
+	let sent: RelayError | undefined;
+	const text = await logged(async () => {
+		sent = serializeError(failedQuery());
+	});
+	expect(JSON.stringify(sent)).not.toContain('76561190000000001');
+	expect(JSON.stringify(sent)).not.toContain('Quiet Fixture');
+	expect(sent).toEqual({ kind: 'other', status: 500, message: 'Internal error.' });
+	expect(text).not.toContain('76561190000000001');
 	expect(text).toContain('deadlock detected');
 });
