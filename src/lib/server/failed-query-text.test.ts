@@ -3,6 +3,8 @@
 // parameters; a row or a client gets a fixed phrase.
 import { expect, test } from 'bun:test';
 import { DrizzleQueryError } from 'drizzle-orm/errors';
+import { readdirSync, readFileSync } from 'node:fs';
+import { join, relative } from 'node:path';
 import { stage, type ServerMemory } from './observe';
 import { serializeError, type RelayError } from './relay';
 import { evaluateTriggers, validateConfig, type Evaluation, type TickContext } from './triggers';
@@ -91,4 +93,81 @@ test('a rule whose check fails on a query records a fixed phrase, and the log ha
 	expect(text).not.toContain('76561190000000001');
 	expect(text).toContain('Fixture reset');
 	expect(text).toContain('deadlock detected');
+});
+
+// ---- every console call on the server ----------------------------------------------------------
+
+const SRC = join(import.meta.dir, '..', '..');
+
+/** The worker, the hooks, every server module, endpoint and load: what runs on a box, not a browser. */
+function serverSources(dir: string): string[] {
+	return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+		const path = join(dir, e.name);
+		if (e.isDirectory()) return serverSources(path);
+		if (e.name.endsWith('.test.ts') || !e.name.endsWith('.ts')) return [];
+		const rel = relative(SRC, path);
+		if (rel.startsWith('routes/'))
+			return /^\+(server|page\.server|layout\.server)\.ts$/.test(e.name) ? [path] : [];
+		return rel.startsWith('lib/server/') || rel.startsWith('worker/') || rel === 'hooks.server.ts'
+			? [path]
+			: [];
+	});
+}
+
+/** Each console call in `text`: its line and its arguments, split at their top-level commas. */
+function consoleCalls(text: string): { line: number; args: string[] }[] {
+	const calls: { line: number; args: string[] }[] = [];
+	for (const m of text.matchAll(/console\.(log|info|warn|error|debug)\(/g)) {
+		const args: string[] = [];
+		let cur = '';
+		let depth = 1;
+		let i = m.index + m[0].length;
+		while (i < text.length && depth > 0) {
+			const ch = text[i];
+			if (ch === "'" || ch === '"' || ch === '`') {
+				// a string or a template whole: its commas and brackets are not the call's
+				let j = i + 1;
+				while (j < text.length && text[j] !== ch) j += text[j] === '\\' ? 2 : 1;
+				cur += text.slice(i, j + 1);
+				i = j + 1;
+				continue;
+			}
+			if ('([{'.includes(ch)) depth++;
+			else if (')]}'.includes(ch)) depth--;
+			if (depth === 0 || (depth === 1 && ch === ',')) {
+				args.push(cur.trim());
+				cur = '';
+			} else cur += ch;
+			i++;
+		}
+		calls.push({ line: text.slice(0, m.index).split('\n').length, args: args.filter(Boolean) });
+	}
+	return calls;
+}
+
+/** An argument that hands the console an error itself, its message or its stack. */
+const RAW_ERROR =
+	/^(err|e|error)$|\b(err|e|error)\.(message|stack)\b|String\((err|e|error)\)|\$\{(err|e|error)\b/;
+
+test('no console call on the server logs an error but through forLog or publicMessage', () => {
+	const files = serverSources(SRC);
+	expect(files.length).toBeGreaterThan(50);
+	const raw: string[] = [];
+	for (const file of files)
+		for (const call of consoleCalls(readFileSync(file, 'utf8')))
+			for (const arg of call.args)
+				if (RAW_ERROR.test(arg)) raw.push(`${relative(SRC, file)}:${call.line}: ${arg}`);
+	expect(raw).toEqual([]);
+});
+
+test('the scan sees an error handed to the console however it is written', () => {
+	const flagged = (src: string) =>
+		consoleCalls(src).flatMap((c) => c.args.filter((a) => RAW_ERROR.test(a)));
+	expect(flagged("console.error('[warcon] x', err);")).toEqual(['err']);
+	expect(
+		flagged('console.warn(`[warcon] ${name}:`, err instanceof Error ? err.message : err);')
+	).toHaveLength(1);
+	expect(flagged("console.error('x', e.stack, `(${err})`)")).toHaveLength(2);
+	expect(flagged("console.error('[warcon] x', forLog(err));")).toEqual([]);
+	expect(flagged("console.warn('[warcon] x:', publicMessage(e), 'a, (b)');")).toEqual([]);
 });

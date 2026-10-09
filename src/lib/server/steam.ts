@@ -322,7 +322,7 @@ export async function getProfiles(
 			for (const row of await fetchSteam(env, stale)) map.set(row.steamId, row);
 		} catch (err) {
 			if (opts.refresh) throw err;
-			console.warn('[warcon] steam lookup', err instanceof Error ? err.message : err);
+			console.warn('[warcon] steam lookup', forLog(err));
 		}
 	// The friends lists are looked at behind the answer, so nothing that reads a profile waits on
 	// a call per player; only a refresh someone asked for waits for them.

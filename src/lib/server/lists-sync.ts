@@ -253,7 +253,7 @@ export async function expireEntries(env: Env): Promise<{ lifted: number; orgIds:
 			outcome: 'ok',
 			message: `${ids.length} ${o.kind === 'ban' ? 'ban' : 'reserved slot'}${ids.length === 1 ? '' : 's'} expired in ${o.orgName}`,
 			detail: { orgId: o.orgId, org: o.orgName, steamIds: ids }
-		}).catch((err) => console.error('[warcon] list.expire audit', err));
+		}).catch((err) => console.error('[warcon] list.expire audit', forLog(err)));
 	}
 	return { lifted: rows.length, orgIds: [...new Set(owners.map((o) => o.orgId))] };
 }
@@ -614,7 +614,7 @@ async function run(
 				removed: outcome.removed.map(refOf),
 				failed: failedNow.map((f) => ({ kind: f.kind, steamId: f.steamId, error: f.error }))
 			}
-		}).catch((err) => console.error('[warcon] lists.sync audit', err));
+		}).catch((err) => console.error('[warcon] lists.sync audit', forLog(err)));
 	}
 	return {
 		...base,
@@ -999,7 +999,7 @@ export async function kickBanned(
 			status: error ? 502 : 200,
 			message: error ? `Could not remove a banned player: ${error}` : 'Banned player removed',
 			detail: { banId: banUid(entry.id) }
-		}).catch((err) => console.error('[warcon] ban.enforce audit', err));
+		}).catch((err) => console.error('[warcon] ban.enforce audit', forLog(err)));
 	}
 }
 
@@ -1030,7 +1030,7 @@ async function liveEntry(env: Env, serverId: string, b: PanelBan, now: Date) {
  * reported as still syncing.
  */
 export async function fanOut(env: Env, org: OrgRow): Promise<ListSyncSummary> {
-	await expireEntries(env).catch((err) => console.error('[warcon] list expiry', err));
+	await expireEntries(env).catch((err) => console.error('[warcon] list expiry', forLog(err)));
 	const rows = await env.db
 		.select({ server: servers })
 		.from(servers)

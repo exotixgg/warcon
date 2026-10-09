@@ -5,6 +5,7 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Env } from './env';
 import { decryptSecret } from './crypto';
+import { forLog } from './http';
 import { playerMarks, servers, webhooks, type AuditRow, type WebhookRow } from './db/schema';
 import { OWNERS_ROWS } from './audit-rows';
 import { escapeMarkdown } from './webhook-status-core';
@@ -330,7 +331,7 @@ export async function notifyBounty(
 			for (const hook of hooks) enqueue(env, hook, embed);
 		}
 	} catch (err) {
-		console.error('[warcon] webhook bounties', err);
+		console.error('[warcon] webhook bounties', forLog(err));
 	}
 }
 
@@ -406,7 +407,7 @@ function scheduleFlush(env: Env, hook: WebhookRow, q: Queue): void {
 	q.chain = q.chain
 		.then(() => flush(env, hook, q))
 		.catch((err) => {
-			console.error('[warcon] webhook flush', err);
+			console.error('[warcon] webhook flush', forLog(err));
 		});
 }
 
@@ -558,7 +559,7 @@ export async function recordResult(env: Env, id: string, result: PostResult): Pr
 			})
 			.where(eq(webhooks.id, id));
 	} catch (err) {
-		console.error('[warcon] webhook status', err);
+		console.error('[warcon] webhook status', forLog(err));
 	}
 }
 
@@ -603,7 +604,7 @@ export async function notifyWebhooks(env: Env, row: AuditRow): Promise<void> {
 			enqueue(env, hook, embed);
 		}
 	} catch (err) {
-		console.error('[warcon] webhook notify', err);
+		console.error('[warcon] webhook notify', forLog(err));
 	}
 }
 
@@ -671,7 +672,7 @@ export async function notifyWatchedJoins(
 			for (const hook of hooks) enqueue(env, hook, embed);
 		}
 	} catch (err) {
-		console.error('[warcon] webhook watched joins', err);
+		console.error('[warcon] webhook watched joins', forLog(err));
 	}
 }
 
@@ -694,7 +695,7 @@ export async function notifyTeamKills(
 			for (const hook of hooks) enqueue(env, hook, embed);
 		}
 	} catch (err) {
-		console.error('[warcon] webhook team kills', err);
+		console.error('[warcon] webhook team kills', forLog(err));
 	}
 }
 

@@ -248,7 +248,7 @@ async function pass(): Promise<void> {
 			});
 		}
 	} catch (err) {
-		if (!(err instanceof LostOwnership)) console.error('[warcon] delivery pass', err);
+		if (!(err instanceof LostOwnership)) console.error('[warcon] delivery pass', forLog(err));
 	} finally {
 		loop.claiming = false;
 		claimFinished();
@@ -263,7 +263,7 @@ async function pass(): Promise<void> {
 async function deliverChain(env: Env, rows: OutboxRow[]): Promise<void> {
 	for (let i = 0; i < rows.length; i++) {
 		const after = await deliverOne(env, rows[i]).catch((err) => {
-			console.error('[warcon] delivery', err);
+			console.error('[warcon] delivery', forLog(err));
 		});
 		if (after === 'held') return putBack(env, rows.slice(i), WAITING);
 		if (after === 'refused') return putBack(env, rows.slice(i + 1), WAITING);
@@ -285,7 +285,7 @@ async function putBack(env: Env, rows: OutboxRow[], why?: string): Promise<void>
 		);
 	} catch (err) {
 		if (err instanceof LostOwnership) return; // the lease sweep marks them unknown
-		console.error('[warcon] outbox update', err);
+		console.error('[warcon] outbox update', forLog(err));
 		return;
 	}
 	for (const r of rows) emit({ type: 'outbox', serverId: r.serverId, id: r.id, state: 'pending' });
@@ -463,7 +463,7 @@ async function release(env: Env, row: OutboxRow): Promise<void> {
 		);
 	} catch (err) {
 		if (err instanceof LostOwnership) return; // the lease sweep marks it unknown
-		console.error('[warcon] outbox update', err);
+		console.error('[warcon] outbox update', forLog(err));
 	}
 }
 
@@ -985,7 +985,7 @@ async function finish(env: Env, row: OutboxRow, state: Outcome, outcome: string)
 		);
 	} catch (err) {
 		if (err instanceof LostOwnership) throw err;
-		console.error('[warcon] outbox update', err);
+		console.error('[warcon] outbox update', forLog(err));
 	}
 	// A panel action (a grant, a ban, a flag) can be delivered before the roster is in memory:
 	// audit it from the server row then.
@@ -1006,7 +1006,7 @@ async function finish(env: Env, row: OutboxRow, state: Outcome, outcome: string)
 				state,
 				...((row.detail as Record<string, unknown>) ?? {})
 			}
-		).catch((err) => console.error('[warcon] delivery audit', err));
+		).catch((err) => console.error('[warcon] delivery audit', forLog(err)));
 	emit({ type: 'outbox', serverId: row.serverId, id: row.id, state });
 }
 

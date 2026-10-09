@@ -21,7 +21,7 @@ import { getRequestEvent } from '$app/server';
 import { writeAudit } from './audit';
 import { auditSelfDelete, beforeSelfDelete, eraseUserTraces } from './erasure';
 import { discordEnabled, type Env } from './env';
-import { ApiError, CLIENT_IP_HEADER } from './http';
+import { ApiError, CLIENT_IP_HEADER, forLog } from './http';
 import { warconSessions } from './auth-plugin';
 import { refreshAuthComplete, startGrace } from './enrolment';
 import { refuseMemberBeforeOwner } from './users';
@@ -245,12 +245,12 @@ function build(env: Env) {
 							action: 'login',
 							outcome: 'ok',
 							userAgent: session.userAgent ?? ''
-						}).catch((err) => console.error('audit login', err));
+						}).catch((err) => console.error('audit login', forLog(err)));
 						// The sign-in rules: start the grace clock on the first sign-in and re-check the
 						// verdict, in case a method changed through a path that did not refresh it.
 						await startGrace(env, session.userId);
 						await refreshAuthComplete(env, session.userId).catch((err) =>
-							console.error('enrolment refresh', err)
+							console.error('enrolment refresh', forLog(err))
 						);
 					}
 				}
@@ -260,7 +260,7 @@ function build(env: Env) {
 					// Discord and Steam links land here through their callbacks.
 					after: async (a) => {
 						await refreshAuthComplete(env, a.userId).catch((err) =>
-							console.error('enrolment refresh', err)
+							console.error('enrolment refresh', forLog(err))
 						);
 					}
 				}
