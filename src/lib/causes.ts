@@ -110,7 +110,8 @@ const LABELS: Record<string, string> = {
 	'Id.Vehicle.WeaponExtension.WHL_07.MachineGun': 'Ural Defender M249',
 	'Id.Vehicle.WeaponExtension.STN_01.MistralAA': 'Talon 9K-SAM',
 	'Id.Vehicle.WeaponExtension.STN_02.MainCannon': 'STN 02 main cannon',
-	'Id.Vehicle.WeaponExtension.STN_03.MainBarrel': 'STN 03 main gun',
+	// the mortar's shells; Vehicle.Variant.Stationary.Mortar is the mortar itself (a roadkill, its blast)
+	'Id.Vehicle.WeaponExtension.STN_03.MainBarrel': 'L81 mortar',
 	'Id.Vehicle.WeaponExtension.STN_05.MainBarrel': 'STN 05 main gun'
 };
 /**

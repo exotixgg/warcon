@@ -38,6 +38,7 @@ describe('causeLabel', () => {
 		expect(causeLabel('Vehicle.Variant.Air.Rotary.Littlebird.Default')).toBe('MH-6');
 		expect(causeLabel('Vehicle.Variant.Land.Tracked.SpawnVehicle.Lonestar')).toBe('M113 APC');
 		expect(causeLabel('Vehicle.Variant.Stationary.Phalanx')).toBe('Vanguard CIWS');
+		expect(causeLabel('Id.Vehicle.WeaponExtension.STN_03.MainBarrel')).toBe('L81 mortar');
 		expect(causeLabel('Id.Vehicle.WeaponExtension.WHL_02.SUV.RingTurret')).toBe('Kodiak M249');
 		expect(causeLabel('Id.Vehicle.WeaponExtension.ROT_02.30mmCannon')).toBe(
 			'Havoc 2A42 autocannon'
