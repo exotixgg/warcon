@@ -5,9 +5,9 @@
 // or remove on a game server) is in lists-sync.ts.
 //
 // Entries are never hard-deleted: removal stamps removed_at so history and the audit trail stay
-// intact, and re-adding inserts a fresh row. Every org has exactly one list per kind and every
-// server one of each of its own; the lists table and server_lists join exist so a
-// later "subscribe to another org's list" is new rows, not a schema change.
+// intact, and re-adding inserts a fresh row. Every org has exactly one default list per kind and
+// every server one of each of its own; an org's other reserved-slot lists are its groups
+// (slot-groups.ts), which reach the servers they are given to while they are switched on.
 import { and, asc, count, desc, eq, gt, inArray, isNull, or, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { ApiError, newId, str } from './http';
@@ -40,6 +40,7 @@ import { DEFAULT_BAN_MESSAGE } from '$lib/ban-message';
 import { banReasonsFor } from './ban-reasons';
 import { requireSteamId } from './steam';
 import { desiredFor, memberSlots, summaryOf } from './lists-sync';
+import { isListOn } from './lists-plan';
 import { latestNames } from './sessions';
 import { gateway } from './gateway';
 import type {
@@ -54,7 +55,8 @@ import type {
 	BanState,
 	PlayerBanView,
 	ReservedSlotState,
-	ServerListsState
+	ServerListsState,
+	SlotGroupView
 } from '$lib/types';
 
 export { fanOut, reconcileServer } from './lists-sync';
@@ -76,7 +78,7 @@ const iso = (v: Date | null | undefined): string | null => (v ? v.toISOString() 
 
 // ---- records -----------------------------------------------------------------------------------
 
-/** Every org has one list per kind. Created with the org; this also repairs anything older. */
+/** Every org has one default list per kind. Created with the org; this also repairs anything older. */
 export async function ensureOrgLists(
 	db: DbLike,
 	orgId: string,
@@ -84,7 +86,7 @@ export async function ensureOrgLists(
 ): Promise<void> {
 	await db
 		.insert(lists)
-		.values(LIST_KINDS.map((kind) => ({ id: newId(), orgId, kind, createdBy })))
+		.values(LIST_KINDS.map((kind) => ({ id: newId(), orgId, kind, isDefault: true, createdBy })))
 		.onConflictDoNothing();
 }
 
@@ -99,8 +101,9 @@ export async function lockOrg(tx: DbLike, orgId: string): Promise<void> {
 }
 
 /**
- * Subscribes a server to every list of its org and gives it a ban and a reserved-slot list of
- * its own (createServer runs this in its transaction; serverListOf repairs older servers).
+ * Subscribes a server to its org's default lists and to the groups for every server, and gives
+ * it a ban and a reserved-slot list of its own (createServer runs this in its transaction;
+ * serverListOf repairs older servers). A group of chosen servers is not touched.
  */
 export async function ensureServerLists(
 	db: DbLike,
@@ -110,7 +113,14 @@ export async function ensureServerLists(
 	const rows = await db
 		.select({ id: lists.id })
 		.from(lists)
-		.where(and(eq(lists.orgId, orgId), isNull(lists.serverId)));
+		.where(
+			and(
+				eq(lists.orgId, orgId),
+				isNull(lists.serverId),
+				isNull(lists.archivedAt),
+				or(eq(lists.isDefault, true), eq(lists.everyServer, true))
+			)
+		);
 	if (rows.length)
 		await db
 			.insert(serverLists)
@@ -143,14 +153,14 @@ async function ensureServerOwnList(
 	return row;
 }
 
-/** The org's own lists, one per kind; the servers' lists are not among them. */
+/** The org's default lists, one per kind; neither its groups nor the servers' lists are among them. */
 export async function orgLists(env: Env, orgId: string): Promise<ListRow[]> {
 	const load = () =>
 		env.db
 			.select()
 			.from(lists)
-			.where(and(eq(lists.orgId, orgId), isNull(lists.serverId)))
-			.orderBy(asc(lists.kind), asc(lists.name));
+			.where(and(eq(lists.orgId, orgId), eq(lists.isDefault, true)))
+			.orderBy(asc(lists.kind));
 	let rows = await load();
 	if (LIST_KINDS.some((k) => !rows.some((l) => l.kind === k))) {
 		await ensureOrgLists(env.db, orgId);
@@ -179,7 +189,7 @@ export async function serverListOf(
 	return ensureServerOwnList(env.db, server.id, server.orgId, kind);
 }
 
-interface ServerRef {
+export interface ServerRef {
 	id: string;
 	name: string;
 }
@@ -366,11 +376,90 @@ export async function orgListsView(env: Env, org: OrgRow, role: ListsRole): Prom
 				lastError: y?.lastError ?? ''
 			};
 		}),
-		lists: rows.map((l) => ({ id: l.id, kind: l.kind, name: l.name, entryCount: n.get(l.id) ?? 0 }))
+		lists: rows.map((l) => ({
+			id: l.id,
+			kind: l.kind,
+			name: l.name,
+			entryCount: n.get(l.id) ?? 0
+		})),
+		groups: role.kinds.includes('reserve') ? await slotGroupsView(env, org.id, srv) : []
 	};
 }
 
-/** The entries of one org list with names and where each stands on every org server. */
+/** The org's reserved-slot groups not archived, by name; for those who edit reserved slots. */
+export async function slotGroupsView(
+	env: Env,
+	orgId: string,
+	srv: ServerRef[],
+	now = new Date()
+): Promise<SlotGroupView[]> {
+	const groups = await env.db
+		.select()
+		.from(lists)
+		.where(
+			and(
+				eq(lists.orgId, orgId),
+				isNull(lists.serverId),
+				eq(lists.isDefault, false),
+				isNull(lists.archivedAt)
+			)
+		)
+		.orderBy(sql`lower(${lists.name})`);
+	if (!groups.length) return [];
+	const ids = groups.map((g) => g.id);
+	const [counts, subs, leaving] = await Promise.all([
+		env.db
+			.select({ listId: listEntries.listId, n: count() })
+			.from(listEntries)
+			.where(and(inArray(listEntries.listId, ids), isNull(listEntries.removedAt)))
+			.groupBy(listEntries.listId),
+		env.db
+			.select({ listId: serverLists.listId, serverId: serverLists.serverId })
+			.from(serverLists)
+			.where(inArray(serverLists.listId, ids)),
+		// out of a server's document and still held by the running server, until it restarts
+		env.db
+			.select({
+				listId: listEntries.listId,
+				n: sql<number>`count(distinct ${listEntries.steamId})::int`
+			})
+			.from(listEntries)
+			.innerJoin(serverLists, eq(serverLists.listId, listEntries.listId))
+			.innerJoin(
+				serverReserved,
+				and(
+					eq(serverReserved.serverId, serverLists.serverId),
+					eq(serverReserved.steamId, listEntries.steamId)
+				)
+			)
+			.where(
+				and(
+					inArray(listEntries.listId, ids),
+					isNull(listEntries.removedAt),
+					eq(serverReserved.live, true),
+					eq(serverReserved.configured, false)
+				)
+			)
+			.groupBy(listEntries.listId)
+	]);
+	const n = new Map(counts.map((c) => [c.listId, c.n]));
+	const out = new Map(leaving.map((c) => [c.listId, c.n]));
+	const given = new Set(subs.map((s) => `${s.listId}:${s.serverId}`));
+	return groups.map((g) => ({
+		id: g.id,
+		name: g.name,
+		on: isListOn(g, now),
+		onFrom: iso(g.onFrom),
+		onUntil: iso(g.onUntil),
+		everyServer: g.everyServer,
+		servers: g.everyServer ? srv : srv.filter((s) => given.has(`${g.id}:${s.id}`)),
+		entryCount: n.get(g.id) ?? 0,
+		leaving: out.get(g.id) ?? 0,
+		createdAt: g.createdAt.toISOString()
+	}));
+}
+
+/** The entries of one of the org's default lists with names and where each stands on every org server. */
 export async function entriesView(
 	env: Env,
 	org: OrgRow,
@@ -378,6 +467,24 @@ export async function entriesView(
 	opts: { includeRemoved?: boolean } = {}
 ): Promise<ListEntryView[]> {
 	const list = await listOf(env, org.id, kind);
+	return rosterOf(env, org, list, await orgServerRefs(env, org.id), {
+		includeRemoved: opts.includeRemoved,
+		members: kind === 'reserve' && org.membersReserved && !opts.includeRemoved
+	});
+}
+
+/**
+ * The entries of a list with names and where each stands on the servers given; with `members`,
+ * the slots the org hands its members too (they ride on its default reserve list).
+ */
+export async function rosterOf(
+	env: Env,
+	org: OrgRow,
+	list: ListRow,
+	srv: ServerRef[],
+	opts: { includeRemoved?: boolean; members?: boolean } = {}
+): Promise<ListEntryView[]> {
+	const kind = list.kind;
 	const rows = await env.db
 		.select()
 		.from(listEntries)
@@ -390,13 +497,11 @@ export async function entriesView(
 		.limit(2000);
 	// Members-reserved: slots the org hands its members are shown like entries, but come from
 	// the membership rather than a row someone added.
-	const members =
-		kind === 'reserve' && org.membersReserved && !opts.includeRemoved
-			? (await memberSlots(env, org.id)).filter(
-					(m) => !rows.some((r) => !r.removedAt && r.steamId === m.steamId)
-				)
-			: [];
-	const srv = await orgServerRefs(env, org.id);
+	const members = opts.members
+		? (await memberSlots(env, org.id)).filter(
+				(m) => !rows.some((r) => !r.removedAt && r.steamId === m.steamId)
+			)
+		: [];
 	const ids = [
 		...new Set([
 			...rows.filter((r) => !r.removedAt).map((r) => r.steamId),
@@ -455,7 +560,7 @@ export function parseExpiry(v: unknown, now = Date.now()): Date | null {
 	return d;
 }
 
-async function touch(db: DbLike, listId: string): Promise<void> {
+export async function touch(db: DbLike, listId: string): Promise<void> {
 	await db.update(lists).set({ updatedAt: new Date() }).where(eq(lists.id, listId));
 }
 
@@ -468,7 +573,7 @@ interface NewEntry {
 }
 
 /** Inserts an active entry; `added` is false when the player is already on the list. */
-async function insertEntry(
+export async function insertEntry(
 	env: Env,
 	list: ListRow,
 	entry: NewEntry
@@ -832,7 +937,11 @@ export async function importCandidates(env: Env, org: OrgRow): Promise<ImportCan
 			.from(serverReserved)
 			.where(and(inArray(serverReserved.serverId, serverIds), eq(serverReserved.configured, true))),
 		env.db.select().from(serverListState).where(inArray(serverListState.serverId, serverIds)),
-		orgLists(env, org.id)
+		// a player the default list or a group (switched on or not) holds is not offered
+		env.db
+			.select()
+			.from(lists)
+			.where(and(eq(lists.orgId, org.id), isNull(lists.serverId), isNull(lists.archivedAt)))
 	]);
 	const active = await env.db
 		.select({ listId: listEntries.listId, steamId: listEntries.steamId })
@@ -1114,6 +1223,7 @@ export async function serverListsState(
 		note: '',
 		member: false,
 		scope: 'org',
+		group: null,
 		expiresAt: null
 	});
 	const ban = (state: ListEntryState, managed: boolean): BanState => ({
@@ -1182,11 +1292,27 @@ export async function serverListsState(
 		s.member = d.member;
 	}
 	// what the page shows for each slot: the player's name, and the note, expiry and list the
-	// entry is on (the org's, or this server's own; an org entry wins when a player is on both)
+	// entry is on (the org's, a group of the org's, or this server's own; see desiredOf for which
+	// one a player on several shows)
 	const slotIds = Object.keys(out.reserved);
 	if (slotIds.length) {
 		const listIds = [...new Set(desired.reserved.map((d) => d.listId))];
 		const own = await serverListOf(env, server, 'reserve');
+		// Who holds a slot is View; what staff wrote about it, and the group it comes from, are for
+		// those who manage slots here or edit the org's reserved slots.
+		const slotStaff = orgSlots || access.caps.has('slots.manage');
+		const groupName = new Map(
+			slotStaff && listIds.length
+				? (
+						await env.db
+							.select({ id: lists.id, name: lists.name })
+							.from(lists)
+							.where(
+								and(inArray(lists.id, listIds), isNull(lists.serverId), eq(lists.isDefault, false))
+							)
+					).map((l) => [l.id, l.name])
+				: []
+		);
 		const [names, entries] = await Promise.all([
 			namesFor(
 				env,
@@ -1216,9 +1342,8 @@ export async function serverListsState(
 		for (const e of entries) {
 			if (sourceOf.get(e.steamId) !== e.listId) continue;
 			const s = out.reserved[e.steamId];
-			// Who holds a slot is View; what staff wrote about it is for those who manage slots here
-			// or edit the org's reserved-slot list.
-			s.note = orgSlots || access.caps.has('slots.manage') ? e.reason : '';
+			s.note = slotStaff ? e.reason : '';
+			s.group = groupName.get(e.listId) ?? null;
 			s.expiresAt = iso(e.expiresAt);
 			if (e.listId === own.id) s.scope = 'server';
 		}

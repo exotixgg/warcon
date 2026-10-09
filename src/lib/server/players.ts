@@ -589,7 +589,9 @@ async function seedProgress(
 			                  AND r.live) AS held,
 			       bool_or(e.expires_at IS NULL) AS endless, MAX(e.expires_at) AS until
 			  FROM server_lists sl
-			  JOIN lists l ON l.id = sl.list_id AND l.kind = 'reserve'
+			  JOIN lists l ON l.id = sl.list_id AND l.kind = 'reserve' AND l.archived_at IS NULL
+			              AND (l.on_from IS NULL OR l.on_from <= ${now})
+			              AND (l.on_until IS NULL OR l.on_until > ${now})
 			  JOIN list_entries e ON e.list_id = l.id AND e.steam_id = ${steamId}
 			                     AND e.removed_at IS NULL AND (e.expires_at IS NULL OR e.expires_at > ${now})
 			 WHERE sl.server_id = ${server.id}`)

@@ -110,7 +110,22 @@ export async function withServerLock<T>(
 
 // ---- desired and observed ----------------------------------------------------------------------
 
-/** What the lists this server subscribes to want on it right now. */
+/**
+ * isListOn (lists-plan.ts) as a condition on `lists`, with `now` the caller's clock (the worker's,
+ * as for an entry's expiry: the database is on another box).
+ */
+export const listOnAt = (now: Date) =>
+	and(
+		isNull(lists.archivedAt),
+		or(isNull(lists.onFrom), lte(lists.onFrom, now)),
+		or(isNull(lists.onUntil), gt(lists.onUntil, now))
+	);
+
+/**
+ * What the lists this server subscribes to want on it right now: the default lists, its own, and
+ * the groups given to it that are on at `now`. A group's window needs nothing written when it
+ * opens or closes: the per-minute sync reads it here.
+ */
 export async function desiredFor(
 	env: Env,
 	server: Pick<ServerRow, 'id' | 'orgId'>,
@@ -118,25 +133,41 @@ export async function desiredFor(
 	now = new Date()
 ): Promise<PlanInput['desired']> {
 	const rows = await env.db
-		.select({ e: listEntries, kind: lists.kind, listServerId: lists.serverId })
+		.select({
+			e: listEntries,
+			kind: lists.kind,
+			listServerId: lists.serverId,
+			isDefault: lists.isDefault,
+			listName: lists.name
+		})
 		.from(serverLists)
 		.innerJoin(lists, eq(lists.id, serverLists.listId))
 		.innerJoin(listEntries, eq(listEntries.listId, lists.id))
-		.where(and(eq(serverLists.serverId, server.id), isNull(listEntries.removedAt)));
+		.where(and(eq(serverLists.serverId, server.id), isNull(listEntries.removedAt), listOnAt(now)));
 	const active = activeEntries(
-		rows.map((r) => ({ ...r.e, kind: r.kind, serverId: r.listServerId })),
+		rows.map((r) => ({
+			...r.e,
+			kind: r.kind,
+			serverId: r.listServerId,
+			isDefault: r.isDefault,
+			listName: r.listName
+		})),
 		now
 	);
 	const { bans, reserved } = desiredOf(active);
 	if (org.membersReserved) {
-		// Members who set a SteamID get a slot from the org's reserve list, unless the org has
-		// banned them.
+		// Members who set a SteamID get a slot from the org's default reserve list, unless the org
+		// has banned them.
 		const [reserveList] = await env.db
 			.select({ id: lists.id })
 			.from(serverLists)
 			.innerJoin(lists, eq(lists.id, serverLists.listId))
 			.where(
-				and(eq(serverLists.serverId, server.id), eq(lists.kind, 'reserve'), isNull(lists.serverId))
+				and(
+					eq(serverLists.serverId, server.id),
+					eq(lists.kind, 'reserve'),
+					eq(lists.isDefault, true)
+				)
 			)
 			.limit(1);
 		if (reserveList) {

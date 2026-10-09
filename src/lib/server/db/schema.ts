@@ -5,6 +5,7 @@ import {
 	bigint,
 	bigserial,
 	boolean,
+	check,
 	customType,
 	date,
 	index,
@@ -994,8 +995,11 @@ export const jsonWebhookPosts = pgTable(
 // ---- Organisation lists: bans and reserved slots kept in the panel and pushed to every server --
 
 /**
- * A ban list or reserved-slot list an org owns. Servers subscribe through server_lists: every org
- * list to every org server, and a server's own list (server_id set) to that server alone.
+ * A ban list or reserved-slot list an org owns. Servers subscribe through server_lists. Each org
+ * has one default list per kind (is_default), which every org server takes; a server's own list
+ * (server_id set) goes to that server alone. Any other org list is a reserved-slot group: on
+ * between on_from and on_until, on every server or the ones its server_lists rows name, archived
+ * rather than deleted.
  */
 export const lists = pgTable(
 	'lists',
@@ -1008,6 +1012,16 @@ export const lists = pgTable(
 		serverId: text('server_id').references(() => servers.id, { onDelete: 'cascade' }),
 		kind: text('kind', { enum: ['ban', 'reserve'] }).notNull(),
 		name: text('name').notNull().default('Default'),
+		/** the org's own list of its kind, which members' slots, rules and import write to */
+		isDefault: boolean('is_default').notNull().default(false),
+		/** a group: on from here (null: since it was switched on) */
+		onFrom: ts('on_from'),
+		/** a group: off from here (null: until switched off); a group that was never on has its creation time */
+		onUntil: ts('on_until'),
+		/** a group: every server of the org, now and later; else the servers in server_lists */
+		everyServer: boolean('every_server').notNull().default(true),
+		/** a group taken away: off for good, its entries and servers kept for the history */
+		archivedAt: ts('archived_at'),
 		/** reserved for sharing between orgs; unused for now */
 		shareToken: text('share_token').unique(),
 		createdBy: text('created_by'),
@@ -1016,11 +1030,28 @@ export const lists = pgTable(
 	},
 	(t) => [
 		uniqueIndex('lists_org_kind_name_uidx')
-			.on(t.orgId, t.kind, t.name)
-			.where(sql`${t.serverId} is null`),
+			.on(t.orgId, t.kind, sql`lower(${t.name})`)
+			.where(sql`${t.serverId} is null and ${t.archivedAt} is null`),
+		uniqueIndex('lists_org_default_uidx')
+			.on(t.orgId, t.kind)
+			.where(sql`${t.isDefault}`),
 		uniqueIndex('lists_server_kind_uidx')
 			.on(t.serverId, t.kind)
-			.where(sql`${t.serverId} is not null`)
+			.where(sql`${t.serverId} is not null`),
+		// an org list that is not the default is a reserved-slot group
+		check(
+			'lists_group_kind',
+			sql`${t.serverId} is not null or ${t.isDefault} or ${t.kind} = 'reserve'`
+		),
+		// only a group has a window, a choice of servers or an archive date
+		check(
+			'lists_group_shape',
+			sql`(${t.serverId} is null and not ${t.isDefault}) or (${t.onFrom} is null and ${t.onUntil} is null and ${t.everyServer} and ${t.archivedAt} is null)`
+		),
+		check(
+			'lists_window',
+			sql`${t.onFrom} is null or ${t.onUntil} is null or ${t.onFrom} < ${t.onUntil}`
+		)
 	]
 );
 

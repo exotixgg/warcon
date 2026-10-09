@@ -706,7 +706,32 @@ export interface OrgListsView {
 		/** why the last run could not reach or finish on the server */
 		lastError: string;
 	}[];
+	/** the org's default lists of the kinds the reader edits */
 	lists: ListView[];
+	/** the org's reserved-slot groups; empty unless the reader edits reserved slots */
+	groups: SlotGroupView[];
+}
+
+/**
+ * A reserved-slot group: a list of the org's beside its default one, on in a window (switched on
+ * and off by hand or set ahead), on every server or chosen ones.
+ */
+export interface SlotGroupView {
+	id: string;
+	name: string;
+	/** on right now */
+	on: boolean;
+	/** when the window opens; null when it is open since it was switched on, or there is none */
+	onFrom: string | null;
+	/** when it closes, or closed; null while on until switched off */
+	onUntil: string | null;
+	/** on every server of the org, now and later; else the servers chosen */
+	everyServer: boolean;
+	servers: { id: string; name: string }[];
+	entryCount: number;
+	/** its players whose slot was taken out of a server's document and that server keeps until it restarts */
+	leaving: number;
+	createdAt: string;
 }
 
 export interface ImportCandidate {
@@ -743,6 +768,8 @@ export interface ReservedSlotState {
 	member: boolean;
 	/** the list a managed slot comes from: the organisation's, or this server's own */
 	scope: 'org' | 'server';
+	/** the organisation's group the slot comes from, for staff (as the note); null otherwise */
+	group: string | null;
 	/** when the panel lifts the slot; null for a permanent one (or one not managed) */
 	expiresAt: string | null;
 }
