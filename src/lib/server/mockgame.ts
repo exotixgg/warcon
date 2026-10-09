@@ -135,6 +135,11 @@ const LIVE_BUILD_MISSING = new Set([
 	'PATCH /v1/settings'
 ]);
 const liveBuild = () => /^(1|true|yes)$/i.test(process.env.MOCK_LIVE_BUILD || '');
+// With MOCK_LIVE_ADDS=now as well, a slot added to the document is reserved at once while one taken
+// out stays until a restart: what a live server was seen doing once (2026-09-15). Unset, both wait.
+const liveAddsNow = () => liveBuild() && /^now$/i.test(process.env.MOCK_LIVE_ADDS || '');
+/** The listener's limit on a request body, which it reports under limits.maxBodyBytes. */
+const MAX_BODY_BYTES = 65536;
 // With MOCK_PREMATCH=true a demo match waits at nil-all while fewer are on than the document's
 // MinimumRequiredPlayers (60), as the game's pre-match does, and a new demo server starts there:
 // AFK protection can be watched at work, and lowering the minimum starts the match.
@@ -519,6 +524,15 @@ function demoServerId(key: string): string {
 	return `${h.slice(0, 8)}-${h.slice(8, 12)}-4${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
 }
 
+/**
+ * The game process restarting (not a match restart): under MOCK_LIVE_BUILD the running reserved
+ * list is read again from the document, as a live server does at start. For tests.
+ */
+export function restartMock(key: string): void {
+	const s = stateFor(key);
+	s.reserved = reservedFromText(s.configText).filter((id) => /^\d{17}$/.test(id));
+}
+
 function stateFor(key: string): State {
 	let s = states.get(key);
 	if (!s) {
@@ -756,6 +770,8 @@ export function mockHandle(
 			{ 'retry-after': '2' }
 		);
 	}
+	if (body !== undefined && Buffer.byteLength(body, 'utf8') > MAX_BODY_BYTES)
+		return fail(413, 'Request body too large.', 'payload_too_large');
 	const s = stateFor(key);
 	const [path, query = ''] = rawPath.split('?');
 	const qs = new URLSearchParams(query);
@@ -780,7 +796,7 @@ export function mockHandle(
 			apiVersion: '1',
 			build: liveBuild() ? '++Wardogs+Live-CL-501228' : '++Wardogs+Demo-CL-501228',
 			auth: { scheme: 'bearer', header: 'Authorization' },
-			limits: { maxBodyBytes: 65536, maxRequestsPerMinutePerIp: 600 },
+			limits: { maxBodyBytes: MAX_BODY_BYTES, maxRequestsPerMinutePerIp: 600 },
 			config: { writable: true, document: '/v1/config' },
 			routes: servedRoutes()
 		});
@@ -1126,7 +1142,10 @@ export function mockHandle(
 			// ...except on the live build, which loads the list at start: the document changes, the
 			// running list does not, until a restart (as seen on a real CL-501228 server).
 			if (hasReservedKey(text)) {
-				if (!liveBuild()) s.reserved = reservedFromText(text).filter((id) => /^\d{17}$/.test(id));
+				const ids = reservedFromText(text).filter((id) => /^\d{17}$/.test(id));
+				if (!liveBuild()) s.reserved = ids;
+				else if (liveAddsNow())
+					s.reserved = [...s.reserved, ...ids.filter((id) => !s.reserved.includes(id))];
 				s.configText = text;
 			} else s.configText = reservedIntoText(text, s.reserved);
 			s.configRevision++;

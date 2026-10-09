@@ -115,7 +115,7 @@ async function getStatus(client: WardogsClient, raw = false) {
 }
 
 // `etag`: live builds send the revision as a header too (CL-501228+), a fallback for the body's.
-const configResult = (status: number, body: any, etag = '') => ({
+export const configResult = (status: number, body: any, etag = '') => ({
 	ok: status >= 200 && status < 300 && body.ok !== false,
 	status,
 	conflict: status === 412,
@@ -266,7 +266,7 @@ async function reservedViaConfig(
  * at start, so a slot added or removed through the document reads back unchanged here until the
  * server restarts (seen on a real server 2026-09-15).
  */
-async function liveReservedIds(c: WardogsClient): Promise<string[] | null> {
+export async function liveReservedIds(c: WardogsClient): Promise<string[] | null> {
 	try {
 		return ((await c.json('GET', '/v1/reserved-slots')).reservedSlots || []) as string[];
 	} catch (err) {

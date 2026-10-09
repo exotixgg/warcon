@@ -1,6 +1,6 @@
 // Browser-side helpers for the organisation ban and reserved-slot lists.
 import type { Tone } from './components/Badge.svelte';
-import type { ListEntryState, ListKind, ListSyncSummary } from './types';
+import type { ListEntryState, ListKind, ListSyncSummary, SlotGroupView } from './types';
 
 export const KIND_TITLE: Record<ListKind, string> = { ban: 'Ban list', reserve: 'Reserved slots' };
 
@@ -34,6 +34,51 @@ export function expiryIso(choice: string, custom: string): string | null {
 	if (choice === 'custom') return custom ? new Date(custom).toISOString() : null;
 	const days = Number(choice);
 	return days > 0 ? new Date(Date.now() + days * 86400_000).toISOString() : null;
+}
+
+const DAY_MS = 86400_000;
+const pad = (n: number) => String(n).padStart(2, '0');
+
+/**
+ * A time near now, in the reader's local time and as few words as it takes: "21:30" today,
+ * "Sat 20:00" within the week either side, "12 Oct 20:00" further off.
+ */
+export function whenShort(iso: string, now = new Date()): string {
+	const d = new Date(iso);
+	const clock = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+	if (d.toDateString() === now.toDateString()) return clock;
+	if (Math.abs(d.getTime() - now.getTime()) < 6 * DAY_MS)
+		return `${d.toLocaleDateString('en-GB', { weekday: 'short' })} ${clock}`;
+	return `${d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })} ${clock}`;
+}
+
+/** An ISO time as a datetime-local input holds it: the reader's local time, to the minute. */
+export function localInput(iso: string | null): string {
+	if (!iso) return '';
+	const d = new Date(iso);
+	return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** What a reserved-slot group's state reads as, and how it is shown. */
+export function groupState(
+	g: Pick<SlotGroupView, 'on' | 'onFrom' | 'onUntil' | 'createdAt'>,
+	now = new Date()
+): { kind: 'on' | 'later' | 'off'; text: string; tone: Tone } {
+	if (g.on)
+		return {
+			kind: 'on',
+			text: g.onUntil ? `On until ${whenShort(g.onUntil, now)}` : 'On',
+			tone: 'ok'
+		};
+	if (g.onFrom && g.onUntil && new Date(g.onFrom).getTime() > now.getTime())
+		return {
+			kind: 'later',
+			text: `${whenShort(g.onFrom, now)} – ${whenShort(g.onUntil, now)}`,
+			tone: 'info'
+		};
+	// a group that was never switched on reads as off since it was made: just "Off"
+	const never = !g.onUntil || Math.abs(Date.parse(g.onUntil) - Date.parse(g.createdAt)) < 5000;
+	return { kind: 'off', text: never ? 'Off' : `Off since ${whenShort(g.onUntil!, now)}`, tone: '' };
 }
 
 /** One line for a toast: where a list change landed. */
