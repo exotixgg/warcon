@@ -8,7 +8,7 @@
 // own: match bookkeeping, ban-list snapshot, org-list sync, Steam warm-up.
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import type { Env } from './env';
-import { publicMessage } from './http';
+import { forLog, publicMessage } from './http';
 import type { OrgRow, ServerRow } from './access';
 import { ACTIONS, readConfig } from './actions';
 import { reservedSlotsHeld } from '../reserved-doc';
@@ -871,12 +871,18 @@ async function observationFailed(
 	emit({ type: 'live', live: liveView(m) });
 }
 
-async function stage(name: string, m: ServerMemory, fn: () => Promise<unknown>): Promise<void> {
+/** One part of the housekeeping after a look: a failure is logged, the next part runs. */
+export async function stage(
+	name: string,
+	m: ServerMemory,
+	fn: () => Promise<unknown>
+): Promise<void> {
 	try {
 		await fn();
 	} catch (err) {
 		if (err instanceof LostOwnership) throw err;
-		console.warn(`[warcon] ${name} ${m.server.name}:`, err instanceof Error ? err.message : err);
+		// a failed query's message lists its parameters (SteamIDs, names, ban reasons)
+		console.warn(`[warcon] ${name} ${m.server.name}:`, forLog(err));
 	}
 }
 
