@@ -330,6 +330,13 @@
       "when": 1791507471276,
       "tag": "0046_slot_groups",
       "breakpoints": true
+    },
+    {
+      "idx": 47,
+      "version": "7",
+      "when": 1791569710555,
+      "tag": "0047_match_players_from_feed",
+      "breakpoints": true
     }
   ]
 }
