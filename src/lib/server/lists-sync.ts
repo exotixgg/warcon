@@ -12,7 +12,7 @@
 import { and, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { banUid, renderBanMessage } from '$lib/ban-message';
-import { publicMessage } from './http';
+import { ApiError, forLog } from './http';
 import { writeAudit } from './audit';
 import { ACTIONS } from './actions';
 import { withServer, type Priority } from './dispatcher';
@@ -366,9 +366,40 @@ export interface ReconcileOptions {
 	lane: Priority | 'held';
 }
 
+/**
+ * What the sync stores, records and answers for a failure: a fixed phrase chosen by its status and
+ * code. The game's own words, and the panel's (a refused address names the host and what it
+ * resolved to), go to the log only.
+ */
+export function syncPhrase(err: unknown): string {
+	if (!(err instanceof ApiError)) {
+		console.warn('[warcon] list sync:', forLog(err));
+		return 'The sync failed.';
+	}
+	const code = err.code ?? '';
+	if (code === 'unreachable') return 'Could not reach the server.';
+	if (code === 'rate_limited') return 'The server asked the panel to slow down.';
+	if (code === 'blocked_host' || code === 'unresolvable')
+		return "The panel no longer accepts the server's address.";
+	if (code === 'no_route' || err.status === 405) return 'This server build does not serve it.';
+	if (code === 'config_readonly') return "The server's config document is read-only.";
+	if (code === 'revision_conflict')
+		return 'The config document kept changing during the write; it is tried again.';
+	if (code === 'bad_response') return 'The server did not answer as expected.';
+	if (err.status === 401 || err.status === 403) return 'The server refused the RCON password.';
+	if (err.status >= 500) return 'The server failed to answer.';
+	return `Refused by the server (${err.status}${/^[a-z_]{1,40}$/.test(code) ? `, ${code}` : ''}).`;
+}
+
 const failure = (err: unknown) => {
 	const g = err instanceof GameError ? err : null;
-	return { status: g?.status ?? 500, code: g?.code, message: publicMessage(err, 'Failed.') };
+	return {
+		status: g?.status ?? 500,
+		code: g?.code,
+		// read by the checks for "already there" and "already gone" only, never stored
+		message: g?.message ?? '',
+		phrase: syncPhrase(err)
+	};
 };
 
 /** Brings one server in line with its lists. Never throws for game-side trouble; records it instead. */
@@ -465,7 +496,7 @@ async function run(
 			}
 		}
 	} catch (err) {
-		const message = publicMessage(err, 'Could not reach the server.');
+		const message = syncPhrase(err);
 		await bookkeep(env, server.id, { syncedAt: syncRow?.syncedAt ?? null, lastError: message });
 		return { ...base, error: message };
 	}
@@ -593,9 +624,9 @@ async function execute(
 				out.removed.push(r);
 				dropObserved(r.kind, r.steamId);
 			} else if (isUnreachable(f)) {
-				out.aborted = f.message;
+				out.aborted = f.phrase;
 				return out;
-			} else out.failedRemoves.push({ ...r, error: `Could not remove: ${f.message}` });
+			} else out.failedRemoves.push({ ...r, error: `Could not remove: ${f.phrase}` });
 		}
 	}
 	for (const a of plan.adds) {
@@ -616,9 +647,9 @@ async function execute(
 				out.added.push(a);
 				addObserved(a.kind, a.steamId, a.reason);
 			} else if (isUnreachable(f)) {
-				out.aborted = f.message;
+				out.aborted = f.phrase;
 				return out;
-			} else out.failedAdds.push({ ...a, error: f.message });
+			} else out.failedAdds.push({ ...a, error: `Could not add: ${f.phrase}` });
 		}
 	}
 	return out;
@@ -761,7 +792,7 @@ export async function kickBanned(
 			if (isGone(f)) continue;
 			if (isUnreachable(f)) return;
 			b.retryAt = now.getTime() + KICK_RETRY_MS;
-			error = f.message;
+			error = f.phrase;
 		}
 		await writeAudit(env, null, {
 			actorName: 'ban list',
@@ -830,7 +861,7 @@ export async function fanOut(env: Env, org: OrgRow): Promise<ListSyncSummary> {
 			}).catch((err): SyncResult => ({
 				...pending,
 				pending: false,
-				error: publicMessage(err, 'Sync failed.')
+				error: syncPhrase(err)
 			}));
 			const timer = new Promise<SyncResult>((r) => setTimeout(() => r(pending), FANOUT_WAIT_MS));
 			return Promise.race([work, timer]);
