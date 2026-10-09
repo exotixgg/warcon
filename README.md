@@ -582,11 +582,49 @@ back and stays. The panel plans against the document, not the running list, and 
 applied once the document holds it. The listener takes a request of 64 KB at most, roughly a
 thousand reserved players on top of a typical file: a slot that would not fit waits, marked
 failed with "The server's config document is full", and goes in when there is room. Removals
-always go in; a server's own slots go in before the organisation's, and members' slots last. A
+always go in; a server's own slots go in before the organisation's, then its groups', and members'
+slots last. A
 failure is shown and recorded as a short reason of the panel's (unreachable, refused by the server
 with its status, read-only document), never the game's own words. Every run that changes something, or fails,
 is in the audit trail under `system` as `lists.sync`, and reaches Discord webhooks that mirror
 bans. **Sync now** on a list page pushes everything on demand.
+
+#### Reserved-slot groups
+
+Beside its reserved-slot list an organisation can keep **groups**: more reserved-slot lists, each
+kept on its own, for a clan, a team of streamers or an event, and switched on and off. A group has
+a name, its players (each with a note and an expiry, as on the org list), and the servers it is
+for: every server of the organisation (servers added later too) or the ones chosen. While it is
+**on**, its players get a slot on those servers as if they were on the org list; while **off**,
+the group has no effect on any server. A group is switched on until it is switched off, or for
+some hours, or until a time, or set ahead to be on from one time until another (up to a year
+ahead); setting it again replaces the window it had. A window opens and closes by itself, picked
+up by each server's sync within the minute, and nothing is written when it does. A new group
+starts off, so its players can be filled in before an event. Taking a group away switches it off
+for good and frees its name; its players and history stay in the audit trail.
+
+Groups live on the organisation's **Reserved slots** tab, in a strip above it: the organisation's
+own list, then each group with its number of players and a mark for on (green), set for later (a
+clock) or off, and **+ New group** (a name, and every server or the ones ticked). A group's tab is
+laid out like the organisation's list, with its players, where they stand on its servers and the
+form to add one, under a bar that says whether it is on and where: **Switch off**, **Switch on…**
+or **Switch on now** (for a window set ahead), **Change…** (off, on until switched off, for 2
+hours to 7 days, until a time, or later from one time until another, in your local time),
+**Servers…**, **Rename** and **Remove**. While a group is off its players' servers read _group
+off_. On a server's Reserved slots tab a group's slot reads _org_, followed by the group's name for
+those who may read its note.
+
+A player on the org list and in a group, or in two groups, holds one slot, which stays while any
+of them wants it. On the live builds, which read the reserved list at start, a group switched off
+leaves its slots running until each server's next restart; the group says how many are still
+running. Groups are for the people who edit the org's reserved slots (owners, roles with _Org
+reserved slots_ on any of its servers, and keys over every server that carry it), who make,
+rename, rescope, switch and take them away. Everyone else who can open a server sees a group's
+slot as one of the organisation's; whose group it is shows only where a slot's note does. Members'
+slots, the Seeding reward, the Bounty rule, import and a Kill distance watch's bans keep to the
+organisation's own lists. Each change is in the audit trail (`list.group.create`, `.update`,
+`.switch`, `.archive`, and `list.add` / `list.remove` / `list.update` naming the group) and reaches
+Discord webhooks that mirror bans.
 
 ### Automation (triggers)
 
@@ -1267,6 +1305,23 @@ one who is not on it a 404. An add or a removal is applied at once, and its answ
 how it went (`ok`, `added`, `removed`, `failed`, `error`): for the server's own list on that
 server, for an org list once per server under `sync.servers`.
 
+[Reserved-slot groups](#reserved-slot-groups) take the same _Org reserved slots_ on a key over every
+server; a key held to some servers cannot open them:
+
+| Route                                                                    | Does                                                                                                                                                    |
+| ------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET /api/orgs/:orgId/slot-groups`                                       | the groups: `id`, `name`, `on`, `onFrom`, `onUntil`, `everyServer`, `servers`, `entryCount`, `leaving` (slots a server keeps until its restart)         |
+| `POST /api/orgs/:orgId/slot-groups`                                      | a new group, off: `{"name": "Clan event", "servers": "every"}` or `"servers": ["<serverId>", …]`; a name the org has (in any case) is a 409 `duplicate` |
+| `PATCH /api/orgs/:orgId/slot-groups/:groupId`                            | `name`, `servers` or both                                                                                                                               |
+| `DELETE /api/orgs/:orgId/slot-groups/:groupId`                           | takes the group away: off for good, its entries and history kept                                                                                        |
+| `PUT /api/orgs/:orgId/slot-groups/:groupId/switch`                       | `{"on": false}`; `{"on": true}`, with `"until"` to end it then; `{"on": true, "from": …, "until": …}` for a window ahead                                |
+| `GET`, `POST /api/orgs/:orgId/slot-groups/:groupId/entries`              | its players, as the org list's entries (`?includeRemoved=1`), and an add as for the org list                                                            |
+| `PATCH`, `DELETE /api/orgs/:orgId/slot-groups/:groupId/entries/:steamId` | as for the org list                                                                                                                                     |
+
+`GET /api/orgs/:orgId/lists` answers the groups as `groups` beside `lists`, which holds the
+organisation's default lists only. A group id that is not one of the organisation's groups not
+yet taken away is a 404 `Group not found.`
+
 The panel enforces its bans itself: it removes a banned player from every server the list covers
 the moment it sees them, with the organisation's ban message, whether or not they were on when the
 ban was placed (see [Organisation ban and reserved lists](#organisation-ban-and-reserved-lists)).
@@ -1601,6 +1656,9 @@ GET  /api/public/servers/:id   .../leaderboard (same query as above, page 20 at 
 GET  /api/orgs/:id/lists                                 the org lists the caller edits (kinds), with counts, and the caller's role on them; for ban list editors, the ban message and quick reasons
 GET/POST /api/orgs/:id/lists/:kind/entries {steamId,reason,expiresAt}   PATCH {reason,expiresAt} / DELETE .../entries/:steamId   (kind = ban | reserve, needing Org ban list or Org reserved slots; ?includeRemoved=1)
 POST /api/orgs/:id/lists/sync                            push the lists to every org server now
+GET/POST /api/orgs/:id/slot-groups {name,servers}        reserved-slot groups (Org reserved slots)   PATCH {name,servers} / DELETE (take away) .../slot-groups/:groupId
+PUT  /api/orgs/:id/slot-groups/:groupId/switch {on,from,until}   switch a group on or off, or set its window
+GET/POST /api/orgs/:id/slot-groups/:groupId/entries      a group's players   PATCH {reason,expiresAt} / DELETE .../entries/:steamId
 GET  /api/orgs/:id/lists/import                          server entries not on the org list   POST {entries:[{kind,steamId,reason}]} adopts them (owner)
 GET  /api/servers/:id/players/seen?q=&since=&flag=&sort=&dir=&offset=&limit=   everyone who has played on this server, by name, alias, kill-feed name or SteamID (View; 60 a minute)
 GET  /api/servers/:id/lists/state                        which bans / reserved slots here come from the org lists or this server's own   POST .../lists/sync
