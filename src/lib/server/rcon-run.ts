@@ -119,14 +119,10 @@ export async function runAction(
 		// edit also rewrites the mirror here, so the change shows before the worker's re-read lands.
 		const listEdit = LIST_EDITS[name];
 		if (listEdit && /^\d{17}$/.test(target)) {
-			await noteLocalEdit(
-				env,
-				server.id,
-				listEdit.kind,
-				listEdit.op,
-				target,
-				typeof params?.reason === 'string' ? params.reason.slice(0, 200) : ''
-			).catch((err) => console.error('[warcon] list mirror', err));
+			await noteLocalEdit(env, server.id, listEdit.kind, listEdit.op, target, {
+				reason: typeof params?.reason === 'string' ? params.reason.slice(0, 200) : '',
+				pendingRestart: !!(result as { pendingRestart?: unknown } | null)?.pendingRestart
+			}).catch((err) => console.error('[warcon] list mirror', err));
 		}
 		if (def.mutating) gateway().observeSoon(server.id, { lists: !!listEdit });
 		// A new document may change MaxReservedSlots, which the worker otherwise re-reads hourly.

@@ -78,16 +78,30 @@ export function desiredOf(rows: DesiredEntry[]): {
 			if (!bans.has(r.steamId))
 				bans.set(r.steamId, { steamId: r.steamId, reason: r.reason, listId: r.listId });
 		} else if (!reserved.has(r.steamId))
-			reserved.set(r.steamId, { steamId: r.steamId, listId: r.listId, member: false });
+			reserved.set(r.steamId, {
+				steamId: r.steamId,
+				listId: r.listId,
+				member: false,
+				priority: r.serverId === null ? PRIORITY.org : PRIORITY.server
+			});
 	}
 	return { bans: [...bans.values()], reserved: [...reserved.values()] };
 }
+
+/**
+ * Which adds go in first when a server's config document has no room for them all (the listener
+ * takes a body of 64 KB at most): a server's own slots, then the org's list, then members' slots.
+ * Lower goes first.
+ */
+export const PRIORITY = { server: 0, org: 1, member: 3 } as const;
 
 export interface DesiredReserve {
 	steamId: string;
 	listId: string;
 	/** a slot the org hands its members, not an entry someone added */
 	member: boolean;
+	/** see PRIORITY */
+	priority: number;
 }
 
 export interface StateLike {
@@ -104,6 +118,7 @@ export interface PlanInput {
 	/** how long a failed add or remove waits before it is tried again */
 	retryAfterMs: number;
 	desired: { bans: DesiredBan[]; reserved: DesiredReserve[] };
+	/** the reserved list the server will start with: its config document, where the build has one */
 	observed: { reserved: string[] };
 	state: StateLike[];
 }
@@ -113,6 +128,8 @@ export interface PlanAdd {
 	steamId: string;
 	listId: string;
 	reason: string;
+	/** see PRIORITY */
+	priority: number;
 }
 
 export interface PlanRef {
@@ -189,7 +206,8 @@ export function planSync(i: PlanInput): SyncPlan {
 				kind: 'reserve' as const,
 				steamId: d.steamId,
 				listId: d.listId,
-				reason: ''
+				reason: '',
+				priority: d.priority
 			})),
 			new Set(i.observed.reserved),
 			byKind(i.state, 'reserve')

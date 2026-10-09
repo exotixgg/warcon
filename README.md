@@ -529,7 +529,7 @@ and ban list editors who are not owners see them on the Ban list tab without cha
 already placed keep their reasons.
 
 Each entry shows where it stands on every server: **applied** by the panel, **pending** the next
-sync, **failed** (hover for the server's answer), or **local**. Local means the player was already
+sync, **failed** (hover for the reason), or **local**. Local means the player was already
 banned (or reserved) on that server by someone working outside the panel. The panel never removes
 what it did not add, so removing an org entry lifts it only where the panel applied it, and a
 local ban stays until an owner imports it into the org list or unbans it on that server.
@@ -573,8 +573,18 @@ every poll, where the poller re-applies anything missing. A reserved slot is a q
 the game takes the list at any length, and `MaxReservedSlots` only sets how many player slots
 are held back for the people on it (a 100-slot server with 2 held back reports 98 to the public;
 the panel shows the split). Live builds have no reserved-slot routes,
-so on those the panel writes `DefaultReservedPlayerIds` in the config document instead (one
-revision-checked apply per change), as the official console does. Every run that changes something, or fails,
+so on those the panel writes `DefaultReservedPlayerIds` in the config document instead, as the
+official console does: every change a server needs goes in one revision-checked write, and if
+someone else saves the document meanwhile the panel reads it again and makes its changes to theirs.
+Those builds read the list at start, so a slot taken out stays until the server's next restart
+(the Reserved slots tab badges it _leaves at restart_); a slot given back before then is written
+back and stays. The panel plans against the document, not the running list, and counts a slot as
+applied once the document holds it. The listener takes a request of 64 KB at most, roughly a
+thousand reserved players on top of a typical file: a slot that would not fit waits, marked
+failed with "The server's config document is full", and goes in when there is room. Removals
+always go in; a server's own slots go in before the organisation's, and members' slots last. A
+failure is shown and recorded as a short reason of the panel's (unreachable, refused by the server
+with its status, read-only document), never the game's own words. Every run that changes something, or fails,
 is in the audit trail under `system` as `lists.sync`, and reaches Discord webhooks that mirror
 bans. **Sync now** on a list page pushes everything on demand.
 

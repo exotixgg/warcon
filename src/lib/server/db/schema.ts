@@ -1074,7 +1074,11 @@ export const serverLists = pgTable(
 	]
 );
 
-/** The poller's copy of each game server's reserved slots; sibling of server_bans. */
+/**
+ * The poller's copy of each game server's reserved slots; sibling of server_bans. A row stands for
+ * an id in the config document, in the running list, or both: the live builds read the document
+ * at start, so between a write and the next restart the two differ.
+ */
 export const serverReserved = pgTable(
 	'server_reserved',
 	{
@@ -1082,6 +1086,10 @@ export const serverReserved = pgTable(
 			.notNull()
 			.references(() => servers.id, { onDelete: 'cascade' }),
 		steamId: text('steam_id').notNull(),
+		/** in the config document (the running list, on a build without one): what the sync plans against */
+		configured: boolean('configured').notNull().default(true),
+		/** in the running server's list: whom it holds a slot for now */
+		live: boolean('live').notNull().default(true),
 		seenAt: ts('seen_at').notNull().defaultNow()
 	},
 	(t) => [primaryKey({ columns: [t.serverId, t.steamId] })]

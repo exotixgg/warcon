@@ -220,8 +220,10 @@ type Standing = { state: ListEntryState; error: string; managed: boolean };
 
 /**
  * Where each SteamID stands on each server. A reserved slot: a state row means Warcon put it
- * there (applied or failed); otherwise present on the server means local, absent means pending.
- * A ban is applied everywhere: the panel enforces it, nothing is placed on the server.
+ * there (applied or failed; applied but not yet in the server's config document is pending);
+ * otherwise in the document means local, absent means pending. A slot the panel withdrew that the
+ * running server keeps until its restart is neither. A ban is applied everywhere: the panel
+ * enforces it, nothing is placed on the server.
  */
 export async function standings(
 	env: Env,
@@ -244,7 +246,11 @@ export async function standings(
 		.select({ serverId: serverReserved.serverId, steamId: serverReserved.steamId })
 		.from(serverReserved)
 		.where(
-			and(inArray(serverReserved.serverId, serverIds), inArray(serverReserved.steamId, steamIds))
+			and(
+				inArray(serverReserved.serverId, serverIds),
+				inArray(serverReserved.steamId, steamIds),
+				eq(serverReserved.configured, true)
+			)
 		);
 	const [seen, state] = await Promise.all([
 		observed,
@@ -259,12 +265,21 @@ export async function standings(
 				)
 			)
 	]);
+	const configured = new Set(seen.map((r) => `${r.serverId}:${r.steamId}`));
 	for (const r of seen)
 		out.get(r.serverId)?.set(r.steamId, { state: 'local', error: '', managed: false });
 	for (const r of state)
-		out.get(r.serverId)?.set(r.steamId, { state: r.state, error: r.error, managed: true });
+		out.get(r.serverId)?.set(r.steamId, {
+			state: placedState(r.state, configured.has(`${r.serverId}:${r.steamId}`)),
+			error: r.error,
+			managed: true
+		});
 	return out;
 }
+
+/** A slot the panel claimed is applied once the server's document holds it; till then it is pending. */
+const placedState = (state: 'applied' | 'failed', inDocument: boolean): ListEntryState =>
+	state === 'applied' && !inDocument ? 'pending' : state;
 
 const standingOf = (
 	s: Map<string, Standing> | undefined,
@@ -810,7 +825,12 @@ export async function importCandidates(env: Env, org: OrgRow): Promise<ImportCan
 	const nameOf = new Map(srv.map((s) => [s.id, s.name]));
 	const [bans, reserved, state, listRows] = await Promise.all([
 		env.db.select().from(serverBans).where(inArray(serverBans.serverId, serverIds)),
-		env.db.select().from(serverReserved).where(inArray(serverReserved.serverId, serverIds)),
+		// what the servers' documents hold: a slot the panel withdrew that a server keeps running
+		// until its restart is not one to adopt
+		env.db
+			.select()
+			.from(serverReserved)
+			.where(and(inArray(serverReserved.serverId, serverIds), eq(serverReserved.configured, true))),
 		env.db.select().from(serverListState).where(inArray(serverListState.serverId, serverIds)),
 		orgLists(env, org.id)
 	]);
@@ -1061,7 +1081,7 @@ export async function serverListsState(
 		env.db
 			.select({ steamId: serverReserved.steamId })
 			.from(serverReserved)
-			.where(eq(serverReserved.serverId, server.id)),
+			.where(and(eq(serverReserved.serverId, server.id), eq(serverReserved.configured, true))),
 		env.db.select().from(serverListState).where(eq(serverListState.serverId, server.id)),
 		env.db.select().from(serverListSync).where(eq(serverListSync.serverId, server.id)).limit(1),
 		listsRoleFor(env, user, server.orgId)
@@ -1106,8 +1126,11 @@ export async function serverListsState(
 		expiresAt: null
 	});
 	for (const b of bans) out.bans[b.steamId] = ban('local', false);
+	const inDocument = new Set(reserved.map((r) => r.steamId));
 	for (const r of reserved) out.reserved[r.steamId] = slot('local', false);
-	for (const s of state) if (s.kind === 'reserve') out.reserved[s.steamId] = slot(s.state, true);
+	for (const s of state)
+		if (s.kind === 'reserve')
+			out.reserved[s.steamId] = slot(placedState(s.state, inDocument.has(s.steamId)), true);
 	// wanted but not yet on the server
 	const org = (await getOrg(env, server.orgId)) ?? {
 		membersReserved: false,

@@ -14,9 +14,10 @@ import type { Env } from './env';
 import { banUid, renderBanMessage } from '$lib/ban-message';
 import { ApiError, forLog } from './http';
 import { writeAudit } from './audit';
-import { ACTIONS } from './actions';
+import { ACTIONS, configResult, liveReservedIds, readConfig } from './actions';
 import { withServer, type Priority } from './dispatcher';
-import { GameError, WardogsClient } from './rcon';
+import { classifyGameError, GameError, WardogsClient } from './rcon';
+import { RESERVED_KEY, reservedFromText, reservedIntoText } from '$lib/reserved-doc';
 import {
 	listEntries,
 	lists,
@@ -40,7 +41,9 @@ import {
 	isUnreachable,
 	planHasWork,
 	planSync,
+	PRIORITY,
 	type Kind,
+	type PlanAdd,
 	type PlanInput,
 	type PanelBan,
 	type SyncPlan
@@ -55,7 +58,13 @@ const FANOUT_WAIT_MS = 15_000;
 
 export interface Observed {
 	bans: Ban[];
+	/** the running server's reserved list: whom it holds a slot for now */
 	reserved: string[];
+	/**
+	 * The list in the config document, which the server takes up when it next starts (the running
+	 * list, on a build that has no document or edits both at once). The sync plans against this.
+	 */
+	configured: string[];
 }
 
 export interface SyncResult extends ListSyncServer {
@@ -135,7 +144,12 @@ export async function desiredFor(
 			const have = new Set(reserved.map((r) => r.steamId));
 			for (const m of await memberSlots(env, server.orgId))
 				if (!banned.has(m.steamId) && !have.has(m.steamId))
-					reserved.push({ steamId: m.steamId, listId: reserveList.id, member: true });
+					reserved.push({
+						steamId: m.steamId,
+						listId: reserveList.id,
+						member: true,
+						priority: PRIORITY.member
+					});
 		}
 	}
 	return { bans, reserved };
@@ -217,7 +231,11 @@ async function snapshotObserved(env: Env, serverId: string): Promise<Observed> {
 	const [bans, reserved] = await Promise.all([
 		env.db.select().from(serverBans).where(eq(serverBans.serverId, serverId)),
 		env.db
-			.select({ steamId: serverReserved.steamId })
+			.select({
+				steamId: serverReserved.steamId,
+				configured: serverReserved.configured,
+				live: serverReserved.live
+			})
 			.from(serverReserved)
 			.where(eq(serverReserved.serverId, serverId))
 	]);
@@ -228,18 +246,38 @@ async function snapshotObserved(env: Env, serverId: string): Promise<Observed> {
 			bannedBy: b.bannedBy,
 			bannedAtUtc: b.bannedAtUtc
 		})),
-		reserved: reserved.map((r) => r.steamId)
+		reserved: reserved.filter((r) => r.live).map((r) => r.steamId),
+		configured: reserved.filter((r) => r.configured).map((r) => r.steamId)
 	};
 }
 
-/** Reads the server's ban list and reserved slots, one request at a time (one in flight per server). */
-export async function liveObserved(client: WardogsClient): Promise<Observed> {
+const isSteamId = (id: string) => /^\d{17}$/.test(id);
+
+/**
+ * Reads the server's ban list and reserved slots, one request at a time (one in flight per
+ * server). On a build that takes reserved slots through its config document, the document is read
+ * too: the running list only catches up with it at the next restart, so a slot withdrawn and given
+ * back before then would read as already there. Only the reserved ids leave the document; its text
+ * (which carries the RCON password) is never kept.
+ */
+export async function liveObserved(
+	client: WardogsClient,
+	features: Features | null = null
+): Promise<Observed> {
 	const bans = (await ACTIONS.bans.run(client, {})) as { bans: Ban[] };
-	const reserved = (await ACTIONS.reserved.run(client, {})) as { reserved: string[] };
-	return {
-		bans: bans.bans.filter((b) => /^\d{17}$/.test(b.steamId)),
-		reserved: reserved.reserved.filter((id) => /^\d{17}$/.test(id))
-	};
+	const reserved = (
+		(await ACTIONS.reserved.run(client, {})) as { reserved: string[] }
+	).reserved.filter(isSteamId);
+	let configured = reserved;
+	if (!features?.reservedSlots) {
+		try {
+			configured = reservedFromText((await readConfig(client)).text).filter(isSteamId);
+		} catch (err) {
+			// a build too old to serve the document keeps its list in the running server alone
+			if (!(err instanceof GameError && err.code === 'no_route')) throw err;
+		}
+	}
+	return { bans: bans.bans.filter((b) => isSteamId(b.steamId)), reserved, configured };
 }
 
 /** Rewrites the poller's copies of a server's ban list and reserved slots. */
@@ -280,23 +318,31 @@ export async function writeSnapshot(
 						seenAt: ts
 					}
 				});
+		const live = new Set(observed.reserved);
+		const configured = new Set(observed.configured);
+		const ids = [...new Set([...live, ...configured])];
 		await tx
 			.delete(serverReserved)
 			.where(
-				observed.reserved.length
-					? and(
-							eq(serverReserved.serverId, serverId),
-							notInArray(serverReserved.steamId, observed.reserved)
-						)
+				ids.length
+					? and(eq(serverReserved.serverId, serverId), notInArray(serverReserved.steamId, ids))
 					: eq(serverReserved.serverId, serverId)
 			);
-		if (observed.reserved.length)
+		if (ids.length)
 			await tx
 				.insert(serverReserved)
-				.values(observed.reserved.map((steamId) => ({ serverId, steamId, seenAt: ts })))
+				.values(
+					ids.map((steamId) => ({
+						serverId,
+						steamId,
+						configured: configured.has(steamId),
+						live: live.has(steamId),
+						seenAt: ts
+					}))
+				)
 				.onConflictDoUpdate({
 					target: [serverReserved.serverId, serverReserved.steamId],
-					set: { seenAt: ts }
+					set: { configured: sql`excluded.configured`, live: sql`excluded.live`, seenAt: ts }
 				});
 	});
 }
@@ -306,7 +352,9 @@ export async function writeSnapshot(
  * copies in server_bans and server_reserved are brought in line at once, rather than at the
  * worker's next re-read (five minutes by default), so no page keeps showing a slot the server no
  * longer has, or misses one it just got. The worker's own re-read still follows and is the
- * authority; this only closes the gap.
+ * authority; this only closes the gap. A slot written to the config document of a build that reads
+ * it at start (`pendingRestart`) is in the document now and in the running list at the restart,
+ * or the other way about for one taken out.
  */
 export async function noteLocalEdit(
 	env: Env,
@@ -314,9 +362,9 @@ export async function noteLocalEdit(
 	kind: Kind,
 	op: 'add' | 'remove',
 	steamId: string,
-	reason = '',
-	ts = new Date()
+	opts: { reason?: string; pendingRestart?: boolean; ts?: Date } = {}
 ): Promise<void> {
+	const { reason = '', pendingRestart = false, ts = new Date() } = opts;
 	if (kind === 'ban') {
 		if (op === 'remove') {
 			await env.db
@@ -333,7 +381,9 @@ export async function noteLocalEdit(
 			});
 		return;
 	}
-	if (op === 'remove') {
+	const configured = op === 'add';
+	const live = op === 'add' ? !pendingRestart : pendingRestart;
+	if (!configured && !live) {
 		await env.db
 			.delete(serverReserved)
 			.where(and(eq(serverReserved.serverId, serverId), eq(serverReserved.steamId, steamId)));
@@ -341,10 +391,10 @@ export async function noteLocalEdit(
 	}
 	await env.db
 		.insert(serverReserved)
-		.values({ serverId, steamId, seenAt: ts })
+		.values({ serverId, steamId, configured, live, seenAt: ts })
 		.onConflictDoUpdate({
 			target: [serverReserved.serverId, serverReserved.steamId],
-			set: { seenAt: ts }
+			set: { configured, live, seenAt: ts }
 		});
 }
 
@@ -452,7 +502,7 @@ async function run(
 			now,
 			retryAfterMs: RETRY_AFTER_MS,
 			desired,
-			observed: { reserved: observed.reserved },
+			observed: { reserved: observed.configured },
 			state
 		});
 
@@ -474,15 +524,15 @@ async function run(
 	try {
 		client ??= await WardogsClient.forServer(env, server);
 		if (!fresh) {
-			observed = await liveObserved(client);
+			observed = await liveObserved(client, opts.features ?? null);
 			fresh = true;
 			await writeSnapshot(env, server.id, observed, now);
 		}
 		plan = planWith(observed);
 		// Live builds since CL-499480 have no reserved-slot routes and answer those calls 404, which
-		// would otherwise read as "already gone"; there the slots go through the config document
-		// (see reservedViaConfig in actions.ts). Ask the build once before touching reserved slots.
-		if ([...plan.adds, ...plan.removes].some((x) => x.kind === 'reserve')) {
+		// would otherwise read as "already gone"; there the slots go through the config document.
+		// Ask the build once before touching reserved slots.
+		if (planHasWork(plan)) {
 			try {
 				const features =
 					opts.features ??
@@ -501,6 +551,7 @@ async function run(
 		return { ...base, error: message };
 	}
 
+	await claim(env, server.id, plan.adds, now);
 	const outcome = await execute(client, plan, observed, reserve);
 	await record(env, server.id, plan, outcome, now, {
 		syncedAt: now,
@@ -576,7 +627,7 @@ interface ReserveMode {
 	viaConfig: boolean;
 }
 
-/** Removes, then adds, one call at a time; stops at the first sign the server is gone. */
+/** Every reserved-slot change the plan holds, the way this build takes them. */
 async function execute(
 	client: WardogsClient,
 	plan: SyncPlan,
@@ -589,40 +640,46 @@ async function execute(
 		failedAdds: [],
 		failedRemoves: [],
 		aborted: null,
-		observed: { bans: [...before.bans], reserved: [...before.reserved] }
+		observed: {
+			bans: before.bans,
+			reserved: [...before.reserved],
+			configured: [...before.configured]
+		}
 	};
-	const dropObserved = (kind: Kind, steamId: string) => {
-		if (kind === 'ban') out.observed.bans = out.observed.bans.filter((b) => b.steamId !== steamId);
-		else out.observed.reserved = out.observed.reserved.filter((id) => id !== steamId);
+	if (!planHasWork(plan)) return out;
+	if (!reserve.writable) {
+		for (const r of plan.removes)
+			out.failedRemoves.push({ ...r, error: `Could not remove: ${NO_RESERVED_ROUTES}` });
+		for (const a of plan.adds)
+			out.failedAdds.push({ ...a, error: `Could not add: ${NO_RESERVED_ROUTES}` });
+		return out;
+	}
+	return reserve.viaConfig ? throughDocument(client, plan, out) : oneByOne(client, plan, out);
+}
+
+/**
+ * On a build with the live routes: removes, then adds, one call at a time, each changing the
+ * running list and the document together; stops at the first sign the server is gone.
+ */
+async function oneByOne(client: WardogsClient, plan: SyncPlan, out: Outcome): Promise<Outcome> {
+	const lists = () => [out.observed.reserved, out.observed.configured];
+	const drop = (steamId: string) => {
+		out.observed.reserved = out.observed.reserved.filter((id) => id !== steamId);
+		out.observed.configured = out.observed.configured.filter((id) => id !== steamId);
 	};
-	const addObserved = (kind: Kind, steamId: string, reason: string) => {
-		if (kind === 'ban') {
-			if (!out.observed.bans.some((b) => b.steamId === steamId))
-				out.observed.bans.push({
-					steamId,
-					reason,
-					bannedBy: 'Warcon',
-					bannedAtUtc: new Date().toISOString()
-				});
-		} else if (!out.observed.reserved.includes(steamId)) out.observed.reserved.push(steamId);
+	const put = (steamId: string) => {
+		for (const l of lists()) if (!l.includes(steamId)) l.push(steamId);
 	};
 	for (const r of plan.removes) {
-		if (r.kind === 'reserve' && !reserve.writable) {
-			out.failedRemoves.push({ ...r, error: `Could not remove: ${NO_RESERVED_ROUTES}` });
-			continue;
-		}
 		try {
-			await ACTIONS.reservedRemove.run(client, {
-				steamId: r.steamId,
-				viaConfig: reserve.viaConfig
-			});
+			await ACTIONS.reservedRemove.run(client, { steamId: r.steamId, viaConfig: false });
 			out.removed.push(r);
-			dropObserved(r.kind, r.steamId);
+			drop(r.steamId);
 		} catch (err) {
 			const f = failure(err);
 			if (isGone(f)) {
 				out.removed.push(r);
-				dropObserved(r.kind, r.steamId);
+				drop(r.steamId);
 			} else if (isUnreachable(f)) {
 				out.aborted = f.phrase;
 				return out;
@@ -630,22 +687,15 @@ async function execute(
 		}
 	}
 	for (const a of plan.adds) {
-		if (a.kind === 'reserve' && !reserve.writable) {
-			out.failedAdds.push({ ...a, error: `Could not add: ${NO_RESERVED_ROUTES}` });
-			continue;
-		}
 		try {
-			await ACTIONS.reservedAdd.run(client, {
-				steamId: a.steamId,
-				viaConfig: reserve.viaConfig
-			});
+			await ACTIONS.reservedAdd.run(client, { steamId: a.steamId, viaConfig: false });
 			out.added.push(a);
-			addObserved(a.kind, a.steamId, a.reason);
+			put(a.steamId);
 		} catch (err) {
 			const f = failure(err);
 			if (isAlreadyApplied(f)) {
 				out.added.push(a);
-				addObserved(a.kind, a.steamId, a.reason);
+				put(a.steamId);
 			} else if (isUnreachable(f)) {
 				out.aborted = f.phrase;
 				return out;
@@ -653,6 +703,96 @@ async function execute(
 		}
 	}
 	return out;
+}
+
+/**
+ * The listener refuses a request body over 64 KB (`limits.maxBodyBytes` on every build seen), and
+ * the whole document goes in one; this much of it is left for the reserved list to grow into.
+ */
+const DOCUMENT_BUDGET_BYTES = 65_536 - 2048;
+const DOCUMENT_FULL = "The server's config document is full.";
+
+const bytes = (text: string): number => Buffer.byteLength(text, 'utf8');
+
+/**
+ * The adds that fit, in the order given: the document with `kept` must stay within the budget.
+ * Each add is one more `.DefaultReservedPlayerIds=<id>` line.
+ */
+export function fitting(text: string, kept: string[], adds: string[]): string[] {
+	const eol = text.includes('\r\n') ? 2 : 1;
+	let size = bytes(reservedIntoText(text, kept));
+	const placed: string[] = [];
+	for (const id of adds) {
+		const cost = bytes(`.${RESERVED_KEY}=${id}`) + eol;
+		if (size + cost > DOCUMENT_BUDGET_BYTES) break;
+		size += cost;
+		placed.push(id);
+	}
+	return placed;
+}
+
+/**
+ * On a build that takes reserved slots through its config document: every change for the server in
+ * one write. One read, one PUT against the revision read, one look at the running list. On a
+ * revision conflict the document is read again and the same changes made to what it now holds (an
+ * add already there and a removal already gone change nothing), so the other writer's edit stays; a
+ * second conflict fails the run's changes. Removals always go in; adds go in by priority while the
+ * document stays within the budget, and the rest wait as failed until there is room. The document's
+ * text never leaves this function and no error of the game's is kept (see syncPhrase).
+ */
+async function throughDocument(
+	client: WardogsClient,
+	plan: SyncPlan,
+	out: Outcome
+): Promise<Outcome> {
+	const adds = [...plan.adds].sort((a, b) => a.priority - b.priority);
+	const removing = new Set(plan.removes.map((r) => r.steamId));
+	try {
+		for (let attempt = 0; ; attempt++) {
+			const doc = await readConfig(client);
+			if (!doc.writable) throw new GameError(400, 'The document is read-only.', 'config_readonly');
+			const before = reservedFromText(doc.text);
+			const kept = before.filter((id) => !removing.has(id));
+			const fresh = adds.map((a) => a.steamId).filter((id) => !kept.includes(id));
+			const ids = [...kept, ...fitting(doc.text, kept, fresh)];
+			const changed = ids.length !== before.length || ids.some((id, i) => id !== before[i]);
+			if (changed) {
+				const { status, body, etag } = await client.configCall(
+					'PUT',
+					'/v1/config',
+					reservedIntoText(doc.text, ids),
+					doc.revision
+				);
+				const r = configResult(status, body, etag);
+				if (r.conflict) {
+					if (attempt === 0) continue;
+					throw new GameError(412, 'The document kept changing.', 'revision_conflict');
+				}
+				if (!r.ok) throw classifyGameError('PUT', '/v1/config', status, '', body);
+			}
+			const placed = new Set(ids);
+			out.removed.push(...plan.removes);
+			for (const a of adds)
+				if (placed.has(a.steamId)) out.added.push(a);
+				else out.failedAdds.push({ ...a, error: `Could not add: ${DOCUMENT_FULL}` });
+			out.observed.configured = ids.filter(isSteamId);
+			if (changed) {
+				const live = await liveReservedIds(client).catch(() => null);
+				if (live) out.observed.reserved = live.filter(isSteamId);
+			}
+			return out;
+		}
+	} catch (err) {
+		const f = failure(err);
+		if (isUnreachable(f)) {
+			out.aborted = f.phrase;
+			return out;
+		}
+		for (const r of plan.removes)
+			out.failedRemoves.push({ ...r, error: `Could not remove: ${f.phrase}` });
+		for (const a of adds) out.failedAdds.push({ ...a, error: `Could not add: ${f.phrase}` });
+		return out;
+	}
 }
 
 interface Bookkeeping {
@@ -665,6 +805,29 @@ async function bookkeep(env: Env, serverId: string, b: Bookkeeping): Promise<voi
 		.insert(serverListSync)
 		.values({ serverId, ...b, updatedAt: new Date() })
 		.onConflictDoUpdate({ target: serverListSync.serverId, set: { ...b, updatedAt: new Date() } });
+}
+
+/**
+ * Ownership before the write: each add is recorded as the panel's before the server is touched, so
+ * a crash between the write and the record cannot leave an id the panel placed looking like
+ * someone else's (local, which the panel never removes). Until the server holds it, such a row
+ * reads as pending and the next run adds it again; a removal's row goes only after the write.
+ */
+async function claim(env: Env, serverId: string, adds: PlanAdd[], now: Date): Promise<void> {
+	if (!adds.length) return;
+	await env.db.transaction(async (tx) => {
+		for (const a of adds)
+			await upsertState(tx, {
+				serverId,
+				kind: a.kind,
+				steamId: a.steamId,
+				sourceListId: a.listId,
+				state: 'applied',
+				error: '',
+				attemptedAt: now,
+				updatedAt: now
+			});
+	});
 }
 
 /** One transaction: state rows for what happened, the snapshot as it now stands, the sync row. */

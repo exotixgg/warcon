@@ -915,7 +915,7 @@ async function keepLists(
 	let observed: Observed | undefined;
 	if (started - m.listsAt >= s.listsSnapshotMs) {
 		m.listsAt = started;
-		observed = await liveObserved(client);
+		observed = await liveObserved(client, m.identity.features);
 		m.reserved = new Set(observed.reserved);
 		m.reservedAt = started;
 		await writeSnapshot(env, m.server.id, observed, ts);

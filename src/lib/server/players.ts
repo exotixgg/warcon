@@ -585,7 +585,8 @@ async function seedProgress(
 		// behind it, when a list this server takes has one (the latest end of them, none if any has none).
 		env.db.execute<{ held: boolean; endless: boolean; until: Date | null }>(sql`
 			SELECT EXISTS (SELECT 1 FROM server_reserved r
-			                WHERE r.server_id = ${server.id} AND r.steam_id = ${steamId}) AS held,
+			                WHERE r.server_id = ${server.id} AND r.steam_id = ${steamId}
+			                  AND r.live) AS held,
 			       bool_or(e.expires_at IS NULL) AS endless, MAX(e.expires_at) AS until
 			  FROM server_lists sl
 			  JOIN lists l ON l.id = sl.list_id AND l.kind = 'reserve'

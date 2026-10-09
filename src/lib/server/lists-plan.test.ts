@@ -69,14 +69,16 @@ const input = (p: Partial<PlanInput> = {}): PlanInput => ({
 });
 
 const ban = (steamId: string, reason = '') => ({ steamId, reason, listId: 'L' });
-const slot = (steamId: string, member = false) => ({ steamId, listId: 'L', member });
+const slot = (steamId: string, member = false) => ({ steamId, listId: 'L', member, priority: 1 });
 
 describe('planSync', () => {
 	const want = (...ids: string[]) => ({ bans: [], reserved: ids.map((id) => slot(id)) });
 
 	test('wanted and absent → add', () => {
 		const p = planSync(input({ desired: want('1') }));
-		expect(p.adds).toEqual([{ kind: 'reserve', steamId: '1', listId: 'L', reason: '' }]);
+		expect(p.adds).toEqual([
+			{ kind: 'reserve', steamId: '1', listId: 'L', reason: '', priority: 1 }
+		]);
 		expect(p.removes).toEqual([]);
 	});
 
@@ -187,8 +189,8 @@ describe('desiredOf', () => {
 			{ kind: 'ban', steamId: '3', reason: 'cheating', listId: 'bans', serverId: null }
 		]);
 		expect(want.reserved).toEqual([
-			{ steamId: '1', listId: 'org', member: false },
-			{ steamId: '2', listId: 'srv', member: false }
+			{ steamId: '1', listId: 'org', member: false, priority: 1 },
+			{ steamId: '2', listId: 'srv', member: false, priority: 0 }
 		]);
 		expect(want.bans).toEqual([{ steamId: '3', reason: 'cheating', listId: 'bans' }]);
 	});
