@@ -200,12 +200,13 @@ export async function runAction(
 				});
 			throw err;
 		}
-		const message = err instanceof Error ? err.message : String(err);
+		// The panel's own failure: the trail keeps a fixed phrase (a failed query's message lists its
+		// parameters); the error goes on to the route, which logs it without them.
 		await writeAudit(env, req, {
 			...base,
 			outcome: 'error',
 			status: 500,
-			message,
+			message: 'Internal error.',
 			detail: def.mutating ? detail : undefined,
 			durationMs
 		});
