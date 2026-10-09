@@ -24,7 +24,8 @@
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort, matches } from '$lib/table.svelte';
 	import { watchLive } from '$lib/live';
-	import { RULE_GROUPS, RULE_KINDS } from '$lib/rule-kinds';
+	import { RULE_KINDS } from '$lib/rule-kinds';
+	import RulePicker from '$lib/components/RulePicker.svelte';
 	import type {
 		DryRunResult,
 		MapSelection,
@@ -126,11 +127,9 @@
 					? 'warn'
 					: 'err';
 
-	// The kinds, grouped by what they act on for the Add menu ($lib/rule-kinds). `needs` is what a
-	// kind must have before it can run here, shown in the menu and at the top of its editor; '' when
-	// it can.
+	// The kinds, as the rule picker groups them ($lib/rule-kinds). `needs` is what a kind must have
+	// before it can run here, shown on its card and at the top of its editor; '' when it can.
 	const KINDS = RULE_KINDS;
-	const GROUPS = RULE_GROUPS;
 	/** The outbox action as the table shows it: a flag sends nothing to the game, so it reads as one. */
 	const actionLabel = (action: string) =>
 		action === 'name_flag' || action === 'kill_rate_flag' || action === 'kill_distance_flag'
@@ -264,19 +263,23 @@
 		].sort((a, b) => a.label.localeCompare(b.label));
 	const holds = (list: string[], cause: string) =>
 		list.some((c) => c.toLowerCase() === cause.toLowerCase());
-	/** A kind that lacks what it needs stays in the menu, greyed, with the reason in a few words. */
+	/** A kind that lacks what it needs stays in the picker, greyed, with the reason in a few words. */
 	const short = (kind: TriggerKind): string =>
-		kind === 'team_kill' ||
-		kind === 'kill_rate' ||
-		kind === 'kill_distance' ||
-		kind === 'name_change' ||
-		(kind === 'bounty' && !data.feed)
-			? 'needs the kill feed'
-			: kind === 'bounty'
-				? 'needs Chat'
-				: kind === 'risk_kick'
-					? 'needs a Steam key'
-					: '';
+		!needs(kind)
+			? ''
+			: kind === 'team_kill' ||
+				  kind === 'kill_rate' ||
+				  kind === 'kill_distance' ||
+				  kind === 'name_change' ||
+				  (kind === 'bounty' && !data.feed)
+				? 'Needs the kill feed'
+				: kind === 'bounty'
+					? 'Needs Chat'
+					: kind === 'risk_kick'
+						? 'Needs a Steam key'
+						: kind === 'seed_reward'
+							? 'Needs Reserved slots'
+							: '';
 	/** A Bounty rule's texts until they are written: a slot is named, an announcement-only rule asks. */
 	const bountyTexts = (reward: 'slot' | 'none') =>
 		reward === 'slot'
@@ -297,7 +300,14 @@
 		for (const k of ['setMessage', 'claimMessage', 'whisper'] as const)
 			if (f[k] === from[k]) f[k] = to[k];
 	};
-	let addOpen = $state(false);
+	/** The Add rule picker is open; `fromPicker`: the editor came from it, so it offers the way back. */
+	let picking = $state(false);
+	let fromPicker = $state(false);
+	function pick(kind: TriggerKind, t?: TriggerView) {
+		picking = false;
+		open(kind, t);
+		fromPicker = true;
+	}
 
 	// The status lines count up on their own: a minute clock, only while the page is open.
 	let now = $state(Date.now());
@@ -501,6 +511,7 @@
 
 	/** The editor for a new rule of a kind, an existing rule, or a copy of one (`copy`). */
 	function open(kind: TriggerKind, t?: TriggerView, copy = false) {
+		fromPicker = false;
 		const c = (t?.config ?? {}) as Record<string, unknown>;
 		const s = (k: string, d: string) => (typeof c[k] === 'string' ? (c[k] as string) : d);
 		const n = (k: string, d: number) => (typeof c[k] === 'number' ? (c[k] as number) : d);
@@ -1049,11 +1060,6 @@
 	}
 </script>
 
-<svelte:window
-	onclick={() => (addOpen = false)}
-	onkeydown={(e) => e.key === 'Escape' && (addOpen = false)}
-/>
-
 <p class="mb-4 text-[13px] text-mist-400">
 	Rules act on {data.server.demo ? 'the demo server' : 'this server'} as things happen: a join, a kill,
 	a quiet hour. Every action is recorded below and in the audit trail as
@@ -1086,50 +1092,9 @@
 		</div>
 	</div>
 	{#if admin}
-		<div class="relative">
-			<button
-				type="button"
-				class="btn gap-1.5 pr-2.5"
-				aria-haspopup="menu"
-				aria-expanded={addOpen}
-				onclick={(e) => {
-					e.stopPropagation();
-					addOpen = !addOpen;
-				}}
-			>
-				Add rule <span class="text-[10px] text-mist-600">▼</span>
-			</button>
-			{#if addOpen}
-				<!-- svelte-ignore a11y_no_static_element_interactions, a11y_click_events_have_key_events -->
-				<div
-					class="absolute top-[calc(100%+6px)] right-0 z-40 min-w-[270px] rise rounded-card border border-black bg-ink-900 p-1 shadow-pop"
-					role="menu"
-					tabindex="-1"
-					onclick={(e) => e.stopPropagation()}
-				>
-					{#each GROUPS as g (g)}
-						<div class="px-3 pt-2 pb-1 caps text-mist-600">{g}</div>
-						{#each KINDS.filter((k) => k.group === g) as k (k.kind)}
-							<button
-								type="button"
-								class="menu-item {needs(k.kind) ? 'text-mist-600!' : ''}"
-								role="menuitem"
-								title={k.blurb}
-								onclick={() => {
-									addOpen = false;
-									open(k.kind);
-								}}
-							>
-								<span>{k.label}</span>
-								{#if needs(k.kind) && short(k.kind)}
-									<span class="ml-auto text-[11px] text-mist-600">{short(k.kind)}</span>
-								{/if}
-							</button>
-						{/each}
-					{/each}
-				</div>
-			{/if}
-		</div>
+		<button type="button" class="btn" aria-haspopup="dialog" onclick={() => (picking = true)}
+			>Add rule</button
+		>
 	{/if}
 </div>
 
@@ -1273,11 +1238,11 @@
 						>+ Scheduled broadcast</button
 					>
 				</div>
-				<p class="max-w-[52ch] text-[12.5px] text-mist-600">
-					Or add any rule: {KINDS.filter((k) => k.kind !== 'welcome' && k.kind !== 'broadcast')
-						.map((k) => k.label)
-						.join(' · ')}.
-				</p>
+				<button
+					type="button"
+					class="cursor-pointer text-[12.5px] text-mist-400 underline decoration-mist-600 underline-offset-[3px] hover:text-mist-100"
+					onclick={() => (picking = true)}>Or see all {KINDS.length} kinds of rule</button
+				>
 			{:else if onlyFailing}
 				<p class="text-mist-600">No rule is failing.</p>
 			{:else}
@@ -1368,11 +1333,24 @@
 	{#each r.notes as n (n)}<p class="note">{n}</p>{/each}
 {/snippet}
 
+{#if picking}
+	<RulePicker rules={data.triggers} lacks={short} onpick={pick} onclose={() => (picking = false)} />
+{/if}
+
 {#if form}
 	{@const f = form}
 	<Modal
 		title="{f.id ? 'Edit' : 'New'} · {label(f.kind)}"
 		wide={f.kind === 'empty_reset' || f.kind === 'name_filter'}
+		back={fromPicker
+			? {
+					label: 'All rules',
+					onclick: () => {
+						form = null;
+						picking = true;
+					}
+				}
+			: undefined}
 		onclose={() => (form = null)}
 	>
 		<form
