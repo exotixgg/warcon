@@ -25,6 +25,7 @@ import type { Db, Tx } from './db';
 import {
 	listEntries,
 	lists,
+	organizations,
 	serverBans,
 	serverListState,
 	serverListSync,
@@ -85,6 +86,16 @@ export async function ensureOrgLists(
 		.insert(lists)
 		.values(LIST_KINDS.map((kind) => ({ id: newId(), orgId, kind, createdBy })))
 		.onConflictDoNothing();
+}
+
+/**
+ * Holds the org's row to the end of the transaction, so adding a server and handing lists to the
+ * org's servers take turns and neither misses the other's write. Readers are not held up.
+ */
+export async function lockOrg(tx: DbLike, orgId: string): Promise<void> {
+	await tx.execute(
+		sql`SELECT 1 FROM ${organizations} WHERE ${organizations.id} = ${orgId} FOR NO KEY UPDATE`
+	);
 }
 
 /**

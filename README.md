@@ -1396,6 +1396,12 @@ rather than fetched. Link-local addresses (`169.254.0.0/16`, `fe80::/10`) are re
 Refused targets are recorded on the audit page. The raw action is limited to `/v1/` paths on the
 server's own port, and the connectivity test and raw action are rate limited per user.
 
+A game server is added to the panel once: a host and port already on it, in any organisation and
+over either scheme, is refused (the demo target aside). The refusal names the server holding the
+address only when it is in your own organisation. If someone else added your server, change its
+RCON password and ask the site owner to remove their copy. To give another group a hand in running
+it, invite them to the organisation that holds it, with the role they need on that server.
+
 The ini comments say a non-loopback `BindAddress` expects TLS and `PasswordHash=`; the official web
 console connects over plain `http` regardless, and so can Warcon.
 
