@@ -922,6 +922,281 @@ export async function updateEntry(
 	return { entry: { steamId, reason: row.reason, expiresAt: iso(row.expiresAt) } };
 }
 
+/**
+ * Guarded server-only lease extension. No create, remove, reason edit or game call.
+ * Active server list entries are nonmember rows; implicit member slots have no row here.
+ */
+export async function renewOwnedServerReservation(
+	env: Env,
+	req: Request,
+	actor: SessionUser,
+	server: ServerRow,
+	org: OrgRow,
+	steamIdIn: unknown,
+	body: Record<string, unknown>
+): Promise<{ entry: { steamId: string; reason: string; expiresAt: string }; changed: boolean }> {
+	const steamId = requireSteamId(steamIdIn);
+	if (
+		Object.keys(body).some(
+			(key) => !['expectedMarker', 'expectedExpiresAt', 'expiresAt'].includes(key)
+		)
+	)
+		throw new ApiError(400, 'Only the ownership preconditions and new expiry are accepted.');
+	const marker = body.expectedMarker;
+	if (
+		typeof marker !== 'string' ||
+		!/^EXOTIX VIP [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(marker)
+	)
+		throw new ApiError(400, 'An exact EXOTIX VIP ownership marker is required.');
+	const expected =
+		typeof body.expectedExpiresAt === 'string' ? new Date(body.expectedExpiresAt) : null;
+	if (
+		!expected ||
+		!Number.isFinite(expected.getTime()) ||
+		expected.toISOString() !== body.expectedExpiresAt
+	)
+		throw new ApiError(400, 'A canonical finite expectedExpiresAt is required.');
+	const expiresAt = parseExpiry(body.expiresAt);
+	if (!expiresAt || expiresAt.getTime() < expected.getTime())
+		throw new ApiError(400, 'A finite expiry at least as late as expectedExpiresAt is required.');
+	const conflict = () =>
+		new ApiError(409, 'Reservation ownership or expiry changed.', 'reservation_conflict');
+	const result = await env.db.transaction(async (tx) => {
+		// Match existing insert lock order, then lock the actual active row. Do not ensure/create lists.
+		const [list] = await tx
+			.select({ id: lists.id })
+			.from(lists)
+			.innerJoin(serverLists, eq(serverLists.listId, lists.id))
+			.where(
+				and(
+					eq(lists.serverId, server.id),
+					eq(lists.orgId, org.id),
+					eq(lists.kind, 'reserve'),
+					eq(serverLists.serverId, server.id)
+				)
+			)
+			.limit(1)
+			.for('update');
+		if (!list || server.orgId !== org.id) throw conflict();
+		const [row] = await tx
+			.select()
+			.from(listEntries)
+			.where(
+				and(
+					eq(listEntries.listId, list.id),
+					eq(listEntries.steamId, steamId),
+					isNull(listEntries.removedAt)
+				)
+			)
+			.limit(1)
+			.for('update');
+		if (
+			!row ||
+			row.reason !== marker ||
+			row.addedBy !== actor.id ||
+			!row.expiresAt ||
+			row.expiresAt.getTime() <= Date.now()
+		)
+			throw conflict();
+		// Validate again after lock waits; no lease may have aged past the API future bound.
+		parseExpiry(body.expiresAt);
+		// A lost response may be retried with its old expected expiry. Exact same result is safe.
+		if (row.expiresAt.getTime() === expiresAt.getTime())
+			return {
+				entry: { steamId, reason: row.reason, expiresAt: row.expiresAt.toISOString() },
+				changed: false,
+				listId: list.id,
+				entryId: row.id
+			};
+		if (row.expiresAt.getTime() !== expected.getTime()) throw conflict();
+		// Include immutable row identity plus both preconditions even though the row is locked.
+		const [updated] = await tx
+			.update(listEntries)
+			.set({ expiresAt })
+			.where(
+				and(
+					eq(listEntries.id, row.id),
+					eq(listEntries.listId, list.id),
+					eq(listEntries.steamId, steamId),
+					eq(listEntries.reason, marker),
+					eq(listEntries.addedBy, actor.id),
+					eq(listEntries.expiresAt, expected),
+					isNull(listEntries.removedAt)
+				)
+			)
+			.returning({ reason: listEntries.reason, expiresAt: listEntries.expiresAt });
+		if (!updated?.expiresAt) throw conflict();
+		await touch(tx, list.id);
+		return {
+			entry: { steamId, reason: updated.reason, expiresAt: updated.expiresAt.toISOString() },
+			changed: true,
+			listId: list.id,
+			entryId: row.id
+		};
+	});
+	if (result.changed)
+		await writeAudit(env, req, {
+			actor,
+			server: { id: server.id, name: server.name },
+			orgId: org.id,
+			category: 'server',
+			action: 'list.renew',
+			target: steamId,
+			outcome: 'ok',
+			message: 'Extended an attributed EXOTIX server reservation.',
+			detail: {
+				kind: 'reserve',
+				listId: result.listId,
+				entryId: result.entryId,
+				expectedExpiresAt: expected.toISOString(),
+				expiresAt: result.entry.expiresAt
+			}
+		});
+	return { entry: result.entry, changed: result.changed };
+}
+
+/** Withdraws only the exact finite owned row; a lost reply can repeat its tombstone. */
+export async function removeOwnedServerReservation(
+	env: Env,
+	req: Request,
+	actor: SessionUser,
+	server: ServerRow,
+	org: OrgRow,
+	steamIdIn: unknown,
+	body: Record<string, unknown>
+): Promise<{
+	entry: { steamId: string; reason: string; expiresAt: string };
+	removed: true;
+	changed: boolean;
+}> {
+	const steamId = requireSteamId(steamIdIn),
+		marker = body.expectedMarker;
+	if (
+		body.remove !== true ||
+		Object.keys(body).some(
+			(key) => !['expectedMarker', 'expectedExpiresAt', 'remove'].includes(key)
+		) ||
+		typeof marker !== 'string' ||
+		!/^EXOTIX VIP [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(marker)
+	)
+		throw new ApiError(400, 'Owned removal requires exact ownership preconditions.');
+	const expected =
+		typeof body.expectedExpiresAt === 'string' ? new Date(body.expectedExpiresAt) : null;
+	if (
+		!expected ||
+		!Number.isFinite(expected.getTime()) ||
+		expected.toISOString() !== body.expectedExpiresAt
+	)
+		throw new ApiError(400, 'A canonical finite expectedExpiresAt is required.');
+	const conflict = () =>
+		new ApiError(409, 'Reservation ownership or expiry changed.', 'reservation_conflict');
+	const result = await env.db.transaction(async (tx) => {
+		const [list] = await tx
+			.select({ id: lists.id })
+			.from(lists)
+			.innerJoin(serverLists, eq(serverLists.listId, lists.id))
+			.where(
+				and(
+					eq(lists.serverId, server.id),
+					eq(lists.orgId, org.id),
+					eq(lists.kind, 'reserve'),
+					eq(serverLists.serverId, server.id)
+				)
+			)
+			.limit(1)
+			.for('update');
+		if (!list || server.orgId !== org.id) throw conflict();
+		const [row] = await tx
+			.select()
+			.from(listEntries)
+			.where(
+				and(
+					eq(listEntries.listId, list.id),
+					eq(listEntries.steamId, steamId),
+					isNull(listEntries.removedAt)
+				)
+			)
+			.limit(1)
+			.for('update');
+		if (!row) {
+			// Only a matching finite historical row withdrawn by this actor proves this retry.
+			const [removed] = await tx
+				.select()
+				.from(listEntries)
+				.where(
+					and(
+						eq(listEntries.listId, list.id),
+						eq(listEntries.steamId, steamId),
+						eq(listEntries.reason, marker),
+						eq(listEntries.expiresAt, expected),
+						eq(listEntries.removedBy, actor.id),
+						eq(listEntries.removal, 'manual'),
+						sql`${listEntries.removedAt} IS NOT NULL`
+					)
+				)
+				.orderBy(desc(listEntries.removedAt))
+				.limit(1)
+				.for('update');
+			if (!removed) throw conflict();
+			return { changed: false, entryId: removed.id, listId: list.id };
+		}
+		if (
+			row.reason !== marker ||
+			row.addedBy !== actor.id ||
+			!row.expiresAt ||
+			row.expiresAt.getTime() !== expected.getTime()
+		)
+			throw conflict();
+		const [removed] = await tx
+			.update(listEntries)
+			.set({
+				removedAt: new Date(),
+				removedBy: actor.id,
+				removedByName: actor.username,
+				removal: 'manual'
+			})
+			.where(
+				and(
+					eq(listEntries.id, row.id),
+					eq(listEntries.listId, list.id),
+					eq(listEntries.steamId, steamId),
+					eq(listEntries.reason, marker),
+					eq(listEntries.addedBy, actor.id),
+					eq(listEntries.expiresAt, expected),
+					isNull(listEntries.removedAt)
+				)
+			)
+			.returning({ id: listEntries.id });
+		if (!removed) throw conflict();
+		await touch(tx, list.id);
+		return { changed: true, entryId: removed.id, listId: list.id };
+	});
+	if (result.changed)
+		await writeAudit(env, req, {
+			actor,
+			server: { id: server.id, name: server.name },
+			orgId: org.id,
+			category: 'server',
+			action: 'list.owned_remove',
+			target: steamId,
+			outcome: 'ok',
+			message: 'Withdrew an attributed EXOTIX server reservation.',
+			detail: {
+				kind: 'reserve',
+				entryId: result.entryId,
+				listId: result.listId,
+				expectedExpiresAt: expected.toISOString()
+			}
+		});
+	// Repeat sync after a lost reply; no deletion or adoption of a foreign row follows.
+	await gateway().syncServer(env, server, org, 15_000);
+	return {
+		entry: { steamId, reason: marker, expiresAt: expected.toISOString() },
+		removed: true,
+		changed: result.changed
+	};
+}
+
 // ---- import: adopt what servers already hold -----------------------------------------------------
 
 /**
