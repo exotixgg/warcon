@@ -148,6 +148,7 @@ const MATRIX: Record<string, Policy | typeof PER_LIST> = {
 	'PATCH api/servers/[id]/lists/ban/entries/[steamId]': 'cap:bans.manage',
 	'DELETE api/servers/[id]/lists/ban/entries/[steamId]': 'cap:bans.manage',
 	'POST api/servers/[id]/lists/reserve/entries': 'cap:slots.manage',
+	'PATCH api/servers/[id]/lists/reserve/entries/[steamId]': 'cap:slots.manage',
 	'DELETE api/servers/[id]/lists/reserve/entries/[steamId]': 'cap:slots.manage',
 	'POST api/servers/[id]/lists/sync': 'listsHere',
 	'POST api/servers/[id]/test': 'cap:config.apply',
