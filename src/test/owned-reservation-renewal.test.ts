@@ -12,19 +12,17 @@ import { seedWorld, type World } from './world';
 describe.skipIf(!hasTestDb)('owned server reservation renewal', () => {
 	let env: Env;
 	let patch: typeof import('../routes/api/servers/[id]/lists/reserve/entries/[steamId]/+server').PATCH;
+	let remove: typeof import('../routes/api/servers/[id]/lists/reserve/entries/[steamId]/+server').DELETE;
 	const steamId = '76561198000000091';
 	const future = (minutes: number) => new Date(Date.now() + minutes * 60000).toISOString();
 	beforeAll(async () => {
 		env = await testEnv();
 		stubGateway();
-		patch = (
-			await import(
-				join(
-					import.meta.dir,
-					'../routes/api/servers/[id]/lists/reserve/entries/[steamId]/+server.ts'
-				)
-			)
-		).PATCH;
+		const route = await import(
+			join(import.meta.dir, '../routes/api/servers/[id]/lists/reserve/entries/[steamId]/+server.ts')
+		);
+		patch = route.PATCH;
+		remove = route.DELETE;
 	});
 	async function fixture(
 		scope: 'server' | 'org' = 'server',
@@ -63,6 +61,8 @@ describe.skipIf(!hasTestDb)('owned server reservation renewal', () => {
 			});
 		return {
 			id,
+			serverId: world.server.id,
+			owner: world.users.owner,
 			marker,
 			expiresAt,
 			read,
@@ -204,6 +204,29 @@ describe.skipIf(!hasTestDb)('owned server reservation renewal', () => {
 			expiresAt: null
 		});
 		expect((await f.call(body)).status).toBe(409);
+	});
+	test('another creator’s reservation removed by this actor is not an owned-removal retry', async () => {
+		const f = await fixture('server', 'keyAll');
+		const original = await f.read();
+		expect(original.addedBy).not.toBe(f.owner!.id);
+		const deleted = await callApi(remove, f.owner, {
+			method: 'DELETE',
+			params: { id: f.serverId, steamId }
+		});
+		expect(deleted.status).toBe(200);
+		const tombstone = await f.read();
+		expect(tombstone.addedBy).toBe(original.addedBy);
+		expect(tombstone.removedBy).toBe(f.owner!.id);
+		expect(tombstone.removedAt).not.toBeNull();
+		expect(
+			(
+				await f.call(
+					{ expectedMarker: f.marker, expectedExpiresAt: f.expiresAt, remove: true },
+					'owner'
+				)
+			).status
+		).toBe(409);
+		expect(await f.read()).toEqual(tombstone);
 	});
 	test('manual takeover during the last-read/write window prevents owned removal atomically', async () => {
 		const f = await fixture();
