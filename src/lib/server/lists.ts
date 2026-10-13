@@ -1129,6 +1129,7 @@ export async function removeOwnedServerReservation(
 						eq(listEntries.steamId, steamId),
 						eq(listEntries.reason, marker),
 						eq(listEntries.expiresAt, expected),
+						eq(listEntries.addedBy, actor.id),
 						eq(listEntries.removedBy, actor.id),
 						eq(listEntries.removal, 'manual'),
 						sql`${listEntries.removedAt} IS NOT NULL`
