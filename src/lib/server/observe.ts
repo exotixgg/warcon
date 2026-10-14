@@ -8,10 +8,11 @@
 // own: match bookkeeping, ban-list snapshot, org-list sync, Steam warm-up.
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import type { Env } from './env';
-import { publicMessage } from './http';
+import { forLog, publicMessage } from './http';
 import type { OrgRow, ServerRow } from './access';
 import { ACTIONS, readConfig } from './actions';
 import { reservedSlotsHeld } from '../reserved-doc';
+import { restartTimeFromConfig } from '../uptime';
 import { GameError, WardogsClient } from './rcon';
 import { matches, samples, serverLive } from './db/schema';
 import type { DbOrTx } from './db';
@@ -66,7 +67,7 @@ import {
 	writeMatchPlayers,
 	type Tallies
 } from './match-players';
-import { isOwner, LostOwnership, withOwnedTransaction } from './leadership';
+import { isOwner, LostOwnership, ownershipPeriod, withOwnedTransaction } from './leadership';
 import { settings } from './settings';
 import { isWatched } from './interest';
 import { emit } from './events';
@@ -75,6 +76,8 @@ import { observations, observationSeconds } from './metrics';
 import { notifyWatchedJoins } from './webhook-delivery';
 import { nextDue, withHold } from './poller-schedule';
 import { cashByFaction } from '$lib/cash';
+import { keepName } from './live-name-write';
+import type { NameMemory } from './live-name';
 import type { Features, LiveView, Player, Status } from '$lib/types';
 
 export type Tier = LiveView['tier'];
@@ -141,6 +144,8 @@ export interface ServerMemory {
 	startedAt: number;
 	/** the build answered "no such endpoint" to /v1/health; asked again when the identity is re-read */
 	healthUnserved: boolean;
+	/** the Live server name rule's write: its own name, to put back once it is off (live-name.ts) */
+	liveName: NameMemory | null;
 	/** observations completed */
 	count: number;
 }
@@ -151,6 +156,16 @@ export interface Identity {
 	gameServerId: string;
 	/** MaxReservedSlots from the config document; null until read or when the document lacks it */
 	reservedSlots: number | null;
+	/** RestartTimeUtc in the config document as last read ("HH:MM", UTC); null when unset */
+	restartTimeUtcFile: string | null;
+	/**
+	 * RestartTimeUtc the running process started with: the game reads it at its start, so a change
+	 * to the document waits for the next restart. Taken from the first read of the document since
+	 * the process started (restartTimeRead).
+	 */
+	restartTimeUtc: string | null;
+	/** restartTimeUtc has been read for this process start; a restart clears it */
+	restartTimeRead: boolean;
 	features: Features | null;
 	/** when it was last (re)read; 0 asks the next observation to read it */
 	checkedAt: number;
@@ -204,12 +219,16 @@ export function memoryFor(server: ServerRow, org: OrgRow): ServerMemory {
 				build: '',
 				gameServerId: '',
 				reservedSlots: null,
+				restartTimeUtcFile: null,
+				restartTimeUtc: null,
+				restartTimeRead: false,
 				features: null,
 				checkedAt: 0,
 				hydrated: false
 			},
 			startedAt: 0,
 			healthUnserved: false,
+			liveName: null,
 			count: 0
 		};
 		registry.set(server.id, m);
@@ -241,6 +260,8 @@ async function hydrateIdentity(env: Env, m: ServerMemory): Promise<void> {
 				build: serverLive.build,
 				gameServerId: serverLive.gameServerId,
 				reservedSlots: serverLive.reservedSlots,
+				restartTimeUtc: serverLive.restartTimeUtc,
+				restartTimeUtcFile: serverLive.restartTimeUtcFile,
 				startedAt: serverLive.startedAt
 			})
 			.from(serverLive)
@@ -251,6 +272,15 @@ async function hydrateIdentity(env: Env, m: ServerMemory): Promise<void> {
 			if (!m.identity.gameServerId) m.identity.gameServerId = row.gameServerId;
 			if (m.identity.reservedSlots === null) m.identity.reservedSlots = row.reservedSlots;
 			if (!m.startedAt && row.startedAt) m.startedAt = row.startedAt.getTime();
+			// The restart time the last worker found in effect, for the start it wrote with it (a
+			// restart since then is seen by refreshUptime, which asks for a new read). With no
+			// history (both empty: never read, or never set), the first read of the document is
+			// taken as in effect, though it may hold a change made since the process started.
+			if (!m.identity.restartTimeRead && (row.restartTimeUtc || row.restartTimeUtcFile)) {
+				m.identity.restartTimeUtc = row.restartTimeUtc;
+				m.identity.restartTimeUtcFile = row.restartTimeUtcFile;
+				m.identity.restartTimeRead = true;
+			}
 		}
 	} catch (e) {
 		console.warn(`[warcon] identity of ${m.server.name} not read:`, publicMessage(e));
@@ -302,8 +332,15 @@ async function refreshIdentity(client: WardogsClient, m: ServerMemory, now: numb
 	}
 	// How many player slots the server holds back for reserved players lives in its config document
 	// (MaxReservedSlots), which every build serves; the status route only reports the public cap.
+	// So does the game's daily restart time (RestartTimeUtc), which it reads when it starts.
 	try {
-		next.reservedSlots = reservedSlotsHeld((await readConfig(client)).text);
+		const text = (await readConfig(client)).text;
+		next.reservedSlots = reservedSlotsHeld(text);
+		next.restartTimeUtcFile = restartTimeFromConfig(text);
+		if (!next.restartTimeRead) {
+			next.restartTimeUtc = next.restartTimeUtcFile;
+			next.restartTimeRead = true;
+		}
 	} catch (err) {
 		retrySoon();
 		holdFor(m, err);
@@ -315,6 +352,11 @@ async function refreshIdentity(client: WardogsClient, m: ServerMemory, now: numb
 
 /** uptimeSeconds is whole seconds and the read has latency: a start time this close is the same start. */
 const START_DRIFT_MS = 5_000;
+/**
+ * A start this much later than the one on record is a restart (the look's latency through a relay
+ * moves the start by more than the drift above); as SAME_START_MS in trigger-rules.
+ */
+const NEW_START_MS = 60_000;
 
 /**
  * Reads the process uptime and keeps it as a start time. A failure keeps the previous answer
@@ -331,7 +373,14 @@ async function refreshUptime(client: WardogsClient, m: ServerMemory): Promise<vo
 		const up = Number(h?.uptimeSeconds);
 		if (!Number.isFinite(up) || up < 0) return;
 		const startedAt = now - Math.floor(up) * 1000;
-		if (Math.abs(startedAt - m.startedAt) > START_DRIFT_MS) m.startedAt = startedAt;
+		if (Math.abs(startedAt - m.startedAt) <= START_DRIFT_MS) return;
+		// A restart: the process read its config at its start, so read the document again soon,
+		// and take what it says then as the restart time in effect.
+		if (m.startedAt && startedAt - m.startedAt > NEW_START_MS) {
+			m.identity.restartTimeRead = false;
+			m.identity.checkedAt = 0;
+		}
+		m.startedAt = startedAt;
 	} catch (err) {
 		if (err instanceof GameError && err.code === 'no_route') m.healthUnserved = true;
 		else holdFor(m, err);
@@ -440,6 +489,8 @@ const liveKeyOf = (m: ServerMemory) =>
 		m.identity.build,
 		m.identity.gameServerId,
 		m.identity.reservedSlots,
+		m.identity.restartTimeUtc,
+		m.identity.restartTimeUtcFile,
 		m.startedAt,
 		idsOf(m.players)
 	]);
@@ -462,6 +513,8 @@ const poolCheckedAt = new Map<string, number>();
 export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKinds): Promise<void> {
 	const started = Date.now();
 	const ts = new Date(started);
+	// What this look reads is written only in the same period of ownership (leadership.ts).
+	const period = ownershipPeriod();
 	const server = m.server;
 	let client: WardogsClient;
 	let status: Status | null = null;
@@ -473,7 +526,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 		if (kinds.players)
 			players = ((await ACTIONS.players.run(client, {})) as { players: Player[] }).players;
 	} catch (err) {
-		await observationFailed(env, m, ts, started, err);
+		await observationFailed(env, m, ts, started, period, err);
 		observations.inc({ outcome: 'failed' });
 		observationSeconds.observe((Date.now() - started) / 1000);
 		return;
@@ -651,10 +704,17 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 						profiles: risk.profiles,
 						performance: risk.performance,
 						startedAt: m.startedAt,
+						restartTimeUtc: m.identity.restartTimeUtc,
 						matchEnd,
 						recovered: wasOffline,
 						// the lines the match stage will write, for the broadcast's {mvp} and {top}
 						matchLines,
+						// the sessions open after this look: a leaver's, gone past the grace, closes at it
+						// (the map itself follows when the look is written)
+						present: {
+							has: (steamId: string) =>
+								m.presence.open.has(steamId) && !diff.left.some((s) => s.steamId === steamId)
+						},
 						ts
 					},
 					rows
@@ -697,35 +757,41 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	let saved = false;
 	try {
 		if (needWrite)
-			await withOwnedTransaction(env, async (tx) => {
-				if (players && presenceDue)
-					await persistPresence(
-						tx,
-						server.id,
-						m.presence,
-						diff,
-						ts,
-						heartbeatDue,
-						firstVisit,
-						teams
-					);
-				if (ev.intents.length) intents = await enqueueIntents(tx, server.id, ev.intents, watched);
-				if (poolCheck && m.status)
-					poolIntents = await queueObservationPools(
-						tx,
-						server,
-						m.status,
-						joined,
-						factioned,
-						firstVisit,
-						matchEnd,
-						matchLines,
-						ts
-					);
-				if (ev.updates.length) await applyTriggerUpdates(tx, ev.updates);
-				if (liveDue) await writeLive(tx, m, ts);
-				if (sampleDue) await writeSample(tx, m, ts, latencyMs);
-			});
+			await withOwnedTransaction(
+				env,
+				async (tx) => {
+					if (players && presenceDue)
+						await persistPresence(
+							tx,
+							server.id,
+							m.presence,
+							diff,
+							ts,
+							heartbeatDue,
+							firstVisit,
+							teams
+						);
+					if (ev.intents.length) intents = await enqueueIntents(tx, server.id, ev.intents, watched);
+					if (poolCheck && m.status)
+						poolIntents = await queueObservationPools(
+							tx,
+							server,
+							m.status,
+							joined,
+							factioned,
+							firstVisit,
+							matchEnd,
+							matchLines,
+							ts
+						);
+					if (ev.updates.length) await applyTriggerUpdates(tx, ev.updates);
+					if (liveDue) await writeLive(tx, m, ts);
+					if (sampleDue) await writeSample(tx, m, ts, latencyMs);
+				},
+				// A session closing adds to the player's totals: the server's totals lock comes
+				// before the lease row and every other row (totals.ts, leadership.ts).
+				{ totalsOf: players && presenceDue && diff.left.length ? server.id : undefined, period }
+			);
 		if (liveDue) {
 			m.liveKey = liveKey;
 			m.liveWrittenAt = started;
@@ -765,13 +831,23 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	// player the lists want banned here, seen on the list: banned now, not at the sync's retry.
 	if (look)
 		await stage('match', m, () =>
-			withOwnedTransaction(env, (tx) => reconcileMatch(tx, m, ts, look, matchEnd, prevStatusAt))
+			// Lines written or a match ended or abandoned touch the totals, which only reading the
+			// open match tells: the server's totals lock always, before the lease row (totals.ts).
+			withOwnedTransaction(env, (tx) => reconcileMatch(tx, m, ts, look, matchEnd, prevStatusAt), {
+				totalsOf: m.server.id,
+				period
+			})
 		);
 	if (isOwner()) await stage('lists', m, () => keepLists(env, m, client, started, ts));
 	// After the lists, so a ban just placed removes the player at this look, not the next.
 	const seen = players?.map((p) => p.steamId) ?? [];
 	if (isOwner() && seen.length && m.bans.size)
 		await stage('bans', m, () => kickBanned(env, server, m.org, client, seen, m.bans));
+	// The Live server name rule's name, or its own name put back once it is off: nothing for a server
+	// that has never had the rule on.
+	const nameRule = rows.find((r) => r.kind === 'live_name');
+	if (isOwner() && m.status && (nameRule || m.liveName))
+		await stage('name', m, () => keepName(env, m, client, nameRule, started, period));
 	if (diff.joined.length && steamEnabled(env))
 		void getProfiles(
 			env,
@@ -784,6 +860,7 @@ async function observationFailed(
 	m: ServerMemory,
 	ts: Date,
 	started: number,
+	period: number,
 	err: unknown
 ): Promise<void> {
 	if (err instanceof GameError && err.code === 'rate_limited') {
@@ -794,7 +871,7 @@ async function observationFailed(
 		m.error = publicMessage(err, 'Rate limited.').slice(0, 300);
 		m.observedAt = started;
 		try {
-			await withOwnedTransaction(env, (tx) => writeLive(tx, m, ts));
+			await withOwnedTransaction(env, (tx) => writeLive(tx, m, ts), { period });
 			m.liveKey = liveKeyOf(m);
 			m.liveWrittenAt = started;
 		} catch (e) {
@@ -815,47 +892,54 @@ async function observationFailed(
 	const sampleDue = m.failures === 1 || started - m.sampleWrittenAt >= s.sampleMs;
 	let talliesWritten = false;
 	try {
-		await withOwnedTransaction(env, async (tx) => {
-			if (m.failures >= OFFLINE_AFTER_FAILURES) {
-				// Close every open session once; a rollback below reloads the map so this retries.
-				if (!m.presence.loaded)
-					await loadPresence(
-						tx,
-						m.server.id,
-						m.presence,
-						m.status?.scores.map((f) => f.name)
-					);
-				if (m.presence.open.size) await closeAllSessions(tx, m.presence);
-				// Everyone's line of the match as it stood, to the match still open; the tallies end
-				// with the sessions (after the commit, so a rollback keeps them for the retry).
-				if (m.tallies.size) {
-					const [open] = await tx
-						.select({ id: matches.id })
-						.from(matches)
-						.where(and(eq(matches.serverId, m.server.id), isNull(matches.endedAt)))
-						.orderBy(desc(matches.id))
-						.limit(1);
-					if (open)
-						await writeMatchPlayers(
+		const offline = m.failures >= OFFLINE_AFTER_FAILURES;
+		await withOwnedTransaction(
+			env,
+			async (tx) => {
+				if (offline) {
+					// Close every open session once; a rollback below reloads the map so this retries.
+					if (!m.presence.loaded)
+						await loadPresence(
 							tx,
 							m.server.id,
-							open.id,
-							[...m.tallies.values()].map(tallyRow)
+							m.presence,
+							m.status?.scores.map((f) => f.name)
 						);
-					talliesWritten = true;
+					if (m.presence.open.size) await closeAllSessions(tx, m.presence);
+					// Everyone's line of the match as it stood, to the match still open; the tallies end
+					// with the sessions (after the commit, so a rollback keeps them for the retry).
+					if (m.tallies.size) {
+						const [open] = await tx
+							.select({ id: matches.id })
+							.from(matches)
+							.where(and(eq(matches.serverId, m.server.id), isNull(matches.endedAt)))
+							.orderBy(desc(matches.id))
+							.limit(1);
+						if (open)
+							await writeMatchPlayers(
+								tx,
+								m.server.id,
+								open.id,
+								[...m.tallies.values()].map(tallyRow)
+							);
+						talliesWritten = true;
+					}
+					m.lastMatch = null;
 				}
-				m.lastMatch = null;
-			}
-			if (sampleDue)
-				await tx.insert(samples).values({
-					serverId: m.server.id,
-					ts,
-					ok: false,
-					latencyMs: Date.now() - started,
-					error: m.error
-				});
-			if (liveDue) await writeLive(tx, m, ts);
-		});
+				if (sampleDue)
+					await tx.insert(samples).values({
+						serverId: m.server.id,
+						ts,
+						ok: false,
+						latencyMs: Date.now() - started,
+						error: m.error
+					});
+				if (liveDue) await writeLive(tx, m, ts);
+			},
+			// Closing the sessions adds to the totals, and the tallies go to the open match: the
+			// server's totals lock first, before the lease row (totals.ts, leadership.ts).
+			{ totalsOf: offline ? m.server.id : undefined, period }
+		);
 		if (liveDue) {
 			m.liveKey = liveKey;
 			m.liveWrittenAt = started;
@@ -873,12 +957,18 @@ async function observationFailed(
 	emit({ type: 'live', live: liveView(m) });
 }
 
-async function stage(name: string, m: ServerMemory, fn: () => Promise<unknown>): Promise<void> {
+/** One part of the housekeeping after a look: a failure is logged, the next part runs. */
+export async function stage(
+	name: string,
+	m: ServerMemory,
+	fn: () => Promise<unknown>
+): Promise<void> {
 	try {
 		await fn();
 	} catch (err) {
 		if (err instanceof LostOwnership) throw err;
-		console.warn(`[warcon] ${name} ${m.server.name}:`, err instanceof Error ? err.message : err);
+		// a failed query's message lists its parameters (SteamIDs, names, ban reasons)
+		console.warn(`[warcon] ${name} ${m.server.name}:`, forLog(err));
 	}
 }
 
@@ -917,7 +1007,7 @@ async function keepLists(
 	let observed: Observed | undefined;
 	if (started - m.listsAt >= s.listsSnapshotMs) {
 		m.listsAt = started;
-		observed = await liveObserved(client);
+		observed = await liveObserved(client, m.identity.features);
 		m.reserved = new Set(observed.reserved);
 		m.reservedAt = started;
 		await writeSnapshot(env, m.server.id, observed, ts);
@@ -956,6 +1046,8 @@ async function reconcileMatch(
 	prevStatusAt: number
 ): Promise<void> {
 	const serverId = m.server.id;
+	// The caller holds the server's totals lock (writing lines or ending a match touches the
+	// totals), so a purge cannot come in between the read of the match and its writes.
 	const [current] = await db
 		.select({
 			id: matches.id,

@@ -9,6 +9,7 @@
 import { collectDefaultMetrics, Counter, Gauge, Histogram, Registry } from 'prom-client';
 import { buildInfo, type BuildInfo } from './build-info';
 import { timingSafeEqualStr } from './crypto';
+import { forLog } from './http';
 
 export const registry = new Registry();
 collectDefaultMetrics({ register: registry });
@@ -136,6 +137,12 @@ export const feedKills = new Counter({
 	labelNames: ['result'] as const,
 	registers: [registry]
 });
+export const boardReads = new Counter({
+	name: 'warcon_board_reads_total',
+	help: 'Board pages asked for, by what the minute cache did: had it (hit), was reading it (shared) or read it (miss).',
+	labelNames: ['outcome'] as const,
+	registers: [registry]
+});
 export const rateLimited = new Counter({
 	name: 'warcon_rate_limited_total',
 	help: 'Requests refused by the in-memory limiter, by the limit that fired.',
@@ -239,7 +246,7 @@ export async function renderMetrics(): Promise<string> {
 			try {
 				await fn();
 			} catch (err) {
-				console.warn('[warcon] metrics collector:', err instanceof Error ? err.message : err);
+				console.warn('[warcon] metrics collector:', forLog(err));
 			}
 		})
 	);
