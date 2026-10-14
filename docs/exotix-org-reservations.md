@@ -1,0 +1,11 @@
+# Owned EXOTIX organisation reservations
+
+The Platform's automatic priority grants belong on the organisation's default reserved-slot list so existing and future servers receive them. The general organisation editor remains available to operators. Automatic delivery uses the guarded endpoint `/api/orgs/{id}/lists/reserve/entries/{steamId}/owned` and requires the existing organisation reserved-list capability (`lists.reserve`). Server-restricted keys cannot call it.
+
+GET returns only the exact Steam subject's default-list entry, whether the caller created it, membership coverage when enabled, and current server application states. It does not use the general 2,000-entry view to infer absence. POST accepts `expectedMarker` (`EXOTIX VIP {target UUID}`) and canonical finite `expiresAt`; it creates a new row or safely repeats the same caller's exact create. A foreign, operator or permanent row conflicts. Existing metadata is never overwritten.
+
+PATCH requires that marker and canonical finite `expectedExpiresAt`, plus either a finite later `expiresAt` or `remove: true`. The default list and row are locked, and the original creator must be the current caller. Renewal preserves metadata; removal soft-deletes the row and preserves its history. An exact lost-response retry is safe; a replacement, changed expiry, different creator or manual takeover yields `409 reservation_conflict`. Sync is repeatable and uses the existing organisation fan-out.
+
+GET on the existing server reservation entry route returns the exact server-list row even when organisation coverage masks it in the combined list-state view. The Platform uses this only to retire its old owned server reservations after verifying the new organisation target. Existing server CAS APIs remain unchanged. There is no migration or broad import.
+
+Native isolated PostgreSQL tests cover retry/concurrency, permission boundaries, manual takeovers, finite validation, future-server subscription and legacy-row visibility. The full API permission matrix includes all four added method contracts. Local verification does not activate production or prove running-game priority. A game build that uses its config document still takes changes at restart.
