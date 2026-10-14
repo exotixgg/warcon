@@ -1,14 +1,28 @@
 <script lang="ts">
 	import { rconGet, rconPost, errorMessage } from '$lib/api';
-	import { expSetLabel, lightingLabel, mapLabel, zoneLabel } from '$lib/format';
+	import { expLabel, expSetLabel, isMod, lightingLabel, mapLabel, zoneLabel } from '$lib/format';
 	import { can } from '$lib/capabilities';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
-	import { rotationFromText, rotationIntoText, type RotationDoc } from '$lib/rotation-doc';
+	import {
+		mapsInOrder,
+		rotationFromText,
+		rotationIntoText,
+		setModifierOnAll,
+		shuffleFor,
+		type RotationDoc
+	} from '$lib/rotation-doc';
 	import Badge from '$lib/components/Badge.svelte';
 	import MapPicker from '$lib/components/MapPicker.svelte';
 	import MapArt from '$lib/components/MapArt.svelte';
-	import type { ConfigDoc, ConfigResult, MapSelection, Rotation, RotationEntry } from '$lib/types';
+	import type {
+		CatalogItem,
+		ConfigDoc,
+		ConfigResult,
+		MapSelection,
+		Rotation,
+		RotationEntry
+	} from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -17,7 +31,9 @@
 	let matchControl = $derived(can(data.server.caps, 'match.control'));
 	let rotationSave = $derived(can(data.server.caps, 'rotation.save'));
 	let configApply = $derived(can(data.server.caps, 'config.apply'));
+	let automation = $derived(can(data.server.caps, 'automation.manage'));
 	let configHref = $derived(`/server/${encodeURIComponent(id)}/config`);
+	let automationHref = $derived(`/server/${encodeURIComponent(id)}/automation`);
 
 	// Live build CL-499480 serves none of the rotation edit routes. On such a build this tab edits
 	// the rotation section of the config document instead: the same table and buttons, staged
@@ -188,6 +204,74 @@
 		}
 		void act('rotationSettings', { rotationMode: mode }, { after: refresh });
 	}
+	// A modifier (Infantry Only, Hardcore) added to or taken off every staged entry at once. It is
+	// added only to entries whose map offers it, as the game lists them per map.
+	let modifiers = $derived(data.catalog.experiences.filter((x) => isMod(x.id)));
+	let modPick = $state('');
+	let modOnAll = $derived(
+		modifiers.some((m) => m.id === modPick) ? modPick : (modifiers[0]?.id ?? '')
+	);
+	async function setModOnAll(on: boolean) {
+		const mod = modOnAll;
+		if (!mod) return;
+		const offered = new Map<string, boolean>();
+		if (on) {
+			busy = true;
+			try {
+				const maps = [...new Set(staged.entries.map((e) => e.map))];
+				const lists = await Promise.all(
+					maps.map((m) => rconGet<{ experiences: CatalogItem[] }>(id, 'experiences', { map: m }))
+				);
+				maps.forEach((m, i) =>
+					offered.set(
+						m,
+						lists[i].experiences.some((x) => x.id.toLowerCase() === mod.toLowerCase())
+					)
+				);
+			} catch (err) {
+				toast(errorMessage(err), 'err');
+				return;
+			} finally {
+				busy = false;
+			}
+		}
+		const out = setModifierOnAll(staged.entries, mod, on, (m) => !!offered.get(m));
+		staged.entries = out.entries;
+		const label = expLabel(data.catalog, mod);
+		const n = (k: number) => `${k} ${k === 1 ? 'entry' : 'entries'}`;
+		if (!out.changed && !out.skipped) {
+			toast(on ? `Every entry has ${label} already.` : `No entry has ${label}.`);
+			return;
+		}
+		let msg = on ? `${label} added to ${n(out.changed)}.` : `${label} taken off ${n(out.changed)}.`;
+		const one = out.skipped === 1;
+		if (out.skipped)
+			msg += on
+				? ` Not added to ${n(out.skipped)}: ${one ? 'its map does' : 'their maps do'} not offer it.`
+				: ` Left on ${n(out.skipped)}: nothing else is set on ${one ? 'it' : 'them'}.`;
+		toast(msg, out.changed ? 'ok' : 'err');
+	}
+	// The staged entries in a new order: the maps in turn, in the order the rotation first has them,
+	// each map's control zones in turn, starting with the map after the one on and the entry on last
+	// (see shuffleFor). Played in order, so the mode goes to Ordered.
+	function shuffle() {
+		const on = rotation?.entries[rotation.nowIndex] ?? null;
+		staged.entries = shuffleFor(staged.entries, mapsInOrder(staged.entries), on);
+		selected = -1;
+		const twice = staged.entries.filter(
+			(e, i) => i > 0 && e.map.toLowerCase() === staged.entries[i - 1].map.toLowerCase()
+		).length;
+		const was = staged.mode;
+		staged.mode = 'ordered';
+		toast(
+			`Shuffled ${staged.entries.length} entries: ${
+				twice
+					? 'one map has over half of them, so it still comes twice in a row in places'
+					: 'no map plays twice in a row'
+			}.${was === 'random' ? ' Set to Ordered, so the server plays them in this order.' : ''}`,
+			twice ? '' : 'ok'
+		);
+	}
 	function discard() {
 		staged = clone(base);
 		selected = -1;
@@ -276,27 +360,70 @@
 		<div class="field-group">
 			<span class="field-label">Selected entry</span>
 			<div class="join join-stack w-full">
-				<button class="btn" disabled={!canEdit} onclick={() => withSel((i) => move(i, 'up'))}
-					>Move up</button
+				<button
+					class="btn"
+					disabled={!canEdit || busy}
+					onclick={() => withSel((i) => move(i, 'up'))}>Move up</button
 				>
-				<button class="btn" disabled={!canEdit} onclick={() => withSel((i) => move(i, 'down'))}
-					>Move down</button
+				<button
+					class="btn"
+					disabled={!canEdit || busy}
+					onclick={() => withSel((i) => move(i, 'down'))}>Move down</button
 				>
 				{#if !viaDoc}
 					<button
 						class="btn"
-						disabled={!matchControl}
+						disabled={!matchControl || !data.features.rotationEdit}
+						title={data.features.rotationEdit
+							? ''
+							: 'This server build serves no rotation edit routes, so a next map cannot be queued.'}
 						onclick={() =>
 							withSel((i) => act('setNextMap', entryToSelection(rows[i]), { after: refresh }))}
 						>Play next</button
 					>
 				{/if}
-				<button class="btn btn-danger" disabled={!canEdit} onclick={() => withSel(remove)}
+				<button class="btn btn-danger" disabled={!canEdit || busy} onclick={() => withSel(remove)}
 					>Remove</button
 				>
 			</div>
 		</div>
+		{#if viaDoc && modifiers.length}
+			<div class="field-group">
+				<span class="field-label">Every entry</span>
+				<div class="join join-wrap w-full">
+					<select
+						class="input sm:w-40"
+						value={modOnAll}
+						disabled={!canEdit || busy}
+						onchange={(e) => (modPick = e.currentTarget.value)}
+					>
+						{#each modifiers as m (m.id)}<option value={m.id}>{expLabel(data.catalog, m.id)}</option
+							>{/each}
+					</select>
+					<button
+						class="btn"
+						disabled={!canEdit || busy || !rows.length}
+						onclick={() => setModOnAll(true)}>Add</button
+					>
+					<button
+						class="btn"
+						disabled={!canEdit || busy || !rows.length}
+						onclick={() => setModOnAll(false)}>Remove</button
+					>
+				</div>
+			</div>
+		{/if}
 		{#if viaDoc}
+			<div class="field-group">
+				<span class="field-label">Order</span>
+				<div class="join w-full">
+					<button
+						class="btn w-full"
+						disabled={!canEdit || busy || rows.length < 2}
+						onclick={shuffle}>Shuffle</button
+					>
+				</div>
+			</div>
 			<div class="join join-stack w-full sm:ml-auto sm:w-auto">
 				<button class="btn" disabled={!dirty || busy} onclick={discard}>Discard</button>
 				<button class="btn btn-primary" disabled={!dirty || !canApply || busy} onclick={applyDoc}
@@ -367,12 +494,21 @@
 			config so a restart keeps them (needs the server launched with -StandaloneConfig).
 		{/if}
 	</p>
+	{#if viaDoc && canApply}
+		<p class="note">
+			Shuffle deals the maps out in turn, so the same map never plays twice in a row.
+			{#if automation}For a new order every day, add a
+				<a class="link" href={automationHref}>Rotation shuffle</a> rule on the Automation tab.{/if}
+		</p>
+	{/if}
 </div>
 
 <div class="mt-4 panel">
 	<span class="label-sm">Add rotation entry</span>
 	<MapPicker bind:this={picker} serverId={id} catalog={data.catalog} disabled={!canEdit} />
 	<div class="mt-4">
-		<button class="btn btn-primary" disabled={!canEdit} onclick={add}>Add to rotation</button>
+		<button class="btn btn-primary" disabled={!canEdit || busy} onclick={add}
+			>Add to rotation</button
+		>
 	</div>
 </div>

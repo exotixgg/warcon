@@ -1,11 +1,14 @@
 // The Kill distance rule's pure part: which kills it counts (one of the chosen weapons, from at
 // least a distance), how many of them in one match catch a player, and what it keeps per player. A
 // defibrillator or a fist reaches a few metres; the same kill from across the map is a player the
-// game did not stop. Kills are counted per match, as the Team kill limit counts them, rather than
-// within minutes: the feed gives no kill a time the panel can trust across batches (a batch the
-// game sends again arrives late, with only the match clock), and a match is what the game itself
-// numbers. No database, no game server; the live path (feed-events.ts) and the dry run
-// (triggers.ts) run the same step.
+// game did not stop. From 0 m it counts every kill with the weapons, so a server can act on each
+// kill with a weapon or a vehicle it does not allow. Kills are counted per match, as the Team kill
+// limit counts them, rather than within minutes: the feed gives no kill a time the panel can trust
+// across batches (a batch the game sends again arrives late, with only the match clock), and a
+// match is what the game itself numbers. A kill that comes just after the killer's own death is not
+// counted: the player is dead, and the game credits a vehicle's shell that lands after the vehicle
+// was destroyed to the gunner's own weapon. No database, no game server; the live path
+// (feed-events.ts) and the dry run (triggers.ts) run the same step.
 import { ApiError, int, str } from './http';
 import { causeTags } from './cause-tags';
 import { settingsFingerprint } from './fingerprint';
@@ -14,13 +17,21 @@ import type { BanScope } from './rule-ban';
 
 /** The outbox action of a Kill distance flag: a panel action, nothing is sent to the game. */
 export const KILL_DISTANCE_FLAG = 'kill_distance_flag';
+/**
+ * The outbox action that notes a kill a rule left out because it came just after the killer's own
+ * death (killsAfterDeath): a panel action whose audit row is the whole delivery, kept off Discord.
+ */
+export const KILL_DISTANCE_SKIP = 'kill_distance_skip';
 
-export type KillDistanceAction = 'flag' | 'kick' | 'ban';
+export type KillDistanceAction = 'flag' | 'warn' | 'kill' | 'kick' | 'ban';
 
 export interface KillDistanceConfig {
-	/** the weapons, as the kill feed tags them (`Id.Item.Defibrillator.Standard`); matched in any case */
+	/**
+	 * the weapons, their own or a vehicle's, or the vehicles, as the kill feed tags them
+	 * (`Id.Item.Defibrillator.Standard`); matched in any case
+	 */
 	causes: string[];
-	/** a kill counts from this far, in metres */
+	/** a kill counts from this far, in metres; from 0 every kill does, one without a distance too */
 	minDistanceM: number;
 	/** this many counted kills in one match catch a player */
 	count: number;
@@ -28,9 +39,9 @@ export interface KillDistanceConfig {
 	/** how long a ban lasts; 0 is for good */
 	banDays: number;
 	banScope: BanScope;
-	/** the kick reason, or the ban's: {name} {weapon} {distance} {count} {server} */
+	/** what the player is told: the warning whispered (with a kill too), or the kick or ban reason */
 	reason: string;
-	/** a flagged player is not flagged again by the rule for this long */
+	/** a flagged or warned player is not flagged or warned again by the rule for this long */
 	cooldownMinutes: number;
 }
 
@@ -41,7 +52,7 @@ export interface KillDistanceConfig {
  */
 export const killDistanceAction = (c: unknown): KillDistanceAction => {
 	const a = c && typeof c === 'object' ? (c as Record<string, unknown>).action : undefined;
-	return a === 'kick' || a === 'ban' ? a : 'flag';
+	return a === 'warn' || a === 'kill' || a === 'kick' || a === 'ban' ? a : 'flag';
 };
 /** Which list a rule's ban goes on: the organisation's only when asked for by name. */
 export const killDistanceBanScope = (c: unknown): BanScope =>
@@ -52,14 +63,20 @@ export const killDistanceBanScope = (c: unknown): BanScope =>
 export function validateKillDistance(c: Record<string, unknown>): KillDistanceConfig {
 	const causes = causeTags(c.causes, 'weapon', 'Id.Item.Defibrillator.Standard');
 	if (!causes.length) throw new ApiError(400, 'Pick at least one weapon.');
+	const action = killDistanceAction(c);
 	return {
 		causes,
-		minDistanceM: int(c.minDistanceM, 100, 1, 20_000),
+		minDistanceM: int(c.minDistanceM, 100, 0, 20_000),
 		count: int(c.count, 2, 1, 100),
-		action: killDistanceAction(c),
+		action,
 		banDays: int(c.banDays, 0, 0, 3650),
 		banScope: killDistanceBanScope(c),
-		reason: str(c.reason, 200) || 'Impossible kill: {weapon} from {distance} m.',
+		// a text left blank: a warning (with a kill or not) says what is not allowed, a kick or ban why
+		reason:
+			str(c.reason, 200) ||
+			(action === 'warn' || action === 'kill'
+				? '{weapon} is not allowed on this server.'
+				: 'Impossible kill: {weapon} from {distance} m.'),
 		cooldownMinutes: int(c.cooldownMinutes, 30, 1, 24 * 60)
 	};
 }
@@ -80,12 +97,17 @@ function causeSet(cfg: KillDistanceConfig): Set<string> {
 	return set;
 }
 
-/** A kill the rule counts: a player's, not a suicide, with one of its weapons, from at least its distance. */
+/**
+ * A kill the rule counts: a player's, not a suicide, not one made just after the killer's own death
+ * (killsAfterDeath), with one of its weapons, from at least its distance. From 0 m a kill the feed
+ * sends without a distance counts too: a vehicle blown up with its crew inside, a roadkill.
+ */
 export function countsForDistance(
 	cfg: KillDistanceConfig,
 	k: {
 		killer: string | null | undefined;
 		suicide: boolean;
+		afterOwnDeath: boolean;
 		cause: string | null;
 		distanceM: number | null;
 	}
@@ -93,11 +115,90 @@ export function countsForDistance(
 	return (
 		!!k.killer &&
 		!k.suicide &&
-		typeof k.distanceM === 'number' &&
-		k.distanceM >= cfg.minDistanceM &&
+		!k.afterOwnDeath &&
+		(cfg.minDistanceM <= 0 ||
+			(typeof k.distanceM === 'number' && k.distanceM >= cfg.minDistanceM)) &&
 		!!k.cause &&
 		causeSet(cfg).has(k.cause.toLowerCase())
 	);
+}
+
+/**
+ * How long after a player's own death a kill the feed credits to them is not counted, in seconds of
+ * the match clock. A dead player is not firing: the kill is a round or a charge already on its way,
+ * and its cause cannot be trusted. A vehicle's shell that lands after the vehicle was destroyed
+ * comes credited to the gunner's own weapon, from wherever the gunner is by then (an M4 kill from
+ * 2,300 m). On the hosted feed every such kill came within 35 s of the death.
+ */
+export const AFTER_DEATH_S = 60;
+/** How long a death is kept on the panel's clock: past the window, with room for a late batch. */
+const DEATH_KEPT_MS = 2 * AFTER_DEATH_S * 1000;
+
+/** Each player's last death the feed told of: on the match clock (s), and when it came in (ms). */
+export type LastDeaths = Map<string, { clock: number; at: number }>;
+
+export interface FeedDeath {
+	eventId: string;
+	/** seconds on the match clock */
+	eventTime: number;
+	killer: string | null | undefined;
+	victim: string;
+}
+
+/**
+ * Takes in a batch of kills that came in at `at` (ms), in the order the game played them: notes
+ * each victim's death, and returns the kills made within AFTER_DEATH_S after the killer's own last
+ * death, by event id, with how many seconds after it. Two players who kill each other at the same
+ * instant both count. The match clock starts again at a new match, so a death later on it than the
+ * kill is not the one before it.
+ */
+export function killsAfterDeath(
+	deaths: LastDeaths,
+	inOrder: FeedDeath[],
+	at: number
+): Map<string, number> {
+	for (const [steamId, d] of deaths) if (at - d.at > DEATH_KEPT_MS) deaths.delete(steamId);
+	const out = new Map<string, number>();
+	for (const k of inOrder) {
+		const d = k.killer ? deaths.get(k.killer) : undefined;
+		if (d && k.eventTime > d.clock && k.eventTime - d.clock <= AFTER_DEATH_S)
+			out.set(k.eventId, k.eventTime - d.clock);
+		deaths.set(k.victim, { clock: k.eventTime, at });
+	}
+	return out;
+}
+
+/**
+ * What the audit trail says of a kill a rule left out because it came just after the killer's own
+ * death: the kill, by whom, and how long after they died.
+ */
+export function notCountedMessage(
+	name: string,
+	cause: string | null,
+	distanceM: number | null,
+	afterS: number
+): string {
+	const what =
+		distanceM === null
+			? `${causeLabel(cause)} kill`
+			: `${causeLabel(cause)} kill from ${Math.round(distanceM)} m`;
+	return `Not counted: ${what} by ${name}, ${afterS.toFixed(1)} s after they died`;
+}
+
+/**
+ * killsAfterDeath over a window, batch by batch: `events` in the order they came in (`at`, then
+ * the match clock), the kills of one batch sharing their `at`.
+ */
+export function killsAfterDeathReplay(events: (FeedDeath & { at: number })[]): Set<string> {
+	const deaths: LastDeaths = new Map();
+	const out = new Set<string>();
+	for (let i = 0; i < events.length;) {
+		let j = i;
+		while (j < events.length && events[j].at === events[i].at) j++;
+		for (const id of killsAfterDeath(deaths, events.slice(i, j), events[i].at).keys()) out.add(id);
+		i = j;
+	}
+	return out;
 }
 
 /**
@@ -115,14 +216,15 @@ export interface DistanceTrack {
 export type DistanceTracks = Map<string, DistanceTrack>;
 
 /**
- * How long a kick or a ban leaves the player alone: the time a kick takes to land (a second one
- * right behind it would find them gone). One who is back and does it again after that is acted on
- * at their next such kill.
+ * How long a kill, a kick or a ban leaves the player alone: the time a kick takes to land (a second
+ * one right behind it would find them gone), and long enough that a kill is not sent twice for one
+ * burst (a roadkill of three, a batch the game held back), which would land the second on them
+ * after they respawn. One who does it again after that is acted on at their next such kill.
  */
 export const ACT_AGAIN_MS = 60_000;
 
 const holdMs = (cfg: KillDistanceConfig): number =>
-	cfg.action === 'flag' ? cfg.cooldownMinutes * 60_000 : ACT_AGAIN_MS;
+	cfg.action === 'flag' || cfg.action === 'warn' ? cfg.cooldownMinutes * 60_000 : ACT_AGAIN_MS;
 
 /**
  * Counts one more kill of the player's in the match, taken in at `now` (ms, the panel's clock),
@@ -148,14 +250,20 @@ export function killDistanceStep(
 	return t.count;
 }
 
-/** What caught the player, in words: the kill, and how many this match when more than one was asked for. */
+/**
+ * What caught the player, in words: the kill, from how far when the feed said, and how many this
+ * match when more than one was asked for.
+ */
 export function killDistanceVerdict(
 	cfg: KillDistanceConfig,
 	cause: string | null,
-	distanceM: number,
+	distanceM: number | null,
 	count: number
 ): string {
-	const what = `${causeLabel(cause)} kill from ${Math.round(distanceM)} m`;
+	const what =
+		distanceM === null
+			? `${causeLabel(cause)} kill`
+			: `${causeLabel(cause)} kill from ${Math.round(distanceM)} m`;
 	return cfg.count > 1 ? `${what} (${count} this match)` : what;
 }
 
@@ -167,7 +275,7 @@ export interface DistanceKill {
 	steamId: string;
 	name: string;
 	cause: string | null;
-	distanceM: number;
+	distanceM: number | null;
 }
 
 /**

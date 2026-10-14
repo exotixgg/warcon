@@ -9,12 +9,16 @@
 //   team_kill    whisper or kick a player over team kills the kill feed reports (feed-events.ts)
 //   kill_rate    flag a player whose kills in a short window are too many or too many headshots
 //                (kill-rate.ts, acted on in feed-events.ts)
+//   name_change  flag or kick a player the kill feed shows under a name not the one the server lists
+//                them under, or under another listed player's (name-change.ts, acted on in
+//                feed-events.ts)
 //   seed_reward  hand players who stay through a low population a reserved slot, on this server
 //                or across the org
 //   two_teams    close one faction and move its players to the smaller of the other two
 //                (two-teams.ts)
-//   kill_distance  flag, kick or ban a player who kills with a chosen weapon from further than it
-//                reaches (kill-distance.ts, acted on in feed-events.ts)
+//   kill_distance  flag, warn, kill, kick or ban a player who kills with a chosen weapon or
+//                vehicle, from further than it reaches or from any distance (kill-distance.ts,
+//                acted on in feed-events.ts)
 //   afk_protection  kill everyone every few minutes while the server seeds, so the game's idle kick
 //                spares the seeders (afk-protection.ts)
 // The worker evaluates them on every observation and writes the actions they want to the outbox
@@ -22,9 +26,21 @@
 // run replays the last 24 hours from the samples and sessions tables so a rule can be checked
 // before it touches anyone.
 import { randomUUID } from 'node:crypto';
-import { and, asc, desc, eq, gte, inArray, isNotNull, or, sql, type SQL } from 'drizzle-orm';
+import {
+	and,
+	asc,
+	desc,
+	eq,
+	gte,
+	inArray,
+	isNotNull,
+	isNull,
+	or,
+	sql,
+	type SQL
+} from 'drizzle-orm';
 import type { Env } from './env';
-import { ApiError, int, newId, str } from './http';
+import { ApiError, forLog, int, newId, str } from './http';
 import { writeAudit } from './audit';
 import { emit } from './events';
 import {
@@ -45,6 +61,7 @@ import { gateway } from './gateway';
 import type { SessionUser } from './access';
 import type { ServerAccess } from './access-resolve';
 import { CAPABILITY_INFO, type Capability } from '$lib/capabilities';
+import { ONE_PER_SERVER } from '$lib/rule-kinds';
 import type { DryRunResult, Player, Status, TriggerKind, TriggerView } from '$lib/types';
 import {
 	broadcastWanted,
@@ -86,7 +103,17 @@ import {
 	type WelcomeConfig
 } from './trigger-rules';
 import { MAX_CHAT } from '$lib/chat';
+import { notifyBounty, type BountyCard } from './webhook-delivery';
 import { NAME_FLAG, nameFilterTargets, nameVerdict, type NameFilterConfig } from './name-filter';
+import {
+	nameChangeSettingsKey,
+	nameChangeStep,
+	pruneNameTracks,
+	sessionSweep,
+	type NameChangeConfig,
+	type NameReading,
+	type NameTracks
+} from './name-change';
 import {
 	countsForRate,
 	killRateReplay,
@@ -102,12 +129,14 @@ import {
 	killDistanceReplay,
 	killDistanceSettingsKey,
 	killDistanceVerdict,
+	killsAfterDeathReplay,
 	matchKey,
 	type DistanceKill,
 	type KillDistanceConfig
 } from './kill-distance';
 import { banNeeds, PANEL_BAN, type PanelBanParams } from './rule-ban';
-import { causeLabel } from '$lib/causes';
+import { RULE_KILL, RULE_KILL_NEEDS, type RuleKillParams } from './rule-kill';
+import { causeLabel, isVehicleCrash, notCountedLabel, VEHICLE_CRASH } from '$lib/causes';
 import {
 	emptyTwoTeamsState,
 	teamName,
@@ -131,17 +160,67 @@ import {
 	afkStep,
 	type AfkProtectionConfig
 } from './afk-protection';
-import { fmtUptime, RESTART_AFTER_HOURS, restartWindow } from '$lib/uptime';
-import { DEFAULT_SCORE_CAP, scoreCapOf } from '$lib/match';
+import {
+	BOUNTY_LAPSE,
+	bountyReplay,
+	bountyReward,
+	bountyScope,
+	bountyState,
+	bountyTrack,
+	forgetBounties,
+	lapseWords,
+	rewardWords,
+	savedBounty,
+	bountyVersion,
+	type BountyConfig,
+	type BountyKill,
+	type BountyLapse,
+	type BountyReplayEvent,
+	type OpenBounty
+} from './bounty';
+import {
+	describeRestartSchedule,
+	fmtUptime,
+	restartScheduleOf,
+	restartWindow,
+	type RestartSchedule
+} from '$lib/uptime';
+import {
+	ROTATION_SHUFFLE,
+	rotationShuffleState,
+	shuffleStep,
+	type RotationShuffleConfig,
+	type ShuffleWhen
+} from './rotation-shuffle';
+import { DEFAULT_SCORE_CAP } from '$lib/match';
+import { liveName, type LiveNameConfig } from '$lib/live-name';
+import { liveNameState } from './live-name';
+import { mapName } from '$lib/format';
+import { statsIn, usesStats } from '$lib/placeholders';
 import { settings } from './settings';
-import { riskPerformanceFor } from './leaderboards';
+import { playerStats, riskPerformanceFor } from './leaderboards';
 import type { RiskPerformance } from './risk';
+import {
+	dryRunVars,
+	keptVars,
+	messageVars,
+	NO_STATS,
+	serverVars,
+	UNKNOWN,
+	type MessageVars,
+	type PlayerStats,
+	type StatsBy
+} from './message-vars';
 
 export * from './trigger-rules';
 
 const WINDOW_MS = 24 * 3600_000;
 /** The most kills one Kill rate dry run reads, whatever the server did that day. */
 const KILL_RATE_REPLAY_MAX = 200_000;
+/** The most kills one Name change dry run reads names from. */
+const NAME_CHANGE_REPLAY_MAX = 200_000;
+/** The most sessions it reads the listed names from (a busy server has a couple of thousand a day). */
+const NAME_SESSIONS_MAX = 20_000;
 
 // ---- records ------------------------------------------------------------------------------------
 
@@ -155,8 +234,27 @@ const shape = (t: TriggerRow): TriggerView => ({
 	lastResult: t.lastResult,
 	fireCount: t.fireCount,
 	createdAt: t.createdAt ? t.createdAt.toISOString() : null,
-	...(t.kind === 'afk_protection' ? { phase: afkPhase(t.state) } : {})
+	...(t.kind === 'afk_protection' ? { phase: afkPhase(t.state) } : {}),
+	...(t.kind === 'bounty' ? { bounty: openBounty(t) } : {}),
+	...(t.kind === 'live_name' ? { liveName: lastName(t.state) } : {})
 });
+
+/** A Live server name rule's last write and latest refusal, as its row shows them. */
+function lastName(state: unknown): TriggerView['liveName'] {
+	const s = liveNameState(state);
+	const iso = (ms: number) => (ms ? new Date(ms).toISOString() : null);
+	return s
+		? { name: s.name, at: iso(s.at), refused: s.refused, since: iso(s.since), restored: s.restored }
+		: null;
+}
+
+/** A Bounty rule's open bounty, as its row shows it: the one its last save holds, if any. */
+function openBounty(t: TriggerRow): TriggerView['bounty'] {
+	const b = savedBounty(t.state, bountyVersion(t));
+	return b
+		? { steamId: b.steamId, name: b.name, streak: b.streak, setAt: new Date(b.setAt).toISOString() }
+		: null;
+}
 
 /** Where an AFK protection rule stands, as its row shows it; null until the worker has looked. */
 function afkPhase(state: unknown): TriggerView['phase'] {
@@ -189,7 +287,7 @@ async function triggerOf(env: Env, serverId: string, id: string): Promise<Trigge
  * need to do the same by hand: a rule that kicks needs Kick, not only Automation.
  */
 const RULE_NEEDS: Record<
-	Exclude<TriggerKind, 'seed_reward' | 'kill_distance'>,
+	Exclude<TriggerKind, 'seed_reward' | 'kill_distance' | 'bounty'>,
 	[Capability, string]
 > = {
 	welcome: ['chat.send', 'messages players'],
@@ -204,22 +302,38 @@ const RULE_NEEDS: Record<
 	team_kill: ['players.kick', 'kicks players'],
 	kill_rate: ['players.kick', 'flags players'],
 	two_teams: ['players.move', 'moves players between teams'],
-	afk_protection: ['players.kill', 'kills players']
+	afk_protection: ['players.kill', 'kills players'],
+	name_change: ['players.kick', 'flags or kicks players'],
+	rotation_shuffle: ['config.apply', 'rewrites the rotation in the config document'],
+	live_name: ['config.apply', 'writes the server name in the config document']
+};
+
+/** What a reserved slot a rule hands out needs: one here, or on the organisation's list. */
+const SLOT_NEEDS: Record<'server' | 'org', [Capability, string]> = {
+	org: ['lists.reserve', "edits the organisation's reserved-slot list"],
+	server: ['slots.manage', 'reserves slots on this server']
 };
 
 /**
  * What one rule needs of whoever saves it. The Seeding reward reserves slots: here, or on the
- * organisation's list. A Kill distance rule flags, kicks, or bans: here, or on the organisation's
- * ban list.
+ * organisation's list. A Kill distance rule flags, warns, kills (and whispers), kicks, or bans:
+ * here, or on the organisation's ban list. A Bounty broadcasts, and reserves the claimer a slot when
+ * it has a reward.
  */
 export function ruleNeeds(kind: TriggerKind, config: unknown): [Capability, string] {
 	if (kind === 'seed_reward')
-		return (config as Partial<SeedRewardConfig> | null)?.scope !== 'server'
-			? ['lists.reserve', "edits the organisation's reserved-slot list"]
-			: ['slots.manage', 'reserves slots on this server'];
+		return SLOT_NEEDS[
+			(config as Partial<SeedRewardConfig> | null)?.scope !== 'server' ? 'org' : 'server'
+		];
+	if (kind === 'bounty')
+		return bountyReward(config) === 'slot'
+			? SLOT_NEEDS[bountyScope(config)]
+			: ['chat.send', 'messages players'];
 	if (kind === 'kill_distance') {
 		const action = killDistanceAction(config);
 		if (action === 'ban') return banNeeds(killDistanceBanScope(config));
+		if (action === 'warn') return ['chat.send', 'whispers players'];
+		if (action === 'kill') return RULE_KILL_NEEDS[0];
 		return ['players.kick', action === 'kick' ? 'kicks players' : 'flags players'];
 	}
 	return RULE_NEEDS[kind];
@@ -227,9 +341,12 @@ export function ruleNeeds(kind: TriggerKind, config: unknown): [Capability, stri
 
 /**
  * What else a rule needs when it also messages players: a Team balance rule with a whisper, an AFK
- * protection rule with a broadcast.
+ * protection rule with a broadcast, a Kill distance rule's kill with its whisper.
  */
 function ruleAlsoNeeds(kind: TriggerKind, config: unknown): [Capability, string] | null {
+	if (kind === 'kill_distance' && killDistanceAction(config) === 'kill') return RULE_KILL_NEEDS[1];
+	if (kind === 'bounty' && bountyReward(config) === 'slot')
+		return ['chat.send', 'messages players'];
 	if (kind === 'two_teams' && str((config as Partial<TwoTeamsConfig> | null)?.message))
 		return ['chat.send', 'whispers players'];
 	const afk = config as Partial<AfkProtectionConfig> | null;
@@ -269,11 +386,9 @@ export async function createTrigger(
 	requireRuleCaps(kind, config, server, access);
 	const name = str(body.name, 60) || TRIGGER_LABELS[kind];
 	const row = await env.db.transaction(async (tx) => {
-		// Seed time is one count per server, taken against one threshold, so one rule holds it. Two
-		// Team balance rules would move a player back and forth, killing them at every move; two AFK
-		// protection rules would kill everyone twice a round. Saves to one server take turns, so two at
-		// once cannot both find none.
-		if (kind === 'seed_reward' || kind === 'two_teams' || kind === 'afk_protection') {
+		// One rule of these kinds per server ($lib/rule-kinds says why). Saves to one server take turns,
+		// so two at once cannot both find none.
+		if (ONE_PER_SERVER.includes(kind)) {
 			await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`triggers:${server.id}`}))`);
 			const [other] = await tx
 				.select({ name: triggers.name })
@@ -332,6 +447,11 @@ export async function updateTrigger(
 	if (body.config !== undefined) set.config = validateConfig(row.kind, body.config);
 	if (row.kind === 'ping_kick' && (body.config !== undefined || body.enabled !== undefined))
 		set.state = null;
+	// Any save of a Bounty rule calls off its open bounty: the worker starts it over (bounty.ts).
+	if (row.kind === 'bounty') set.state = null;
+	// A Rotation shuffle rule's settings saved (its order may have changed): it shuffles once more,
+	// as it does when switched on again (below).
+	if (row.kind === 'rotation_shuffle' && body.config !== undefined) set.state = null;
 	// Switched on again, a Team balance rule starts over in the worker (its memory is keyed on this):
 	// who switched sides while it was off is unknown, so whoever is on then counts as placed. Whether
 	// it was off is the row's at the write, not the read above, so a switch-off landing between them
@@ -342,7 +462,9 @@ export async function updateTrigger(
 	const switchOn =
 		row.kind === 'two_teams' && set.enabled === true
 			? sql`CASE WHEN ${triggers.enabled} THEN ${triggers.state} ELSE (${JSON.stringify({ enabledAt: Date.now() })}::text)::jsonb END`
-			: row.kind === 'afk_protection' && set.enabled === true
+			: (row.kind === 'afk_protection' ||
+						(row.kind === 'rotation_shuffle' && set.state === undefined)) &&
+				  set.enabled === true
 				? sql`CASE WHEN ${triggers.enabled} THEN ${triggers.state} ELSE NULL END`
 				: undefined;
 	requireRuleCaps(row.kind, set.config ?? row.config, server, access);
@@ -375,14 +497,22 @@ export async function updateTrigger(
 	return shape(updated);
 }
 
+/**
+ * Kinds whose deletion acts on the server: a Live server name rule's own name is written back to the
+ * config document, so deleting one needs what switching it off does.
+ */
+const ACTS_WHEN_DELETED: TriggerKind[] = ['live_name'];
+
 export async function deleteTrigger(
 	env: Env,
 	req: Request,
 	user: SessionUser,
 	server: ServerRow,
+	access: ServerAccess,
 	id: string
 ): Promise<void> {
 	const row = await triggerOf(env, server.id, id);
+	if (ACTS_WHEN_DELETED.includes(row.kind)) requireRuleCaps(row.kind, row.config, server, access);
 	await env.db.delete(triggers).where(eq(triggers.id, row.id));
 	if (SETTINGS_KEYS[row.kind])
 		await dropQueued(env, row.id, 'The rule was deleted before this was sent.');
@@ -405,12 +535,13 @@ export async function deleteTrigger(
  * delivery): a Team balance move decided under the old closed faction or gap could take a player
  * to the wrong side, and a Kill distance kick or ban decided under settings an admin has just corrected, or by
  * a rule just switched off, is not to be sent; nor is an AFK protection round once the rule is off,
- * which is how it is stopped in a hurry.
+ * which is how it is stopped in a hurry, nor a Name change flag or kick.
  */
 export const SETTINGS_KEYS: Partial<Record<string, (config: unknown) => string>> = {
 	two_teams: (c) => twoTeamsSettingsKey(c as TwoTeamsConfig),
 	kill_distance: (c) => killDistanceSettingsKey(c as KillDistanceConfig),
-	afk_protection: (c) => afkSettingsKey(c as AfkProtectionConfig)
+	afk_protection: (c) => afkSettingsKey(c as AfkProtectionConfig),
+	name_change: (c) => nameChangeSettingsKey(c as NameChangeConfig)
 };
 
 /**
@@ -421,7 +552,8 @@ async function dropQueued(env: Env, triggerId: string, why: string): Promise<voi
 	const dropped = await env.db
 		.update(outbox)
 		.set({ state: 'skipped', outcome: why, doneAt: new Date() })
-		.where(and(eq(outbox.triggerId, triggerId), eq(outbox.state, 'pending')))
+		// 'pending' as text: outbox_pending_idx holds only open rows, which a bound value does not prove
+		.where(and(eq(outbox.triggerId, triggerId), sql`${outbox.state} = 'pending'`))
 		.returning({ id: outbox.id, serverId: outbox.serverId });
 	for (const r of dropped)
 		emit({ type: 'outbox', serverId: r.serverId, id: r.id, state: 'skipped' });
@@ -466,6 +598,8 @@ export interface TickContext {
 	performance: Map<string, RiskPerformance>;
 	/** when the game process started (ms), from GET /v1/health; 0 while unknown */
 	startedAt: number;
+	/** RestartTimeUtc the process started with ("HH:MM", UTC); null or absent when unset */
+	restartTimeUtc?: string | null;
 	/** the match that ended between the previous look and this one, or null */
 	matchEnd: MatchEnd | null;
 	/** the first look after the server was out of reach: what happened meanwhile is unknown (a match
@@ -473,6 +607,9 @@ export interface TickContext {
 	recovered?: boolean;
 	/** at a boundary, every player's line of the match that ended, from the worker's tallies */
 	matchLines: MatchLineVars[];
+	/** the players with an open session: on, or gone for less than the leave grace; absent, nobody
+	 *  is known to have left */
+	present?: { has(steamId: string): boolean };
 	ts: Date;
 }
 
@@ -506,15 +643,94 @@ export interface Evaluation {
 	afterCommit?: (() => void)[];
 }
 
-const vars = (ctx: TickContext, p?: Player, previous = '') => ({
-	name: p?.name ?? '',
-	faction: p?.faction ?? '',
-	previous,
-	server: ctx.status.serverName || ctx.server.name,
-	map: ctx.status.map,
-	players: ctx.status.playerCount,
-	max: ctx.status.maxPlayers,
-	cap: scoreCapOf(ctx.status)
+/**
+ * Everything a message on this look fills ($lib/placeholders): the server's, the player's when it
+ * is to or about one (with their stats, when read), and what the rule decided (`own`).
+ */
+const vars = (
+	ctx: TickContext,
+	p?: Player | null,
+	stats: StatsBy = {},
+	own: MessageVars = {}
+): MessageVars =>
+	messageVars(
+		serverVars({
+			name: ctx.server.name,
+			status: ctx.status,
+			startedAt: ctx.startedAt,
+			now: ctx.ts.getTime()
+		}),
+		p ? { name: p.name, steamId: p.steamId, faction: p.faction, ping: p.ping } : null,
+		stats,
+		own
+	);
+
+/**
+ * Reads players' stats for the messages of one evaluation (or one feed batch): this server's
+ * (`here`) or its organisation's (`org`), each player once a side. A player whose read failed has
+ * none, so their stats show as `…` and the rule acts all the same.
+ */
+export type StatsReader = (
+	side: 'here' | 'org',
+	steamIds: string[]
+) => Promise<Map<string, PlayerStats>>;
+
+export function statsReader(env: Env, serverId: string): StatsReader {
+	const known = { here: new Map<string, PlayerStats>(), org: new Map<string, PlayerStats>() };
+	let org: string[] | null = null;
+	return async (side, steamIds) => {
+		const seen = known[side];
+		const want = [...new Set(steamIds)].filter((id) => !seen.has(id));
+		if (want.length)
+			try {
+				const ids = side === 'here' ? [serverId] : (org ??= await orgServerIds(env, serverId));
+				const read = await playerStats(env, ids, want);
+				for (const id of want) seen.set(id, read.get(id) ?? NO_STATS);
+			} catch (err) {
+				console.warn(`[warcon] player stats on ${serverId}:`, forLog(err));
+			}
+		return seen;
+	};
+}
+
+/** Every server of this server's organisation, itself included. */
+async function orgServerIds(env: Env, serverId: string): Promise<string[]> {
+	const rows = await env.db.execute<{ id: string }>(sql`
+		SELECT s.id FROM servers s JOIN servers me ON me.org_id = s.org_id WHERE me.id = ${serverId}`);
+	return rows.map((r) => r.id);
+}
+
+/**
+ * The stats of each side that one of these messages uses, read for the players whose text does;
+ * `org: false` for a text kept where staff read it, which has no org-wide stats.
+ */
+export interface StatsRead {
+	here: Map<string, PlayerStats> | null;
+	org: Map<string, PlayerStats> | null;
+}
+
+export async function statsFor(
+	read: StatsReader,
+	wants: { steamId: string; text: string }[],
+	{ org: orgSide = true } = {}
+): Promise<StatsRead> {
+	const sides = new Map<string, { here: boolean; org: boolean }>();
+	const ids = (side: 'here' | 'org') =>
+		wants
+			.filter((w) => (sides.get(w.text) ?? sides.set(w.text, statsIn(w.text)).get(w.text)!)[side])
+			.map((w) => w.steamId);
+	const here = ids('here');
+	const org = orgSide ? ids('org') : [];
+	return {
+		here: here.length ? await read('here', here) : null,
+		org: org.length ? await read('org', org) : null
+	};
+}
+
+/** One player's stats from what was read. */
+export const statsOf = (s: StatsRead, steamId: string): StatsBy => ({
+	here: s.here?.get(steamId),
+	org: s.org?.get(steamId)
 });
 
 // Enabled triggers per server, cached briefly: the worker asks on every observation.
@@ -582,14 +798,16 @@ export async function evaluateTriggers(
 	rows: TriggerRow[]
 ): Promise<Evaluation> {
 	const out: Evaluation = { intents: [], updates: [] };
+	// Stats are read only for a message that uses them, once per player whichever rules ask.
+	const read = statsReader(env, ctx.server.id);
 	for (const row of rows) {
 		try {
 			switch (row.kind) {
 				case 'welcome':
-					evalWelcome(ctx, row, row.config as WelcomeConfig, out);
+					await evalWelcome(ctx, row, row.config as WelcomeConfig, out, read);
 					break;
 				case 'faction_change':
-					evalFactionChange(ctx, row, row.config as FactionChangeConfig, out);
+					await evalFactionChange(ctx, row, row.config as FactionChangeConfig, out, read);
 					break;
 				case 'broadcast':
 					evalBroadcast(ctx, row, row.config as BroadcastConfig, out);
@@ -598,10 +816,10 @@ export async function evaluateTriggers(
 					await evalEmptyReset(env, ctx, row, row.config as EmptyResetConfig, out);
 					break;
 				case 'risk_kick':
-					evalRiskKick(env, ctx, row, row.config as RiskKickConfig, out);
+					await evalRiskKick(env, ctx, row, row.config as RiskKickConfig, out, read);
 					break;
 				case 'ping_kick':
-					evalPingKick(ctx, row, row.config as PingKickConfig, out);
+					await evalPingKick(ctx, row, row.config as PingKickConfig, out, read);
 					break;
 				case 'restart_notice':
 					evalRestartNotice(ctx, row, row.config as RestartNoticeConfig, out);
@@ -609,28 +827,41 @@ export async function evaluateTriggers(
 				case 'team_kill':
 				case 'kill_rate':
 				case 'kill_distance':
+				case 'name_change':
 					// Acted on as kills arrive (feed-events.ts), not per observation.
 					break;
 				case 'seed_reward':
-					await evalSeedReward(env, ctx, row, row.config as SeedRewardConfig, out);
+					await evalSeedReward(env, ctx, row, row.config as SeedRewardConfig, out, read);
 					break;
 				case 'match_broadcast':
 					evalMatchBroadcast(ctx, row, row.config as MatchBroadcastConfig, out);
 					break;
 				case 'name_filter':
-					evalNameFilter(ctx, row, row.config as NameFilterConfig, out);
+					await evalNameFilter(ctx, row, row.config as NameFilterConfig, out, read);
 					break;
 				case 'two_teams':
-					evalTwoTeams(ctx, row, row.config as TwoTeamsConfig, out);
+					await evalTwoTeams(ctx, row, row.config as TwoTeamsConfig, out, read);
 					break;
 				case 'afk_protection':
 					evalAfkProtection(ctx, row, row.config as AfkProtectionConfig, out);
 					break;
+				case 'bounty':
+					// Kills move it on as they arrive (feed-events.ts); a look ends it.
+					evalBounty(env, ctx, row, row.config as BountyConfig, out);
+					break;
+				case 'rotation_shuffle':
+					evalRotationShuffle(ctx, row, row.config as RotationShuffleConfig, out);
+					break;
+				case 'live_name':
+					// Written at the look itself, after the rules (live-name-write.ts): no action is queued.
+					break;
 			}
 		} catch (err) {
-			const message = err instanceof Error ? err.message : String(err);
-			console.error(`[warcon] trigger ${row.name}`, message);
-			out.updates.push({ id: row.id, lastResult: `Error: ${message}`.slice(0, 300) });
+			// The rule shows a fixed phrase unless the panel refused in its own words; the error goes
+			// to the log (a failed query's message lists its parameters).
+			console.error(`[warcon] trigger ${row.name}`, forLog(err));
+			const why = err instanceof ApiError ? err.message : 'the rule could not be checked.';
+			out.updates.push({ id: row.id, lastResult: `Error: ${why}`.slice(0, 300) });
 		}
 	}
 	return out;
@@ -638,11 +869,22 @@ export async function evaluateTriggers(
 
 const key = (row: TriggerRow, ...parts: (string | number)[]) => [row.id, ...parts].join(':');
 
-function evalWelcome(ctx: TickContext, row: TriggerRow, cfg: WelcomeConfig, out: Evaluation) {
+async function evalWelcome(
+	ctx: TickContext,
+	row: TriggerRow,
+	cfg: WelcomeConfig,
+	out: Evaluation,
+	read: StatsReader
+) {
 	let n = 0;
 	let last = '';
-	for (const p of welcomeTargets(cfg, ctx)) {
-		const message = renderTemplate(cfg.message, vars(ctx, p), MAX_CHAT);
+	const targets = welcomeTargets(cfg, ctx);
+	const stats = await statsFor(
+		read,
+		targets.map((p) => ({ steamId: p.steamId, text: cfg.message }))
+	);
+	for (const p of targets) {
+		const message = renderTemplate(cfg.message, vars(ctx, p, statsOf(stats, p.steamId)), MAX_CHAT);
 		out.intents.push({
 			trigger: row,
 			action: 'whisper',
@@ -664,16 +906,26 @@ function evalWelcome(ctx: TickContext, row: TriggerRow, cfg: WelcomeConfig, out:
 		});
 }
 
-function evalFactionChange(
+async function evalFactionChange(
 	ctx: TickContext,
 	row: TriggerRow,
 	cfg: FactionChangeConfig,
-	out: Evaluation
+	out: Evaluation,
+	read: StatsReader
 ) {
 	let n = 0;
 	let last = '';
-	for (const { player: p, from } of factionChangeTargets(ctx)) {
-		const message = renderTemplate(cfg.message, vars(ctx, p, from ?? ''), MAX_CHAT);
+	const targets = factionChangeTargets(ctx);
+	const stats = await statsFor(
+		read,
+		targets.map((t) => ({ steamId: t.player.steamId, text: cfg.message }))
+	);
+	for (const { player: p, from } of targets) {
+		const message = renderTemplate(
+			cfg.message,
+			vars(ctx, p, statsOf(stats, p.steamId), { previous: from ?? '' }),
+			MAX_CHAT
+		);
 		out.intents.push({
 			trigger: row,
 			action: 'whisper',
@@ -748,7 +1000,8 @@ async function evalEmptyReset(
 				or(eq(samples.ok, false), sql`${samples.playerCount} > 0`)
 			)
 		)
-		.orderBy(desc(samples.ts))
+		// NULLS LAST as samples_server_ts_idx is built: back through this server's samples only
+		.orderBy(sql`${samples.ts} desc nulls last`)
 		.limit(1);
 	const [oldest] = busy
 		? []
@@ -779,16 +1032,18 @@ async function evalEmptyReset(
 	out.updates.push({ id: row.id, lastFiredAt: ctx.ts, lastResult: `Resetting to ${cfg.map}` });
 }
 
-function evalRiskKick(
+async function evalRiskKick(
 	env: Env,
 	ctx: TickContext,
 	row: TriggerRow,
 	cfg: RiskKickConfig,
-	out: Evaluation
+	out: Evaluation,
+	read: StatsReader
 ) {
 	if (!ctx.riskCheck.length) return;
 	let n = 0;
 	let last = '';
+	const kicks: { p: Player; verdict: string }[] = [];
 	for (const p of ctx.riskCheck) {
 		const l = ctx.signals.get(p.steamId);
 		const verdict = riskKickVerdict(cfg, {
@@ -801,11 +1056,20 @@ function evalRiskKick(
 			performance: ctx.performance.get(p.steamId),
 			now: ctx.ts
 		});
-		if (!verdict) continue;
+		if (verdict) kicks.push({ p, verdict });
+	}
+	const stats = await statsFor(
+		read,
+		kicks.map((k) => ({ steamId: k.p.steamId, text: cfg.reason }))
+	);
+	for (const { p, verdict } of kicks) {
+		// The verdict is staff's (it can quote ban reasons and the watchlist): the player is told
+		// only the rule's reason.
+		const reason = renderTemplate(cfg.reason, vars(ctx, p, statsOf(stats, p.steamId)), MAX_REASON);
 		out.intents.push({
 			trigger: row,
 			action: 'kick',
-			params: { steamId: p.steamId, reason: cfg.reason },
+			params: { steamId: p.steamId, reason },
 			target: p.steamId,
 			okMessage: `Kicked ${p.name}: ${verdict}`,
 			detail: { name: p.name, verdict },
@@ -823,7 +1087,13 @@ function evalRiskKick(
 		});
 }
 
-function evalNameFilter(ctx: TickContext, row: TriggerRow, cfg: NameFilterConfig, out: Evaluation) {
+async function evalNameFilter(
+	ctx: TickContext,
+	row: TriggerRow,
+	cfg: NameFilterConfig,
+	out: Evaluation,
+	read: StatsReader
+) {
 	// A name is judged when it is first seen, at the join or later: the clan tag is part of the
 	// name, and the game may only show it once the player is in. A kick rule also judges a player
 	// back after missing a look: a kicked player reconnecting inside the leave grace is no join.
@@ -835,15 +1105,24 @@ function evalNameFilter(ctx: TickContext, row: TriggerRow, cfg: NameFilterConfig
 	];
 	let n = 0;
 	let last = '';
-	for (const { player: p, verdict: v } of nameFilterTargets(cfg, named, ctx.reserved)) {
-		const kick = cfg.action === 'kick';
+	const kick = cfg.action === 'kick';
+	const targets = nameFilterTargets(cfg, named, ctx.reserved);
+	const stats = await statsFor(
+		read,
+		kick ? targets.map((t) => ({ steamId: t.player.steamId, text: cfg.reason })) : []
+	);
+	for (const { player: p, verdict: v } of targets) {
 		out.intents.push({
 			trigger: row,
 			action: kick ? 'kick' : NAME_FLAG,
 			params: kick
 				? {
 						steamId: p.steamId,
-						reason: renderTemplate(cfg.reason, { ...vars(ctx, p), why: v.why }, MAX_REASON)
+						reason: renderTemplate(
+							cfg.reason,
+							vars(ctx, p, statsOf(stats, p.steamId), { why: v.why }),
+							MAX_REASON
+						)
 					}
 				: {},
 			target: p.steamId,
@@ -865,7 +1144,13 @@ function evalNameFilter(ctx: TickContext, row: TriggerRow, cfg: NameFilterConfig
 	}
 }
 
-function evalPingKick(ctx: TickContext, row: TriggerRow, cfg: PingKickConfig, out: Evaluation) {
+async function evalPingKick(
+	ctx: TickContext,
+	row: TriggerRow,
+	cfg: PingKickConfig,
+	out: Evaluation,
+	read: StatsReader
+) {
 	if (!ctx.playersObserved) return;
 	const previous = row.state as PingKickState | null;
 	const { state, kicks } = pingKickStep(
@@ -884,14 +1169,19 @@ function evalPingKick(ctx: TickContext, row: TriggerRow, cfg: PingKickConfig, ou
 	)
 		out.updates.push({ id: row.id, state });
 	const kicked = new Set(kicks);
+	const stats = await statsFor(
+		read,
+		kicks.map((steamId) => ({ steamId, text: cfg.reason }))
+	);
 	for (const p of ctx.players) {
 		if (!kicked.has(p.steamId)) continue;
 		const steamId = p.steamId;
 		const verdict = `ping ${p.ping} ms above ${cfg.maxPingMs} ms for ${cfg.durationSeconds} s`;
+		const reason = renderTemplate(cfg.reason, vars(ctx, p, statsOf(stats, steamId)), MAX_REASON);
 		out.intents.push({
 			trigger: row,
 			action: 'kick',
-			params: { steamId, reason: cfg.reason },
+			params: { steamId, reason },
 			target: steamId,
 			okMessage: `Kicked ${p.name}: ${verdict}`,
 			detail: { name: p.name, pingMs: p.ping, verdict },
@@ -987,7 +1277,13 @@ export function twoTeamsMoveVerdict(row: {
 	return 'send';
 }
 
-function evalTwoTeams(ctx: TickContext, row: TriggerRow, cfg: TwoTeamsConfig, out: Evaluation) {
+async function evalTwoTeams(
+	ctx: TickContext,
+	row: TriggerRow,
+	cfg: TwoTeamsConfig,
+	out: Evaluation,
+	read: StatsReader
+) {
 	const now = ctx.ts.getTime();
 	// The same fingerprint rides on every move and whisper, for delivery to check against.
 	const config = twoTeamsSettingsKey(cfg);
@@ -1059,6 +1355,8 @@ function evalTwoTeams(ctx: TickContext, row: TriggerRow, cfg: TwoTeamsConfig, ou
 			params: {
 				steamId: m.steamId,
 				faction: m.to,
+				// the move alone: whether the game needs the kill to respawn them is not settled
+				kill: false,
 				from: m.from,
 				rule: config,
 				mem: kept.id,
@@ -1074,6 +1372,10 @@ function evalTwoTeams(ctx: TickContext, row: TriggerRow, cfg: TwoTeamsConfig, ou
 			...(cfg.watchOnly ? { watchOnly: `Watch only: would move ${moved}.` } : {})
 		});
 	}
+	const stats = await statsFor(
+		read,
+		step.whispers.map((w) => ({ steamId: w.steamId, text: cfg.message }))
+	);
 	for (const w of step.whispers)
 		out.intents.push({
 			trigger: row,
@@ -1083,13 +1385,20 @@ function evalTwoTeams(ctx: TickContext, row: TriggerRow, cfg: TwoTeamsConfig, ou
 				rule: config,
 				message: renderTemplate(
 					cfg.message,
-					{
-						...vars(
-							ctx,
-							ctx.players.find((p) => p.steamId === w.steamId)
-						),
-						team: teamName(cfg, w.faction)
-					},
+					vars(
+						ctx,
+						ctx.players.find((p) => p.steamId === w.steamId) ?? {
+							name: w.name,
+							steamId: w.steamId,
+							faction: w.faction,
+							kills: 0,
+							deaths: 0,
+							cash: 0,
+							ping: null
+						},
+						statsOf(stats, w.steamId),
+						{ team: teamName(cfg, w.faction) }
+					),
 					MAX_CHAT
 				)
 			},
@@ -1124,16 +1433,13 @@ function evalRestartNotice(
 	const hit = restartNoticeStage(cfg, row.state as RestartNoticeState | null, {
 		startedAt: ctx.startedAt,
 		playerCount: ctx.status.playerCount,
-		now: ctx.ts.getTime()
+		now: ctx.ts.getTime(),
+		schedule: restartScheduleOf(ctx.server.restartSchedule, ctx.restartTimeUtc)
 	});
 	if (!hit) return;
 	const message = renderTemplate(
 		hit.stage === 'lead' ? cfg.leadMessage : cfg.message,
-		{
-			...vars(ctx),
-			minutes: hit.minutes,
-			uptime: fmtUptime(ctx.ts.getTime() - ctx.startedAt)
-		},
+		vars(ctx, null, {}, { minutes: hit.minutes }),
 		MAX_CHAT
 	);
 	out.intents.push({
@@ -1154,6 +1460,62 @@ function evalRestartNotice(
 		lastFiredAt: ctx.ts,
 		lastResult: `Sending: ${message}`,
 		state: hit.state
+	});
+}
+
+const SHUFFLE_WHEN: Record<ShuffleWhen, string> = {
+	now: 'now',
+	'before-restart': 'for after the restart',
+	'after-restart': 'after the restart'
+};
+
+/** Once a run, and once when saved: see shuffleStep. The shuffle itself is the delivery's. */
+function evalRotationShuffle(
+	ctx: TickContext,
+	row: TriggerRow,
+	cfg: RotationShuffleConfig,
+	out: Evaluation
+) {
+	const now = ctx.ts.getTime();
+	const w = ctx.startedAt
+		? restartWindow(
+				new Date(ctx.startedAt).toISOString(),
+				restartScheduleOf(ctx.server.restartSchedule, ctx.restartTimeUtc),
+				now
+			)
+		: null;
+	const prev = rotationShuffleState(row.state);
+	const step = shuffleStep(prev, { startedAt: ctx.startedAt, restartDue: !!w?.due });
+	if (!step) return;
+	row.state = step.state;
+	if (!step.when) {
+		out.updates.push({ id: row.id, state: step.state });
+		return;
+	}
+	out.intents.push({
+		trigger: row,
+		action: ROTATION_SHUFFLE,
+		params: {
+			maps: cfg.maps,
+			when: step.when,
+			playing: ctx.status.map,
+			now: ctx.status.rotationNow
+		},
+		target: 'rotation',
+		okMessage: 'Rotation shuffled.',
+		detail: { when: step.when, startedAt: new Date(ctx.startedAt).toISOString() },
+		steamId: null,
+		// once a run before or after a restart; one on saving (no state yet, whenever in the run it
+		// comes), every time it is saved
+		dedupeKey: key(row, step.when, step.state.boot, prev ? 0 : ctx.ts.getTime())
+	});
+	// Marked now, with the state, so a slow delivery cannot shuffle twice.
+	row.lastFiredAt = ctx.ts;
+	out.updates.push({
+		id: row.id,
+		lastFiredAt: ctx.ts,
+		lastResult: `Shuffling ${SHUFFLE_WHEN[step.when]}.`,
+		state: step.state
 	});
 }
 
@@ -1201,7 +1563,7 @@ function evalAfkProtection(
 	else if (step.state.on && (!prev || step.rearmed))
 		update.lastResult = `On while fewer than ${goal} are on and no side has scored.`;
 	const rule = afkSettingsKey(cfg);
-	const say = (text: string) => renderTemplate(text, { ...vars(ctx), goal }, MAX_CHAT);
+	const say = (text: string) => renderTemplate(text, vars(ctx, null, {}, { goal }), MAX_CHAT);
 	if (step.round) {
 		const listed = ctx.players
 			.filter((p) => /^\d{17}$/.test(p.steamId))
@@ -1245,6 +1607,93 @@ function evalAfkProtection(
 	out.updates.push(update);
 }
 
+/**
+ * A Bounty rule at each look: a match end starts the runs over, and an open bounty lapses when the
+ * match ends, when its player's session closes (gone past the leave grace, so a map change's empty
+ * list is no leave), or at the first look after the server was out of reach (whatever happened
+ * meanwhile, its restart among it, is unknown). Kills set and claim bounties as they arrive
+ * (feed-events.ts). The bounty is let go here, before the look is written, so no kill claims it
+ * meanwhile; a look whose write fails leaves it open on the rule's row only, where a restart reads
+ * it back and the next look or claim lapses it (a claim checks the bounty's match).
+ */
+function evalBounty(
+	env: Env,
+	ctx: TickContext,
+	row: TriggerRow,
+	cfg: BountyConfig,
+	out: Evaluation
+) {
+	const { version, track } = bountyTrack(row);
+	if (ctx.matchEnd || ctx.recovered) track.runs.clear();
+	const open = track.open;
+	if (!open) return;
+	const why: BountyLapse | null = ctx.matchEnd
+		? 'match'
+		: ctx.recovered
+			? 'lost'
+			: ctx.playersObserved && ctx.present && !ctx.present.has(open.steamId)
+				? 'left'
+				: null;
+	if (!why) return;
+	track.open = null;
+	const lapse = bountyLapse(
+		row,
+		cfg,
+		version,
+		open,
+		why,
+		ctx.ts,
+		ctx.matchEnd?.map ?? ctx.status.map
+	);
+	out.intents.push(lapse.intent);
+	out.updates.push(lapse.update);
+	const serverName = ctx.status.serverName || ctx.server.name;
+	(out.afterCommit ??= []).push(
+		() => void notifyBounty(env, ctx.server.id, serverName, [lapse.card])
+	);
+}
+
+/**
+ * What a bounty lapsing writes: the note in the trail (Recent actions, the Automation mirror), the
+ * rule's row with no bounty open, and the card for a Bounties channel, posted once it is written.
+ */
+export function bountyLapse(
+	row: TriggerRow,
+	cfg: BountyConfig,
+	version: string,
+	open: OpenBounty,
+	why: BountyLapse,
+	at: Date,
+	map: string | null
+): { intent: Intent; update: TriggerUpdate; card: BountyCard } {
+	const state = bountyState(version, null);
+	row.state = state;
+	const message = lapseWords(open, why);
+	return {
+		intent: {
+			trigger: row,
+			action: BOUNTY_LAPSE,
+			params: {},
+			target: open.steamId,
+			okMessage: message,
+			detail: { name: open.name, streak: open.streak, run: open.best, why },
+			steamId: null,
+			dedupeKey: key(row, 'lapse', open.steamId, open.setAt)
+		},
+		update: { id: row.id, lastFiredAt: at, lastResult: message, state },
+		card: {
+			kind: 'lapse',
+			at: at.toISOString(),
+			map: map || null,
+			reward: rewardWords(cfg),
+			orgWide: cfg.reward === 'slot' && cfg.scope === 'org',
+			name: open.name,
+			run: open.best,
+			why
+		}
+	};
+}
+
 // A match boundary is one tick, so the rule keeps no state: the end message then the start
 // message, each an outbox row keyed on the tick.
 // A match end the rule is holding until the server has its players on again, per rule (in memory
@@ -1258,6 +1707,7 @@ export function forgetRuleMemory(): void {
 	twoTeamsMemory.clear();
 	staffMoves.clear();
 	afkEmpty.clear();
+	forgetBounties();
 }
 
 function evalMatchBroadcast(
@@ -1326,7 +1776,8 @@ async function evalSeedReward(
 	ctx: TickContext,
 	row: TriggerRow,
 	cfg: SeedRewardConfig,
-	out: Evaluation
+	out: Evaluation,
+	read: StatsReader
 ) {
 	// Not before the reserved list is known: a player reserved on this server alone must not be
 	// handed an org-wide entry because the worker has not read the list yet.
@@ -1359,6 +1810,7 @@ async function evalSeedReward(
 					candidates.map((p) => p.steamId)
 				),
 				isNotNull(playerSessions.leftAt),
+				gte(playerSessions.leftAt, from),
 				gte(playerSessions.lastSeen, from)
 			)
 		)
@@ -1366,12 +1818,19 @@ async function evalSeedReward(
 	const earlier = new Map(closed.map((r) => [r.steamId, r.seconds]));
 	// The whisper names this date; the entry's own expiry is set when the grant is delivered.
 	const expiresAt = new Date(now + cfg.slotDays * 86400_000);
+	const earned = candidates
+		.map((p) => ({
+			p,
+			seconds: (earlier.get(p.steamId) ?? 0) + Math.floor((ctx.seedMs.get(p.steamId) ?? 0) / 1000)
+		}))
+		.filter((e) => e.seconds >= cfg.minutes * 60);
+	const stats = await statsFor(
+		read,
+		cfg.message ? earned.map((e) => ({ steamId: e.p.steamId, text: cfg.message })) : []
+	);
 	let n = 0;
 	let last = '';
-	for (const p of candidates) {
-		const seconds =
-			(earlier.get(p.steamId) ?? 0) + Math.floor((ctx.seedMs.get(p.steamId) ?? 0) / 1000);
-		if (seconds < cfg.minutes * 60) continue;
+	for (const { p, seconds } of earned) {
 		const minutes = Math.floor(seconds / 60);
 		const reason = `Seeded ${ctx.server.name}: ${minutes} min with ${cfg.lowAt} or fewer on`;
 		out.intents.push({
@@ -1394,12 +1853,11 @@ async function evalSeedReward(
 		if (cfg.message) {
 			const message = renderTemplate(
 				cfg.message,
-				{
-					...vars(ctx, p),
+				vars(ctx, p, statsOf(stats, p.steamId), {
 					minutes,
 					until: dateOf(expiresAt),
 					days: cfg.slotDays
-				},
+				}),
 				MAX_CHAT
 			);
 			out.intents.push({
@@ -1473,34 +1931,65 @@ export interface CaughtKill {
 	steamId: string;
 	name: string;
 	cause: string | null;
-	distanceM: number;
+	/** null when the feed sent none */
+	distanceM: number | null;
 }
 
 /**
  * What a Kill distance rule does about a player it caught: the outbox row's action and texts, and
- * the line its dry run shows. The live rule (feed-events.ts) and the dry run both build it here.
- * A ban stands whether or not the player is still on by the time it is delivered; a kick does not.
+ * the line its dry run shows. The live rule (feed-events.ts) and the dry run both build it here,
+ * the text the player is told from the placeholders the caller has for the killer (`vars`) and the
+ * kill's own; a ban's reason is kept on the ban list where staff read it, so the player's org-wide
+ * stats are no placeholders in it, warning, kill, kick or ban alike (keptVars).
+ * A ban stands whether or not the player is still on by the time it is delivered; a warning, a kill
+ * or a kick does not.
  */
 export function killDistanceAct(
 	cfg: KillDistanceConfig,
 	k: CaughtKill,
 	count: number,
-	server: string
+	vars: MessageVars
 ): Omit<Intent, 'trigger' | 'dedupeKey' | 'target'> & { pending: string; line: string } {
 	const verdict = killDistanceVerdict(cfg, k.cause, k.distanceM, count);
 	const reason = renderTemplate(
 		cfg.reason,
 		{
-			name: k.name,
+			...keptVars(vars),
 			weapon: causeLabel(k.cause),
-			distance: Math.round(k.distanceM),
-			count,
-			server
+			distance: k.distanceM === null ? UNKNOWN : Math.round(k.distanceM),
+			count
 		},
-		MAX_REASON
+		cfg.action === 'warn' || cfg.action === 'kill' ? MAX_CHAT : MAX_REASON
 	);
 	const detail = { name: k.name, verdict, cause: k.cause, distanceM: k.distanceM, count };
 	const who = `${k.name} (${k.steamId})`;
+	if (cfg.action === 'warn')
+		return {
+			action: 'whisper',
+			params: { steamId: k.steamId, message: reason },
+			okMessage: `Warned ${k.name}: ${verdict}`,
+			detail,
+			steamId: k.steamId,
+			pending: `Warning ${k.name}: ${verdict}`,
+			line: `warn ${who}: ${verdict}`
+		};
+	if (cfg.action === 'kill') {
+		const params: RuleKillParams = {
+			steamId: k.steamId,
+			name: k.name,
+			why: verdict,
+			message: reason
+		};
+		return {
+			action: RULE_KILL,
+			params: { ...params },
+			okMessage: `Killed ${k.name}: ${verdict}`,
+			detail,
+			steamId: k.steamId,
+			pending: `Killing ${k.name}: ${verdict}`,
+			line: `kill ${who}: ${verdict}`
+		};
+	}
 	if (cfg.action === 'kick')
 		return {
 			action: 'kick',
@@ -1580,6 +2069,30 @@ const REPLAY_ROWS_MAX = 5000;
 /** The risk dry run judges at most this many players (the latest on), for its Steam lookups. */
 const RISK_REPLAY_MAX = 2000;
 
+/**
+ * Where a replay of a per-match rule starts: the start of the match already running at `from` (two
+ * minutes before it, as killsOfMatch reads a match), at most six hours back, else `from`.
+ */
+async function matchStartBefore(env: Env, serverId: string, from: Date): Promise<Date> {
+	const [open] = await env.db.execute<{ startedAt: Date | null }>(sql`
+		SELECT MIN(started_at) AS "startedAt" FROM matches
+		 WHERE server_id = ${serverId} AND started_at < ${from}
+		   AND (ended_at IS NULL OR ended_at >= ${from})`);
+	return new Date(
+		Math.max(
+			Math.min(
+				from.getTime(),
+				open?.startedAt ? new Date(open.startedAt).getTime() - 120_000 : Infinity
+			),
+			from.getTime() - 6 * 3600_000
+		)
+	);
+}
+
+/** A dry run's word on a daily restart time ("Restarts daily at 08:00 UTC, …. "); none for 24 hours up. */
+const restartsNote = (s: RestartSchedule): string =>
+	s.kind === 'daily' ? `Restarts ${describeRestartSchedule(s)}. ` : '';
+
 /** Replays the last 24 hours of this server's history against a rule. Touches nobody. */
 export async function dryRun(
 	env: Env,
@@ -1601,6 +2114,10 @@ export async function dryRun(
 	};
 	const push = (at: Date, text: string) => {
 		result.fires++;
+		note(at, text);
+	};
+	/** a line of the replay that is not a firing of its own (a bounty claimed or lapsed) */
+	const note = (at: Date, text: string) => {
 		if (result.items.length < 50) result.items.push({ at: at.toISOString(), text });
 	};
 	const joins = (withFaction = false) =>
@@ -1624,7 +2141,7 @@ export async function dryRun(
 			if (c.onlyFirstVisit && !j.first) continue;
 			push(
 				new Date(j.joinedAt),
-				`whisper ${j.name}: ${renderTemplate(c.message, { name: j.name, server: server.name, map: '…', players: '…', max: '…' }, MAX_CHAT)}`
+				`whisper ${j.name}: ${renderTemplate(c.message, dryRunVars(server.name, { name: j.name, steamId: j.steamId }), MAX_CHAT)}`
 			);
 		}
 		result.notes.push(
@@ -1667,6 +2184,7 @@ export async function dryRun(
 			       GREATEST(MIN(s.joined_at), ${from}) AS "onAt"
 			  FROM player_sessions s
 			 WHERE s.server_id = ${server.id} AND s.last_seen >= ${from}
+			   AND (s.left_at IS NULL OR s.left_at >= ${from})
 			 GROUP BY s.steam_id
 			 ORDER BY MAX(s.last_seen) DESC LIMIT ${RISK_REPLAY_MAX}`);
 		const seen = new Map<string, { name: string; joinedAt: Date }>();
@@ -1732,25 +2250,34 @@ export async function dryRun(
 		const c = cfg as TeamKillConfig;
 		// Each team kill in the window, with the killer's running count in the match it arrived in:
 		// the rows carrying that match from two minutes before it opened (killsOfMatch), else, for
-		// a kill that came in with no match open, the other such kills of the hour before. A kill by
-		// a cause the rule does not count adds to no count and comes back with none.
-		const notCounted = JSON.stringify(teamKillNotCounted(c).map((x) => x.toLowerCase()));
-		const counts = (cause: SQL) =>
-			sql`(${cause} IS NULL OR lower(${cause}) NOT IN (SELECT jsonb_array_elements_text(${notCounted}::text::jsonb)))`;
+		// a kill that came in with no match open, the other such kills of the hour before. A kill the
+		// rule does not count (by its cause, or a crash) adds to no count and comes back with none.
+		const listed = teamKillNotCounted(c).map((x) => x.toLowerCase());
+		const notCounted = JSON.stringify(listed);
+		const crashes = listed.includes(VEHICLE_CRASH.toLowerCase());
+		// countsForTeamKill over the kill row `k`, with isVehicleCrash in SQL: no cause is no crash
+		const counts = (k: SQL) =>
+			sql`(${k}.cause IS NULL OR lower(${k}.cause) NOT IN (SELECT jsonb_array_elements_text(${notCounted}::text::jsonb)))${
+				crashes
+					? sql` AND NOT COALESCE(${k}.cause ILIKE 'Vehicle.%' AND ${k}.tags ? ${VEHICLE_CRASH}::text, false)`
+					: sql``
+			}`;
 		const rows = await env.db.execute<{
 			ts: Date;
 			killerName: string;
 			killerSteamId: string;
 			victimName: string;
+			map: string | null;
 			cause: string | null;
+			tags: string[];
 			n: string | null;
 		}>(sql`
 			SELECT k.ts, k.killer_name AS "killerName", k.killer_steam_id AS "killerSteamId",
-			       k.victim_name AS "victimName", k.cause,
-			       CASE WHEN ${counts(sql`k.cause`)} THEN
+			       k.victim_name AS "victimName", k.map, k.cause, k.tags,
+			       CASE WHEN ${counts(sql`k`)} THEN
 			       (SELECT COUNT(*) FROM kills k2
 			         WHERE k2.server_id = k.server_id AND k2.killer_steam_id = k.killer_steam_id
-			           AND k2.team_kill AND ${counts(sql`k2.cause`)} AND k2.ts <= k.ts
+			           AND k2.team_kill AND ${counts(sql`k2`)} AND k2.ts <= k.ts
 			           AND k2.match_row IS NOT DISTINCT FROM k.match_row
 			           AND k2.ts >= COALESCE((SELECT m.started_at - interval '2 minutes' FROM matches m
 			                                    WHERE m.id = k.match_row AND m.server_id = k.server_id),
@@ -1763,19 +2290,21 @@ export async function dryRun(
 		const left = new Map<string, number>();
 		for (const r of rows) {
 			if (r.n === null) {
-				const label = causeLabel(r.cause);
+				const label =
+					crashes && isVehicleCrash({ cause: r.cause, tags: r.tags })
+						? notCountedLabel(VEHICLE_CRASH)
+						: causeLabel(r.cause);
 				left.set(label, (left.get(label) ?? 0) + 1);
 				continue;
 			}
 			counted++;
 			const stage = teamKillStage(c, Number(r.n));
 			if (!stage) continue;
-			const v = {
-				name: r.killerName,
-				victim: r.victimName,
-				count: Number(r.n),
-				server: server.name
-			};
+			const v = dryRunVars(
+				server.name,
+				{ name: r.killerName, steamId: r.killerSteamId },
+				{ victim: r.victimName, count: Number(r.n), ...(r.map ? { map: mapName(r.map) } : {}) }
+			);
 			push(
 				new Date(r.ts),
 				stage === 'kick'
@@ -1859,45 +2388,201 @@ export async function dryRun(
 			);
 		return result;
 	}
+	if (kind === 'bounty') {
+		const c = cfg as BountyConfig;
+		// Every kill of the window through the live rule's own step, batch by batch as they came in,
+		// from the start of a match already running when the window opens (at most six hours back), so
+		// a run at the window's edge is the live one. Each batch is judged against the player count of
+		// the server's last sample before it, and a marked player's bounty lapses when their session
+		// closed. Only what happened in the window is listed.
+		const since = await matchStartBefore(env, server.id, from);
+		const rows = await env.db.execute<{
+			ts: Date;
+			eventId: string;
+			matchRow: number | null;
+			killer: string | null;
+			killerName: string | null;
+			killerFaction: string | null;
+			victim: string;
+			victimName: string;
+			victimFaction: string | null;
+			suicide: boolean;
+			teamKill: boolean;
+		}>(sql`
+			SELECT ts, event_id AS "eventId", match_row AS "matchRow", killer_steam_id AS killer,
+			       killer_name AS "killerName", killer_faction AS "killerFaction",
+			       victim_steam_id AS victim, victim_name AS "victimName",
+			       victim_faction AS "victimFaction", suicide, team_kill AS "teamKill"
+			  FROM kills
+			 WHERE server_id = ${server.id} AND ts >= ${since}
+			 ORDER BY ts ASC, event_time ASC LIMIT ${KILL_RATE_REPLAY_MAX}`);
+		const counts = await env.db.execute<{ ts: Date; n: number | null }>(sql`
+			SELECT ts, player_count AS n FROM samples
+			 WHERE server_id = ${server.id} AND ok AND ts >= ${new Date(since.getTime() - 10 * 60_000)}
+			 ORDER BY ts ASC`);
+		const leaves = await env.db.execute<{ steamId: string; leftAt: Date }>(sql`
+			SELECT steam_id AS "steamId", left_at AS "leftAt" FROM player_sessions
+			 WHERE server_id = ${server.id} AND left_at >= ${since}
+			 ORDER BY left_at ASC LIMIT ${NAME_SESSIONS_MAX}`);
+		const sampled = counts.map((r) => ({ at: new Date(r.ts).getTime(), n: Number(r.n ?? 0) }));
+		let next = 0;
+		let on = 0;
+		const events: BountyReplayEvent[] = [];
+		for (let i = 0; i < rows.length;) {
+			const at = new Date(rows[i].ts).getTime();
+			let j = i;
+			while (j < rows.length && new Date(rows[j].ts).getTime() === at) j++;
+			for (; next < sampled.length && sampled[next].at <= at; next++) on = sampled[next].n;
+			const batch = rows.slice(i, j);
+			events.push({
+				kind: 'kills',
+				at,
+				match: matchKey(batch[0].matchRow === null ? null : Number(batch[0].matchRow), at),
+				players: on,
+				kills: batch.map((r): BountyKill => ({
+					eventId: r.eventId,
+					killer: r.killer
+						? { steamId: r.killer, name: r.killerName || r.killer, faction: r.killerFaction }
+						: null,
+					victim: { steamId: r.victim, name: r.victimName, faction: r.victimFaction },
+					suicide: !!r.suicide,
+					teamKill: !!r.teamKill
+				}))
+			});
+			i = j;
+		}
+		for (const l of leaves)
+			events.push({ kind: 'left', at: new Date(l.leftAt).getTime(), steamId: l.steamId });
+		// a leave dated to the same moment as a batch comes after it: a player is seen, then gone
+		events.sort((a, b) => a.at - b.at || (a.kind === b.kind ? 0 : a.kind === 'kills' ? -1 : 1));
+		const { outcomes, open } = bountyReplay(c, events);
+		const reward = rewardWords(c);
+		const slot = c.reward === 'slot';
+		const counted = { set: 0, claim: 0, lapse: 0 };
+		for (const o of outcomes) {
+			if (o.at < from.getTime()) continue;
+			counted[o.kind]++;
+			const at = new Date(o.at);
+			const b = o.bounty;
+			if (o.kind === 'set') {
+				const v = keptVars(
+					dryRunVars(
+						server.name,
+						{ name: b.name, steamId: b.steamId },
+						{
+							target: b.name,
+							streak: b.streak,
+							reward,
+							days: slot ? c.slotDays : '',
+							until: slot ? dateOf(new Date(o.at + c.slotDays * 86400_000)) : ''
+						}
+					)
+				);
+				push(
+					at,
+					`bounty on ${b.name} (${b.streak} kills, ${o.players} on): ${renderTemplate(c.setMessage, v, MAX_CHAT)}`
+				);
+			} else if (o.kind === 'claim')
+				note(
+					at,
+					`claimed by ${o.claimer.name || o.claimer.steamId}: ${b.name} after a run of ${b.best}${slot ? `, ${reward}` : ''}`
+				);
+			else
+				note(
+					at,
+					o.why === 'left'
+						? `lapsed: ${b.name} left (a run of ${b.best})`
+						: `lapsed: the match ended, ${b.name} on a run of ${b.best}`
+				);
+		}
+		const [feed] = await env.db
+			.select({ configured: sql<boolean>`feed_token_hash IS NOT NULL` })
+			.from(servers)
+			.where(eq(servers.id, server.id));
+		if (!feed?.configured)
+			result.notes.push(
+				'This server has no kill feed set up (Config tab), so the rule cannot see any kills.'
+			);
+		const n = (x: number, one: string, many = `${one}s`) => `${x} ${x === 1 ? one : many}`;
+		result.notes.push(
+			`${n(counted.set, 'bounty', 'bounties')} set, ${counted.claim} claimed, ${counted.lapse} lapsed${open ? ', one still open' : ''}. Runs start over at each match, and nobody is marked while the server's samples show fewer than ${c.minPlayers} on.`
+		);
+		if (rows.length >= KILL_RATE_REPLAY_MAX)
+			result.notes.push(
+				`Replayed the first ${KILL_RATE_REPLAY_MAX.toLocaleString('en')} kills only.`
+			);
+		return result;
+	}
 	if (kind === 'kill_distance') {
 		const c = cfg as KillDistanceConfig;
 		// The kills of the window the rule counts, per match as the live rule counts them, from the
 		// start of a match already running when the window opens (at most six hours back), so a count
 		// at the window's edge is the live one. Only what happened in the window is listed.
-		const [open] = await env.db.execute<{ startedAt: Date | null }>(sql`
-			SELECT MIN(started_at) AS "startedAt" FROM matches
-			 WHERE server_id = ${server.id} AND started_at < ${from}
-			   AND (ended_at IS NULL OR ended_at >= ${from})`);
-		const since = new Date(
-			Math.max(
-				Math.min(
-					from.getTime(),
-					open?.startedAt ? new Date(open.startedAt).getTime() - 120_000 : Infinity
-				),
-				from.getTime() - 6 * 3600_000
-			)
-		);
+		const since = await matchStartBefore(env, server.id, from);
+		// from 0 m a kill without a distance counts too
+		const far = c.minDistanceM > 0 ? sql`AND distance_m >= ${c.minDistanceM}` : sql``;
 		const rows = await env.db.execute<{
 			ts: Date;
+			eventId: string;
+			eventTime: number;
 			steamId: string;
 			name: string | null;
+			victim: string;
 			cause: string | null;
-			distanceM: number;
+			distanceM: number | null;
 			matchRow: number | null;
 		}>(sql`
-			SELECT ts, killer_steam_id AS "steamId", killer_name AS name, cause,
-			       distance_m AS "distanceM", match_row AS "matchRow"
+			SELECT ts, event_id AS "eventId", event_time AS "eventTime", killer_steam_id AS "steamId",
+			       killer_name AS name, victim_steam_id AS victim, cause, distance_m AS "distanceM",
+			       match_row AS "matchRow"
 			  FROM kills
 			 WHERE server_id = ${server.id} AND ts >= ${since}
-			   AND killer_steam_id IS NOT NULL AND NOT suicide AND distance_m >= ${c.minDistanceM}
+			   AND killer_steam_id IS NOT NULL AND NOT suicide ${far}
 			   AND lower(cause) IN (SELECT jsonb_array_elements_text(${JSON.stringify(c.causes.map((x) => x.toLowerCase()))}::text::jsonb))
 			 ORDER BY ts ASC, event_time ASC LIMIT ${KILL_RATE_REPLAY_MAX}`);
+		// Those killers' own deaths from a little before, so a kill just after one is left out as
+		// the live rule leaves it out.
+		const killers = new Set<string>();
+		for (const r of rows) killers.add(r.steamId);
+		const deaths = killers.size
+			? await env.db.execute<{ ts: Date; eventId: string; eventTime: number; victim: string }>(sql`
+				SELECT ts, event_id AS "eventId", event_time AS "eventTime", victim_steam_id AS victim
+				  FROM kills
+				 WHERE server_id = ${server.id} AND ts >= ${new Date(since.getTime() - 120_000)}
+				   AND victim_steam_id IN (SELECT jsonb_array_elements_text(${JSON.stringify([...killers])}::text::jsonb))
+				 ORDER BY ts ASC, event_time ASC LIMIT ${KILL_RATE_REPLAY_MAX}`)
+			: [];
+		const event = (
+			ts: Date,
+			eventId: string,
+			eventTime: number,
+			killer: string | null,
+			victim: string
+		) => ({ eventId, eventTime: Number(eventTime), killer, victim, at: new Date(ts).getTime() });
+		const events: ReturnType<typeof event>[] = [];
+		for (const r of rows) events.push(event(r.ts, r.eventId, r.eventTime, r.steamId, r.victim));
+		for (const d of deaths) events.push(event(d.ts, d.eventId, d.eventTime, null, d.victim));
+		const afterDeath = killsAfterDeathReplay(
+			events.sort((a, b) => a.at - b.at || a.eventTime - b.eventTime)
+		);
 		const counted: DistanceKill[] = [];
+		let afterDeathInWindow = 0;
 		for (const r of rows) {
-			const distanceM = Number(r.distanceM);
-			if (!countsForDistance(c, { killer: r.steamId, suicide: false, cause: r.cause, distanceM }))
-				continue;
 			const at = new Date(r.ts).getTime();
+			const distanceM = r.distanceM === null ? null : Number(r.distanceM);
+			const afterOwnDeath = afterDeath.has(r.eventId);
+			if (
+				!countsForDistance(c, {
+					killer: r.steamId,
+					suicide: false,
+					afterOwnDeath,
+					cause: r.cause,
+					distanceM
+				})
+			) {
+				if (afterOwnDeath && at >= from.getTime()) afterDeathInWindow++;
+				continue;
+			}
 			counted.push({
 				at,
 				match: matchKey(r.matchRow === null ? null : Number(r.matchRow), at),
@@ -1909,7 +2594,7 @@ export async function dryRun(
 		}
 		for (const f of killDistanceReplay(c, counted))
 			if (f.at >= from.getTime())
-				push(new Date(f.at), killDistanceAct(c, f, f.count, server.name).line);
+				push(new Date(f.at), killDistanceAct(c, f, f.count, dryRunVars(server.name, f)).line);
 		const [feed] = await env.db
 			.select({ configured: sql<boolean>`feed_token_hash IS NOT NULL` })
 			.from(servers)
@@ -1920,23 +2605,159 @@ export async function dryRun(
 			);
 		const inWindow = counted.filter((k) => k.at >= from.getTime()).length;
 		result.notes.push(
-			`${inWindow} kill${inWindow === 1 ? '' : 's'} with ${c.causes.length === 1 ? causeLabel(c.causes[0]) : 'the chosen weapons'} from ${c.minDistanceM} m or more in the window, counted per match.`
+			`${inWindow} kill${inWindow === 1 ? '' : 's'} with ${c.causes.length === 1 ? causeLabel(c.causes[0]) : 'the chosen weapons'} ${c.minDistanceM > 0 ? `from ${c.minDistanceM} m or more` : 'at any distance'} in the window, counted per match.`
 		);
+		if (afterDeathInWindow)
+			result.notes.push(
+				`${afterDeathInWindow} more came within a minute of the killer’s own death and ${afterDeathInWindow === 1 ? 'is' : 'are'} not counted: a vehicle’s shell that lands after the vehicle was destroyed comes credited to the gunner’s own weapon.`
+			);
 		if (rows.length >= KILL_RATE_REPLAY_MAX)
 			result.notes.push(
 				`Replayed the first ${KILL_RATE_REPLAY_MAX.toLocaleString('en')} such kills only.`
 			);
 		return result;
 	}
-	if (kind === 'restart_notice') {
-		const c = cfg as RestartNoticeConfig;
+	if (kind === 'name_change') {
+		const c = cfg as NameChangeConfig;
+		// The live rule holds each kill's names against the player list of that moment; the replay
+		// holds the window's kills against the sessions open at each, whose names are the list's (but
+		// for a clan tag changed mid-session, which is no change anyway).
+		const sessions = await env.db.execute<{
+			steamId: string;
+			name: string;
+			joinedAt: Date;
+			leftAt: Date | null;
+		}>(sql`
+			SELECT steam_id AS "steamId", name, joined_at AS "joinedAt", left_at AS "leftAt"
+			  FROM player_sessions
+			 WHERE server_id = ${server.id} AND (left_at IS NULL OR left_at >= ${from})
+			 ORDER BY joined_at ASC LIMIT ${NAME_SESSIONS_MAX}`);
+		const rows = await env.db.execute<{
+			ts: Date;
+			killer: string | null;
+			killerName: string | null;
+			victim: string | null;
+			victimName: string | null;
+		}>(sql`
+			SELECT ts, killer_steam_id AS killer, killer_name AS "killerName",
+			       victim_steam_id AS victim, victim_name AS "victimName"
+			  FROM kills
+			 WHERE server_id = ${server.id} AND ts >= ${from}
+			 ORDER BY ts ASC, event_time ASC LIMIT ${NAME_CHANGE_REPLAY_MAX}`);
+		let reserved = new Set<string>();
+		if (c.action === 'kick' && c.spareReserved && readReserved) {
+			try {
+				reserved = new Set(await readReserved());
+			} catch {
+				result.notes.push('Could not read the reserved slots; nobody was spared for one.');
+			}
+		}
+		// The list at the kill being replayed, a few seconds' slack for a kill received just after its
+		// player left.
+		const listedAt = sessionSweep(
+			sessions.map((s) => ({
+				steamId: s.steamId,
+				name: s.name,
+				joinedAt: s.joinedAt,
+				leftAt: s.leftAt
+			}))
+		);
+		const tracks: NameTracks = new Map();
+		const readings = new Map<string, NameReading>();
+		const kicked = (steamId: string) =>
+			c.action === 'kick' && !(c.spareReserved && reserved.has(steamId));
+		for (let i = 0; i < rows.length; i++) {
+			const r = rows[i];
+			const at = new Date(r.ts).getTime();
+			const listed = listedAt(at);
+			if (i % 1000 === 0) pruneNameTracks(c, tracks, at);
+			const shown: { steamId: string; name: string }[] = [];
+			if (r.killer && r.killerName !== null) shown.push({ steamId: r.killer, name: r.killerName });
+			if (r.victim && r.victim !== r.killer && r.victimName !== null)
+				shown.push({ steamId: r.victim, name: r.victimName });
+			for (const h of nameChangeStep(c, tracks, shown, listed, at, { kicked, readings }).hits)
+				push(
+					new Date(at),
+					`${kicked(h.player.steamId) ? 'kick' : 'flag'} ${h.listed} (${h.player.steamId}): ${h.verdict}`
+				);
+		}
+		const [feed] = await env.db
+			.select({ configured: sql<boolean>`feed_token_hash IS NOT NULL` })
+			.from(servers)
+			.where(eq(servers.id, server.id));
+		if (!feed?.configured)
+			result.notes.push(
+				'This server has no kill feed set up (Config tab), so the rule cannot see any names.'
+			);
+		result.notes.push(
+			`${rows.length} kill${rows.length === 1 ? '' : 's'} in the window, each player's name held against the one their session had: a name is checked each time its player kills or dies.`
+		);
+		if (rows.length >= NAME_CHANGE_REPLAY_MAX)
+			result.notes.push(
+				`Replayed the first ${NAME_CHANGE_REPLAY_MAX.toLocaleString('en')} kills of the window only.`
+			);
+		if (sessions.length >= NAME_SESSIONS_MAX)
+			result.notes.push(
+				`Read the first ${NAME_SESSIONS_MAX.toLocaleString('en')} sessions of the window only; players of later ones were not judged.`
+			);
+		return result;
+	}
+	if (kind === 'live_name') {
 		const [live] = await env.db
-			.select({ startedAt: serverLive.startedAt, players: serverLive.playerCount })
+			.select({ status: serverLive.status })
 			.from(serverLive)
 			.where(eq(serverLive.serverId, server.id))
 			.limit(1);
+		const status = live?.status as Status | null | undefined;
+		if (status) push(to, `name: ${liveName(cfg as LiveNameConfig, status)}`);
+		else
+			result.notes.push('The worker has not seen this server yet, so there is no score to show.');
+		result.notes.push(
+			'Nothing to replay: the rule writes the name from what the server shows at each look, whenever it changes and at most once a minute. Switched off, it puts the name back without the appended part.'
+		);
+		return result;
+	}
+	if (kind === 'rotation_shuffle') {
+		const c = cfg as RotationShuffleConfig;
+		const [live] = await env.db
+			.select({ startedAt: serverLive.startedAt, restartTimeUtc: serverLive.restartTimeUtc })
+			.from(serverLive)
+			.where(eq(serverLive.serverId, server.id))
+			.limit(1);
+		const schedule = restartScheduleOf(server.restartSchedule, live?.restartTimeUtc);
 		const w = live?.startedAt
-			? restartWindow(live.startedAt.toISOString(), RESTART_AFTER_HOURS, to.getTime())
+			? restartWindow(live.startedAt.toISOString(), schedule, to.getTime())
+			: null;
+		if (!w || !live?.startedAt)
+			result.notes.push(
+				'The worker has not read this server’s uptime yet (GET /v1/health), so there is nothing to project.'
+			);
+		else {
+			push(w.due ? to : new Date(w.dueAt), 'shuffle in the last round, for after the restart');
+			const restart = schedule.kind === 'daily' ? 'the daily restart' : 'the 24-hour restart';
+			result.notes.push(
+				`${restartsNote(schedule)}Up ${fmtUptime(w.upMs)}; ${w.due ? `${restart} comes when this round ends` : `${restart} is due in ${fmtUptime(w.untilDueMs ?? 0)}`}. A restart that comes first (a set restart time, a crash, one from the host's panel) is followed by a shuffle once the server is back.`
+			);
+		}
+		result.notes.push(
+			`Maps in turn: ${c.maps.length ? `${c.maps.map(mapName).join(', ')}, then any other in the order the rotation has it` : 'in the order the rotation has them'}; each map's control zones in turn as well. Saving the rule shuffles once straight away.`
+		);
+		return result;
+	}
+	if (kind === 'restart_notice') {
+		const c = cfg as RestartNoticeConfig;
+		const [live] = await env.db
+			.select({
+				startedAt: serverLive.startedAt,
+				players: serverLive.playerCount,
+				restartTimeUtc: serverLive.restartTimeUtc
+			})
+			.from(serverLive)
+			.where(eq(serverLive.serverId, server.id))
+			.limit(1);
+		const schedule = restartScheduleOf(server.restartSchedule, live?.restartTimeUtc);
+		const w = live?.startedAt
+			? restartWindow(live.startedAt.toISOString(), schedule, to.getTime())
 			: null;
 		if (!w || !live?.startedAt) {
 			result.notes.push(
@@ -1944,14 +2765,11 @@ export async function dryRun(
 			);
 			return result;
 		}
-		const dueAt = new Date(live.startedAt.getTime() + RESTART_AFTER_HOURS * 3600_000);
-		const v = {
-			server: server.name,
-			map: '…',
+		const dueAt = new Date(w.dueAt);
+		const v = dryRunVars(server.name, null, {
 			players: live.players,
-			max: '…',
 			uptime: fmtUptime(w.upMs)
-		};
+		});
 		if (c.leadMinutes) {
 			const leadAt = new Date(dueAt.getTime() - c.leadMinutes * 60_000);
 			push(
@@ -1964,7 +2782,7 @@ export async function dryRun(
 			`${w.due ? 'already ' : ''}broadcast: ${renderTemplate(c.message, { ...v, minutes: 0 }, MAX_CHAT)}`
 		);
 		result.notes.push(
-			`Up ${fmtUptime(w.upMs)}; the restart window ${w.due ? 'is open: the game restarts when this round ends' : `opens in ${fmtUptime(w.untilDueMs ?? 0)}`}. Times shown are the coming cycle, not a replay; each stage goes once per game start${c.repeatMinutes ? `, the main message again every ${c.repeatMinutes} min while the window stays open` : ''}, and only with at least ${c.minPlayers} on.`
+			`${restartsNote(schedule)}Up ${fmtUptime(w.upMs)}; the restart window ${w.due ? 'is open: the game restarts when this round ends' : `opens in ${fmtUptime(w.untilDueMs ?? 0)}`}. Times shown are the coming cycle, not a replay; each stage goes once per game start${c.repeatMinutes ? `, the main message again every ${c.repeatMinutes} min while the window stays open` : ''}, and only with at least ${c.minPlayers} on.`
 		);
 		return result;
 	}
@@ -2034,7 +2852,13 @@ export async function dryRun(
 				leftAt: playerSessions.leftAt
 			})
 			.from(playerSessions)
-			.where(and(eq(playerSessions.serverId, server.id), gte(playerSessions.lastSeen, from)))
+			.where(
+				and(
+					eq(playerSessions.serverId, server.id),
+					gte(playerSessions.lastSeen, from),
+					or(isNull(playerSessions.leftAt), gte(playerSessions.leftAt, from))
+				)
+			)
 			.orderBy(asc(playerSessions.joinedAt))
 			.limit(5000);
 		if (sessions.length === 5000)
@@ -2144,15 +2968,17 @@ export async function dryRun(
 			held = step.held;
 			if (!step.fire) continue;
 			// The samples hold no player lines, so the dry run cannot name anyone.
-			for (const { message } of matchBroadcastMessages(c, step.fire.end, r.count, {
-				server: server.name,
-				map: r.map,
-				players: r.count,
-				max: '…',
-				cap: DEFAULT_SCORE_CAP,
-				mvp: '…',
-				top: '…'
-			}))
+			for (const { message } of matchBroadcastMessages(
+				c,
+				step.fire.end,
+				r.count,
+				dryRunVars(server.name, null, {
+					...(r.map ? { map: mapName(r.map) } : {}),
+					players: r.count,
+					cap: DEFAULT_SCORE_CAP
+				}),
+				null
+			))
 				push(new Date(r.ts), `broadcast (${r.count} on): ${message}`);
 		}
 		result.notes.push(
@@ -2170,7 +2996,16 @@ export async function dryRun(
 			if (!r.ok || !broadcastWanted(c, r.count ?? 0)) continue;
 			if (last && r.ts.getTime() - last.getTime() < c.everyMinutes * 60_000) continue;
 			last = r.ts;
-			push(r.ts, `broadcast (${r.count} on): ${c.messages[index++ % c.messages.length]}`);
+			const message = renderTemplate(
+				c.messages[index++ % c.messages.length],
+				dryRunVars(server.name, null, {
+					...(r.map ? { map: mapName(r.map) } : {}),
+					players: r.count ?? 0,
+					...(r.max ? { max: r.max } : {})
+				}),
+				MAX_CHAT
+			);
+			push(r.ts, `broadcast (${r.count} on): ${message}`);
 		}
 		return result;
 	}

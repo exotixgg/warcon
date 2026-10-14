@@ -215,6 +215,9 @@ check trigger-update '"enabled":false' "$(req $J1 PATCH /api/servers/$SID/trigge
 check trigger-dryrun '"fires"' "$(req $J1 POST /api/servers/$SID/triggers/dry-run '{"kind":"welcome","config":{"message":"hi {name}"}}')"
 check trigger-dryrun-risk 'Steam lookup is off' "$(req $J1 POST /api/servers/$SID/triggers/dry-run '{"kind":"risk_kick","config":{"watchlist":true}}')"
 check trigger-dryrun-broadcast '"kind":"broadcast"' "$(req $J1 POST /api/servers/$SID/triggers/dry-run '{"kind":"broadcast","config":{"messages":["a"],"everyMinutes":1}}')"
+# a dry run fills the player's name ({player} is {name}) and shows … for what it does not replay
+for i in $(seq 1 10); do R=$(req $J1 POST /api/servers/$SID/triggers/dry-run '{"kind":"welcome","config":{"message":"hi {player}: {kills} kills, {org_kills} in all, on {map}"}}'); [[ "$R" == *': … kills, … in all, on …'* ]] && break; sleep 2; done
+check trigger-dryrun-placeholders ': … kills, … in all, on …' "$R"
 R=$(req $J1 POST /api/servers/$SID/triggers '{"kind":"risk_kick","name":"Watch kick","enabled":true,"config":{"watchlist":true,"reason":"watched"}}'); TID2=$(echo "$R" | sed -E 's/.*"id":"([^"]+)".*/\1/')
 R=$(req $J1 POST /api/servers/$SID/triggers '{"kind":"welcome","name":"Hello 2","enabled":true,"config":{"message":"Welcome {name}"}}'); TID3=$(echo "$R" | sed -E 's/.*"id":"([^"]+)".*/\1/')
 check trigger-delete '"ok":true' "$(req $J1 DELETE /api/servers/$SID/triggers/$TID)"
@@ -308,7 +311,7 @@ check import-post '"imported":1' "$(req $J1 POST /api/orgs/$ORG/lists/import '{"
 check import-managed '"76561198100000301":{"state":"applied","managed":true' "$(req $J1 GET /api/servers/$SID/lists/state)"
 check import-reason '"reason":"Cheating - aimbot"' "$(req $J1 GET /api/orgs/$ORG/lists/ban/entries)"
 check import-gone '0' "$(req $J1 GET /api/orgs/$ORG/lists/import | grep -c 76561198100000301)"
-check dossier-orglists '"orgLists":{"ban":{' "$(req $J1 GET /api/servers/$SID/players/76561198100000301)"
+check dossier-org-ban '"source":"org","serverId":null,"serverName":"","reason":"Cheating - aimbot"' "$(req $J1 GET /api/servers/$SID/players/76561198100000301)"
 # expiry: a ban that lifts itself ten seconds from now; members-reserved: james links a SteamID and gets a slot
 EXP=$(date -u -v+12S +%Y-%m-%dT%H:%M:%SZ 2>/dev/null || date -u -d '+12 seconds' +%Y-%m-%dT%H:%M:%SZ)
 EB="{\"steamId\":\"76561198100000701\",\"expiresAt\":\"$EXP\"}"

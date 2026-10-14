@@ -1,27 +1,49 @@
 // Labels for the cause tags the kill feed sends (`Id.Item.AK74M`, `Vehicle.Variant.Air.Rotary.
-// Littlebird.Default`, ...). The game sends no display names, so the known ones are named here and
-// anything else falls back to a readable form of its last segments. A tag is looked up in any case:
-// the game writes `ID.Item.` for some items and `Id.Item.` for others. Client-safe.
+// Littlebird.Default`, ...). The game sends no display names, so the tags it is known to send are
+// listed here, by name where one is known and in their own words where not (a rule offers only the
+// tags listed), and anything else falls back to a readable form of its last segments. A tag is
+// looked up in any case: the game writes `ID.Item.` for some items and `Id.Item.` for others.
+// Client-safe.
 
 export type CauseKind = 'weapon' | 'vehicle weapon' | 'vehicle' | 'buildable' | 'none';
 
 const LABELS: Record<string, string> = {
-	'Id.Item.AK74M': 'AK-74M',
+	// Firearms and launchers, as the game's weapon list names them. Vector, RFB and LMG_02 by
+	// calibre and class: the only .45 SMG, the only semi-automatic .308, the other LMG.
+	'Id.Item.A91': 'A-91',
+	'Id.Item.KH2002': 'KH-2002',
+	'Id.Item.TAR21': 'T-21',
+	'Id.Item.AK74M': 'AK74',
 	'Id.Item.WEPN_029': 'Galil',
 	'Id.Item.M4': 'M4',
-	'Id.Item.M500': 'M500',
+	'Id.Item.WEPN_030': 'FAL',
+	'Id.Item.WEPN_033': 'Bushmaster M17S',
+	'Id.Item.MP9': 'AMP-9',
+	'Id.Item.Vector': 'Super-45',
+	'Id.Item.SMG_03': 'PP-19 Vityaz',
+	'Id.Item.WEPN_028': 'MP5',
 	'Id.Item.MP43': 'MP43',
+	'Id.Item.M500': 'M500',
+	'Id.Item.M249': 'M249 SAW',
+	'Id.Item.LMG_02': 'PKM',
 	'Id.Item.SKS': 'SKS',
-	'Id.Item.SVDM': 'SVDM',
-	'Id.Item.KH2002': 'KH2002',
-	'Id.Item.TAR21': 'TAR-21',
-	'Id.Item.A91': 'A-91',
-	'Id.Item.SV98': 'SV-98',
+	'Id.Item.SVDM': 'SVD',
+	'Id.Item.RFB': 'BMR-308',
+	'Id.Item.Mosin': 'Mosin Nagant',
+	'Id.Item.SV98': 'SV98',
+	'Id.Item.MK22': 'MK22',
+	'Id.Item.SR_04': 'AMR 50',
+	'Id.Item.WEPN_035': 'Scout Rifle TD',
+	'Id.Item.CombatBow': 'Compound bow',
+	'Id.Item.Glock17': 'GGX 17',
+	'Id.Item.WEPN_032': 'GGX 18',
+	'Id.Item.WEPN_026': 'M1911',
+	'Id.Item.WEPN_027': 'Deagle',
+	'Id.Item.Judge': 'Judge',
 	'Id.Item.RPG7': 'RPG-7',
-	'Id.Item.MMGL': 'Grenade launcher (MMGL)',
-	'Id.Item.MK22': 'MK 22',
-	'Id.Item.Glock17': 'Glock 17',
-	'Id.Item.CombatBow': 'Combat bow',
+	'Id.Item.CGM4': 'MAAWS',
+	'Id.Item.MMGL': 'MGL-40',
+	'Id.Item.Launcher_04': '9K333 Verba',
 	// Explosives and tools
 	'Id.Item.M67Grenade': 'M67 frag grenade',
 	'Id.Item.C4Explosive': 'C4 charge',
@@ -34,6 +56,9 @@ const LABELS: Record<string, string> = {
 	'ID.Item.BuildTool.Hammer.Large': 'Large hammer',
 	'ID.Item.BuildTool.Hammer.Medium': 'Medium hammer',
 	'ID.Item.BuildTool.Hammer.Small': 'Small hammer',
+	'ID.Item.RepairTool.Drill.Light': 'Light drill',
+	'ID.Item.RepairTool.Drill.Heavy': 'Heavy drill',
+	'ID.Item.SmokeGrenade.White': 'White smoke grenade',
 	'Id.Item.VehicleSupplyCrate.Pallet.MunitionsSupply': 'Ammo supply pallet',
 	// Buildables
 	'Id.Buildable.BremmerWall': 'Bremer wall',
@@ -44,6 +69,7 @@ const LABELS: Record<string, string> = {
 	'Vehicle.Variant.Air.Rotary.Littlebird.Default': 'MH-6',
 	'Vehicle.Variant.Air.Rotary.Littlebird.MountedMachineGuns': 'AH-6M',
 	'Vehicle.Variant.Air.Rotary.Littlebird.RocketPods': 'AH-6R',
+	'Vehicle.Variant.Air.Rotary.Havoc.Default': 'Havoc',
 	'Vehicle.Variant.Air.Rotary.ROT_04.Default': 'Z20 Lakota',
 	'Vehicle.Variant.Air.Rotary.ROT_04.MountedMachineGuns': 'Z20 Lakota (miniguns)',
 	'Vehicle.Variant.Land.Tracked.TNK_01.AntiAir': 'Flakpanzer Gepard',
@@ -52,15 +78,22 @@ const LABELS: Record<string, string> = {
 	'Vehicle.Variant.Land.Tracked.SpawnVehicle.Lonestar': 'M113 APC',
 	'Vehicle.Variant.Land.Tracked.SpawnVehicle.Valkyra': 'M113 APC',
 	'Vehicle.Variant.Land.Tracked.SpawnVehicle.Manticore': 'M113 APC',
+	'Vehicle.Variant.Land.Wheeled.Humvee.Default': 'Humvee',
 	'Vehicle.Variant.Land.Wheeled.Humvee.MachineGun': 'Humvee (M249)',
 	'Vehicle.Variant.Land.Wheeled.Humvee.Minigun': 'Humvee (minigun)',
+	'Vehicle.Variant.Land.Wheeled.Kodiak.Default': 'Kodiak',
 	'Vehicle.Variant.Land.Wheeled.Kodiak.MachineGun': 'Kodiak (M249)',
 	'Vehicle.Variant.Land.Wheeled.Kodiak.Pickup': 'Kodiak (pickup)',
+	'Vehicle.Variant.Land.Wheeled.Ural.Default': 'Ural',
 	'Vehicle.Variant.Land.Wheeled.Ural.Battle': 'Ural Defender',
 	'Vehicle.Variant.Land.Wheeled.Ural.Attack': 'Ural Defender (M249)',
+	'Vehicle.Variant.Land.Wheeled.Bobcat.Default': 'Bobcat',
+	'Vehicle.Variant.Land.Wheeled.DuneBuggy.Default': 'Dune buggy',
 	'Vehicle.Variant.Stationary.Phalanx': 'Vanguard CIWS',
 	'Vehicle.Variant.Stationary.Mortar': 'L81 mortar',
 	'Vehicle.Variant.Stationary.MistralAA': 'Talon 9K-SAM',
+	'Vehicle.Variant.Stationary.STN_05': 'Drone',
+	'Vehicle.Variant.Stationary.Loudspeaker': 'Loudspeaker',
 	// Vehicle weapons
 	'Id.Vehicle.WeaponExtension.ROT_02.30mmCannon': 'Havoc 2A42 autocannon',
 	'Id.Vehicle.WeaponExtension.ROT_02.122mm': 'Havoc B-13 rockets',
@@ -76,14 +109,29 @@ const LABELS: Record<string, string> = {
 	'Id.Vehicle.WeaponExtension.WHL_05.RingMinigun': 'Humvee minigun',
 	'Id.Vehicle.WeaponExtension.WHL_07.MachineGun': 'Ural Defender M249',
 	'Id.Vehicle.WeaponExtension.STN_01.MistralAA': 'Talon 9K-SAM',
-	'Id.Vehicle.WeaponExtension.STN_02.MainCannon': 'STN 02 main cannon',
-	'Id.Vehicle.WeaponExtension.STN_03.MainBarrel': 'STN 03 main gun'
+	'Id.Vehicle.WeaponExtension.STN_02.MainCannon': 'Vanguard CIWS',
+	// the mortar's shells; Vehicle.Variant.Stationary.Mortar is the mortar itself (a roadkill, its blast)
+	'Id.Vehicle.WeaponExtension.STN_03.MainBarrel': 'L81 mortar',
+	'Id.Vehicle.WeaponExtension.STN_05.MainBarrel': 'Drone'
 };
 /**
  * What a Team kill limit leaves out of its count unless its settings say otherwise: a player who
  * runs into a teammate's barbed wire is reported as killed by whoever built it.
  */
 export const TEAM_KILL_NOT_COUNTED: readonly string[] = ['Id.Buildable.BarbedWire'];
+/**
+ * The entry of a Team kill limit's list that leaves out crashes, by the feed's own tag: a vehicle
+ * that blows up kills whoever is aboard, and the feed reports each death as a kill by its driver
+ * or pilot, with the vehicle as the cause. A vehicle blown up by a weapon has that weapon as the
+ * cause instead, so a teammate's charge or rocket is not a crash.
+ */
+export const VEHICLE_CRASH = 'VehicleExplosion';
+/** Whether a kill is a crash: a vehicle's own blast, reported as its driver's or pilot's kill. */
+export const isVehicleCrash = (k: { cause: string | null; tags: readonly string[] }): boolean =>
+	causeKind(k.cause) === 'vehicle' && k.tags.includes(VEHICLE_CRASH);
+/** An entry of a Team kill limit's list by name. */
+export const notCountedLabel = (entry: string): string =>
+	entry.toLowerCase() === VEHICLE_CRASH.toLowerCase() ? 'Vehicle crash' : causeLabel(entry);
 
 /** The table by lower-case tag, for a lookup in any case. */
 const BY_TAG = new Map(
