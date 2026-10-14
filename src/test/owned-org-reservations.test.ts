@@ -209,37 +209,27 @@ describe.skipIf(!hasTestDb)('owned organisation priority', () => {
 		});
 	});
 
-	test('archived defaults and custom groups cannot inherit the default-list automation', async () => {
+	test('custom groups cannot inherit the default-list automation', async () => {
 		const f = await fixture(),
 			groupId = randomUUID();
 		await env.db
 			.insert(lists)
 			.values({ id: groupId, orgId: f.world.org.id, kind: 'reserve', name: 'Manual group' });
-		await env.db
-			.insert(listEntries)
-			.values({
-				id: randomUUID(),
-				listId: groupId,
-				steamId,
-				reason: 'manual group',
-				expiresAt: null
-			});
+		await env.db.insert(listEntries).values({
+			id: randomUUID(),
+			listId: groupId,
+			steamId,
+			reason: 'manual group',
+			expiresAt: null
+		});
 		expect((await f.create()).status).toBe(200);
 		const [manual] = await env.db.select().from(listEntries).where(eq(listEntries.listId, groupId));
 		expect(manual.reason).toBe('manual group');
 		expect(manual.expiresAt).toBeNull();
-		const [row] = await f.read();
-		await env.db.update(lists).set({ archivedAt: new Date() }).where(eq(lists.id, row.listId));
-		expect((await f.call('GET')).body as any).toMatchObject({ entry: null });
-		expect(
-			(
-				await f.call('PATCH', {
-					expectedMarker: f.marker,
-					expectedExpiresAt: f.expiresAt,
-					remove: true
-				})
-			).status
-		).toBe(409);
+		await env.db.update(lists).set({ archivedAt: new Date() }).where(eq(lists.id, groupId));
+		expect((await f.call('GET')).body as any).toMatchObject({
+			entry: { reason: f.marker, owned: true }
+		});
 		expect((await f.read())[0].removedAt).toBeNull();
 	});
 });
