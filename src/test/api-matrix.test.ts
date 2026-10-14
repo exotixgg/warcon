@@ -104,6 +104,9 @@ const MATRIX: Record<string, Policy | typeof PER_LIST> = {
 
 	// its ban and reserved-slot lists
 	'GET api/orgs/[id]/lists': 'lists',
+	'GET api/orgs/[id]/lists/reserve/entries/[steamId]/owned': 'lists:reserve',
+	'POST api/orgs/[id]/lists/reserve/entries/[steamId]/owned': 'lists:reserve',
+	'PATCH api/orgs/[id]/lists/reserve/entries/[steamId]/owned': 'lists:reserve',
 	'GET api/orgs/[id]/ban-policy': 'lists:ban',
 	'PATCH api/orgs/[id]/ban-policy': 'orgOwner',
 	'GET api/orgs/[id]/message-pools': 'site',
@@ -151,6 +154,7 @@ const MATRIX: Record<string, Policy | typeof PER_LIST> = {
 	'GET api/servers/[id]/matches': 'cap:server.view',
 	'GET api/servers/[id]/matches/[matchId]': 'cap:server.view',
 	'GET api/servers/[id]/lists/state': 'cap:server.view',
+	'GET api/servers/[id]/lists/reserve/entries/[steamId]': 'cap:slots.manage',
 	'GET api/servers/[id]/players/[steamId]': 'cap:server.view',
 	'GET api/servers/[id]/players/[steamId]/career': 'cap:server.view',
 	'POST api/servers/[id]/players/[steamId]/steam': 'cap:server.view',
