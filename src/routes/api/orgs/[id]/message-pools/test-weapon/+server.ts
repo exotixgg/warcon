@@ -1,7 +1,7 @@
 import { eq, desc, sql, and } from 'drizzle-orm';
 import { getEnv } from '$lib/server/env';
 import { getOrg, requireOwner } from '$lib/server/access';
-import { ApiError, apiJson, param, readJson, route } from '$lib/server/http';
+import { ApiError, apiJson, forLog, param, readJson, route } from '$lib/server/http';
 import { playerSessions, servers } from '$lib/server/db/schema';
 import { requireSteamId } from '$lib/server/steam';
 import { causeKind, causeLabel } from '$lib/causes';
@@ -105,6 +105,6 @@ export const POST = route(async (event) => {
 		message: `Simulated weapon rule kill #${result.count}: ${result.action}`,
 		target: steamId,
 		detail: { poolId: body.poolId, serverId: body.serverId, weaponTag: body.weaponTag, ...result }
-	}).catch((error) => console.error('[warcon] weapon rule test audit', error));
+	}).catch((error) => console.error('[warcon] weapon rule test audit', forLog(error)));
 	return apiJson({ ok: true, ...result });
 });

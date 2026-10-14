@@ -20,6 +20,7 @@
 		['/servers', 'Servers', 'any'],
 		['/access', 'Access', 'owner'],
 		['/roles', 'Roles', 'owner'],
+		['/seasons', 'Seasons', 'owner'],
 		['/players', 'Players', 'any'],
 		['/bans', 'Ban list', 'ban'],
 		['/reserved', 'Reserved slots', 'reserve'],
@@ -88,7 +89,12 @@
 
 <nav class="strip mb-5 gap-1 border-b border-white/8 pb-3" aria-label="Organisation sections">
 	{#each tabs as [path, label] (path)}
-		<a href="{base}{path}" class="tab-link {current === path ? 'tab-link-active' : ''}">{label}</a>
+		<a
+			href="{base}{path}"
+			class="tab-link {current === path || (path && current.startsWith(`${path}/`))
+				? 'tab-link-active'
+				: ''}">{label}</a
+		>
 	{/each}
 </nav>
 

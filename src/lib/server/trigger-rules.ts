@@ -8,10 +8,17 @@ import { validateKillRate, type KillRateConfig } from './kill-rate';
 import { validateKillDistance, type KillDistanceConfig } from './kill-distance';
 import { validateTwoTeams, type TwoTeamsConfig } from './two-teams';
 import { validateAfkProtection, type AfkProtectionConfig } from './afk-protection';
+import { validateNameChange, type NameChangeConfig } from './name-change';
+import { validateBounty, type BountyConfig } from './bounty';
+import { validateRotationShuffle, type RotationShuffleConfig } from './rotation-shuffle';
+import { validateLiveName } from './live-name';
+import type { LiveNameConfig } from '$lib/live-name';
 import { causeTags } from './cause-tags';
-import { RESTART_AFTER_HOURS, restartWindow } from '$lib/uptime';
+import { MAX_RESTART_LEAD_MINUTES, restartWindow, type RestartSchedule } from '$lib/uptime';
 import { MAX_CHAT } from '$lib/chat';
-import { TEAM_KILL_NOT_COUNTED } from '$lib/causes';
+import { isVehicleCrash, TEAM_KILL_NOT_COUNTED, VEHICLE_CRASH } from '$lib/causes';
+import { mapName } from '$lib/format';
+import { UNKNOWN } from './message-vars';
 import type { SteamProfileRow } from './db/schema';
 import type { TriggerKind } from '$lib/types';
 
@@ -30,7 +37,11 @@ export const TRIGGER_KINDS: TriggerKind[] = [
 	'kill_rate',
 	'two_teams',
 	'kill_distance',
-	'afk_protection'
+	'afk_protection',
+	'name_change',
+	'bounty',
+	'rotation_shuffle',
+	'live_name'
 ];
 export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	welcome: 'Welcome whisper',
@@ -47,7 +58,11 @@ export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	kill_rate: 'Kill rate watch',
 	two_teams: 'Team balance',
 	kill_distance: 'Kill distance watch',
-	afk_protection: 'AFK protection'
+	afk_protection: 'AFK protection',
+	name_change: 'Name change watch',
+	bounty: 'Bounty',
+	rotation_shuffle: 'Rotation shuffle',
+	live_name: 'Live server name'
 };
 
 export interface WelcomeConfig {
@@ -131,10 +146,10 @@ export function pingKickStep(
 	return { state: next, kicks };
 }
 /**
- * Tells players about the game's own restart: WARDOGS restarts a server once it has been up for
- * 24 hours, at the end of the round then in progress. Two broadcasts per uptime cycle: a
- * heads-up `leadMinutes` before the window opens (0 = none) and `message` once it has, repeated
- * every `repeatMinutes` while the round drags on (0 = once).
+ * Tells players about the server's next restart ($lib/uptime's restartScheduleOf: daily at a
+ * time UTC, or 24 hours up), which happens at the end of the round then in progress. Two broadcasts per game start: a heads-up `leadMinutes` before the window opens
+ * (0 = none) and `message` once it has, repeated every `repeatMinutes` while the round drags on
+ * (0 = once).
  */
 export interface RestartNoticeConfig {
 	message: string;
@@ -146,9 +161,9 @@ export interface RestartNoticeConfig {
 /**
  * Acts on team kills the kill feed reports, counted per killer within each match: a whisper
  * from `warnAt` team kills on (0 = never), a kick at `kickAt` (0 = never). Team kills by a cause
- * in `notCounted` (feed tags, any case) are left out of the count and never acted on; they stay
- * team kills everywhere else. A rule saved before the list existed has none and leaves out
- * TEAM_KILL_NOT_COUNTED.
+ * in `notCounted` (feed tags, any case) are left out of the count and never acted on, and so are
+ * crashes when it holds VEHICLE_CRASH; they stay team kills everywhere else. A rule saved before
+ * the list existed has none and leaves out TEAM_KILL_NOT_COUNTED.
  */
 export interface TeamKillConfig {
 	warnAt: number;
@@ -204,7 +219,11 @@ export type TriggerConfig =
 	| KillRateConfig
 	| TwoTeamsConfig
 	| KillDistanceConfig
-	| AfkProtectionConfig;
+	| AfkProtectionConfig
+	| NameChangeConfig
+	| BountyConfig
+	| RotationShuffleConfig
+	| LiveNameConfig;
 
 /** A kick reason: not chat, so not held to the game's chat cap. */
 export const MAX_REASON = 200;
@@ -316,7 +335,7 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 		case 'restart_notice': {
 			const message = str(c.message, MAX_CHAT);
 			if (!message) throw new ApiError(400, 'The restart message is empty.');
-			const leadMinutes = int(c.leadMinutes, 0, 0, RESTART_AFTER_HOURS * 60 - 1);
+			const leadMinutes = int(c.leadMinutes, 0, 0, MAX_RESTART_LEAD_MINUTES);
 			const leadMessage = str(c.leadMessage, MAX_CHAT);
 			if (leadMinutes && !leadMessage)
 				throw new ApiError(400, 'Add the heads-up message, or set the heads-up to 0 minutes.');
@@ -395,6 +414,14 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 			return validateKillDistance(c);
 		case 'afk_protection':
 			return validateAfkProtection(c);
+		case 'name_change':
+			return validateNameChange(c);
+		case 'bounty':
+			return validateBounty(c);
+		case 'rotation_shuffle':
+			return validateRotationShuffle(c);
+		case 'live_name':
+			return validateLiveName(c);
 	}
 }
 
@@ -542,14 +569,14 @@ export function broadcastWanted(
 export const teamKillNotCounted = (cfg: Pick<TeamKillConfig, 'notCounted'>): readonly string[] =>
 	Array.isArray(cfg.notCounted) ? cfg.notCounted : TEAM_KILL_NOT_COUNTED;
 
-/** Whether a team-kill rule counts a team kill by this cause: one with no cause always counts. */
+/** Whether a team-kill rule counts a team kill: one with no cause always counts. */
 export function countsForTeamKill(
 	cfg: Pick<TeamKillConfig, 'notCounted'>,
-	cause: string | null | undefined
+	k: { cause: string | null; tags: readonly string[] }
 ): boolean {
-	if (!cause) return true;
-	const lower = cause.toLowerCase();
-	return !teamKillNotCounted(cfg).some((c) => c.toLowerCase() === lower);
+	const left = teamKillNotCounted(cfg).map((c) => c.toLowerCase());
+	if (left.includes(VEHICLE_CRASH.toLowerCase()) && isVehicleCrash(k)) return false;
+	return !k.cause || !left.includes(k.cause.toLowerCase());
 }
 
 /** What a team-kill rule does once the killer's count this match has reached `count`. */
@@ -587,10 +614,16 @@ const SAME_START_MS = 60_000;
 export function restartNoticeStage(
 	cfg: Pick<RestartNoticeConfig, 'leadMinutes' | 'repeatMinutes' | 'minPlayers'>,
 	prev: RestartNoticeState | null | undefined,
-	input: { startedAt: number; playerCount: number; now: number }
+	input: {
+		startedAt: number;
+		playerCount: number;
+		now: number;
+		/** the server's restart schedule (restartScheduleOf); null or undefined is 24 hours up */
+		schedule?: RestartSchedule | null;
+	}
 ): RestartNoticeStage | null {
 	if (!input.startedAt || input.playerCount < cfg.minPlayers) return null;
-	const w = restartWindow(new Date(input.startedAt).toISOString(), RESTART_AFTER_HOURS, input.now);
+	const w = restartWindow(new Date(input.startedAt).toISOString(), input.schedule, input.now);
 	if (!w) return null;
 	// The start is derived from the uptime at each look, so it moves by the look's latency: a
 	// start within SAME_START_MS of the one on record is the same run, not a restart.
@@ -666,28 +699,33 @@ export interface MatchLineVars {
 /**
  * The placeholders a match boundary fills: the result of the match that ended, and from the
  * players' lines of it, `{mvp}` (the most kills, tied players named together) and `{top}` (the
- * top three with their kills). Both are empty when nobody killed anyone.
+ * top three with their kills). Both are empty when nobody killed anyone, and `…` when the lines
+ * are not known (`null`: the dry run's samples hold none).
  */
 export function matchVars(
 	end: MatchEnd,
-	lines: MatchLineVars[] = []
+	lines: MatchLineVars[] | null = []
 ): Record<string, string | number> {
 	const top = end.scores[0]?.score ?? 0;
-	const ranked = lines.filter((l) => l.kills > 0).sort((a, b) => b.kills - a.kills);
+	const ranked = (lines ?? []).filter((l) => l.kills > 0).sort((a, b) => b.kills - a.kills);
 	const best = ranked[0]?.kills ?? 0;
 	return {
 		faction: end.leaders.join(' and '),
 		score: top,
 		scores: end.scores.map((f) => `${f.name} ${f.score}`).join(' · '),
-		previous: end.map,
-		mvp: ranked
-			.filter((l) => l.kills === best)
-			.map((l) => l.name)
-			.join(' and '),
-		top: ranked
-			.slice(0, 3)
-			.map((l) => `${l.name} ${l.kills}`)
-			.join(' · ')
+		previous: end.map ? mapName(end.map) : '',
+		mvp: lines
+			? ranked
+					.filter((l) => l.kills === best)
+					.map((l) => l.name)
+					.join(' and ')
+			: UNKNOWN,
+		top: lines
+			? ranked
+					.slice(0, 3)
+					.map((l) => `${l.name} ${l.kills}`)
+					.join(' · ')
+			: UNKNOWN
 	};
 }
 
@@ -700,7 +738,7 @@ export function matchBroadcastMessages(
 	end: MatchEnd,
 	playerCount: number,
 	vars: Record<string, string | number>,
-	lines: MatchLineVars[] = []
+	lines: MatchLineVars[] | null = []
 ): { stage: 'end' | 'start'; message: string }[] {
 	if (playerCount < cfg.minPlayers) return [];
 	const all = { ...vars, ...matchVars(end, lines) };
@@ -807,19 +845,24 @@ export const factionChangeTargets = <P>(tick: { factioned: FactionPick<P>[] }): 
 	tick.factioned.filter((f) => !!f.from);
 
 /**
- * Fills {name}, {faction}, {previous}, {server}, {map}, {players}, {max} and the rest; unknown ones
- * stay. The result is cut at `max`: MAX_CHAT for a whisper or broadcast, MAX_REASON for a kick.
+ * Fills the placeholders in `vars` (message-vars.ts builds them, $lib/placeholders lists them), in
+ * any case; unknown ones stay as typed. One pass, so a value that looks like a placeholder (a
+ * player named "{steamid}") is never filled in turn. The result is cut at `max`: MAX_CHAT for a
+ * whisper or broadcast, MAX_REASON for a kick.
  */
 export function renderTemplate(
 	text: string,
 	vars: Record<string, string | number>,
 	max: number
 ): string {
-	const lower: Record<string, string> = {};
-	for (const [k, v] of Object.entries(vars)) lower[k.toLowerCase()] = String(v);
-	return text
-		.replace(/\{([a-z_]+)\}/gi, (m, key: string) => lower[key.toLowerCase()] ?? m)
+	// a Map, so a name every object has ({constructor}) is no placeholder
+	const lower = new Map(Object.entries(vars).map(([k, v]) => [k.toLowerCase(), String(v)]));
+	const out = text
+		.replace(/\{([a-z_]+)\}/gi, (m, key: string) => lower.get(key.toLowerCase()) ?? m)
 		.slice(0, max);
+	// The cut counts UTF-16 units, on the safe side of the game's own count, so it can land inside
+	// an emoji: half a character is dropped rather than sent.
+	return /[\uD800-\uDBFF]$/.test(out) ? out.slice(0, -1) : out;
 }
 
 export interface RiskKickSignals {
@@ -835,10 +878,20 @@ export interface RiskKickSignals {
 }
 
 /** Why a joiner would be kicked under this config, or null when they pass. */
+/**
+ * A kick's verdict goes into this server's trail, the rule's last result and Discord cards, whose
+ * readers need not be able to open the server that banned the player: it says that one did, never
+ * which or why. The player page shows those to whoever may open that server.
+ */
+const ELSEWHERE = 'banned on another server of this organisation';
+const KICK_TEXT: Record<string, string> = {
+	banned_elsewhere: 'Banned on another server of this organisation',
+	resembles: 'Name resembles a banned player'
+};
+
 export function riskKickVerdict(cfg: RiskKickConfig, s: RiskKickSignals): string | null {
 	if (s.reserved && cfg.spareReserved) return null;
-	if (cfg.bannedElsewhere && s.bannedOn.length)
-		return `banned on ${s.bannedOn[0].serverName}${s.bannedOn[0].reason ? ` (${s.bannedOn[0].reason})` : ''}`;
+	if (cfg.bannedElsewhere && s.bannedOn.length) return ELSEWHERE;
 	if (cfg.watchlist && s.watched)
 		return `on the watchlist${s.watched.reason ? ` (${s.watched.reason})` : ''}`;
 	if (s.steamEnabled && s.profile && !s.profile.error) {
@@ -873,10 +926,14 @@ export function riskKickVerdict(cfg: RiskKickConfig, s: RiskKickSignals): string
 			now: s.now
 		});
 		if (risk.score >= minScore) {
-			const why = [...risk.reasons]
-				.sort((a, b) => b.weight - a.weight)
+			const why = [
+				...new Set(
+					[...risk.reasons]
+						.sort((a, b) => b.weight - a.weight)
+						.map((r) => KICK_TEXT[r.code] ?? r.text)
+				)
+			]
 				.slice(0, 3)
-				.map((r) => r.text)
 				.join('; ');
 			const what =
 				risk.level === 'low' ? `risk ${risk.score}` : `${risk.level} risk (${risk.score})`;

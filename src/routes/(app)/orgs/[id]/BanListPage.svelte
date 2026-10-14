@@ -11,6 +11,7 @@
 	import Badge from '$lib/components/Badge.svelte';
 	import BanDialog from '$lib/components/BanDialog.svelte';
 	import EditBanDialog from '$lib/components/EditBanDialog.svelte';
+	import BanReasonsPanel from './BanReasonsPanel.svelte';
 	import ImportCandidates from './ImportCandidates.svelte';
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort, matches } from '$lib/table.svelte';
@@ -146,6 +147,8 @@
 	</div>
 {/if}
 
+{#if lists.banReasons !== null}<BanReasonsPanel {org} reasons={lists.banReasons} {owner} />{/if}
+
 <div class="mb-3 flex flex-wrap items-center gap-2">
 	<input
 		class="input w-full sm:w-80"
@@ -177,8 +180,10 @@
 				<tr class={e.expired ? 'text-mist-400' : ''}>
 					<td>
 						{#if dossierBase}
-							<a href="{dossierBase}/{e.steamId}" class="font-medium text-accent hover:underline"
-								>{e.name || e.steamId}</a
+							<a
+								href="{dossierBase}/{e.steamId}"
+								data-sveltekit-preload-data="tap"
+								class="font-medium text-accent hover:underline">{e.name || e.steamId}</a
 							>
 						{:else}
 							<span class="font-medium">{e.name || e.steamId}</span>
@@ -258,6 +263,7 @@
 		orgName={org.name}
 		canOrg
 		banMessage={lists.banMessage}
+		reasons={lists.banReasons ?? []}
 		onclose={() => (banning = false)}
 		ondone={() => invalidateAll()}
 	/>

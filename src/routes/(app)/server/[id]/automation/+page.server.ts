@@ -11,8 +11,10 @@ import { listTriggers } from '$lib/server/triggers';
  * layouts (SvelteKit's __data.json), so the layout's refusal protects nothing below it. Viewers
  * see the rules read-only.
  */
-export const load: PageServerLoad = async ({ locals, params }) => {
+export const load: PageServerLoad = async ({ locals, params, depends }) => {
 	const env = getEnv();
+	// re-read on its own when a Bounty rule acts (its open bounty is on the row)
+	depends('warcon:triggers');
 	try {
 		const { server } = await requireServerCap(env, locals, params.id, 'automation.manage');
 		// What the kinds need before they can run here, so the Add menu and the editor can say so.

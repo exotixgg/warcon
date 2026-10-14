@@ -28,6 +28,8 @@ export function liveView(m: ServerMemory): LiveView {
 		gameServerId: m.identity.gameServerId,
 		startedAt: iso(m.startedAt),
 		reservedSlots: m.identity.reservedSlots,
+		restartTimeUtc: m.identity.restartTimeUtc,
+		restartTimeUtcFile: m.identity.restartTimeUtcFile,
 		throttledUntil: m.holdUntil > Date.now() ? iso(m.holdUntil) : null,
 		status: m.status,
 		players: m.players,
@@ -36,6 +38,9 @@ export function liveView(m: ServerMemory): LiveView {
 		observedAt: iso(m.observedAt)
 	};
 }
+
+/** A view without its player list, for pages that list many servers and show none of their players. */
+export const slimView = (v: LiveView): LiveView => ({ ...v, players: [] });
 
 export function liveViewFromRow(r: ServerLiveRow): LiveView {
 	return {
@@ -47,6 +52,8 @@ export function liveViewFromRow(r: ServerLiveRow): LiveView {
 		gameServerId: r.gameServerId ?? '',
 		startedAt: r.startedAt ? r.startedAt.toISOString() : null,
 		reservedSlots: r.reservedSlots ?? null,
+		restartTimeUtc: r.restartTimeUtc ?? null,
+		restartTimeUtcFile: r.restartTimeUtcFile ?? null,
 		// A hold lasts seconds; a row read cold from the database is not inside one.
 		throttledUntil: null,
 		status: saneStatus(r.status),
@@ -68,6 +75,8 @@ export async function writeLive(db: DbOrTx, m: ServerMemory, ts: Date): Promise<
 		gameServerId: m.identity.gameServerId,
 		startedAt: m.startedAt ? new Date(m.startedAt) : null,
 		reservedSlots: m.identity.reservedSlots,
+		restartTimeUtc: m.identity.restartTimeUtc,
+		restartTimeUtcFile: m.identity.restartTimeUtcFile,
 		status: m.status,
 		players: m.players,
 		playerCount: m.status?.playerCount ?? m.players.length,
