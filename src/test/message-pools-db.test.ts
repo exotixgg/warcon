@@ -89,7 +89,8 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 		const rows = await env.db
 			.select()
 			.from(outbox)
-			.where(and(eq(outbox.serverId, world.server.id), eq(outbox.triggerKind, 'message_pool')));
+			.where(and(eq(outbox.serverId, world.server.id), eq(outbox.triggerKind, 'message_pool')))
+			.orderBy(asc(outbox.id));
 		expect(rows.map((row) => row.params)).toMatchObject([
 			{ steamId: STEAM, message: 'Hello Test Player' },
 			{ steamId: STEAM, message: `Welcome to ${server.name}` }
@@ -154,7 +155,8 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 		const rows = await env.db
 			.select()
 			.from(outbox)
-			.where(and(eq(outbox.serverId, world.server.id), eq(outbox.triggerKind, 'message_pool')));
+			.where(and(eq(outbox.serverId, world.server.id), eq(outbox.triggerKind, 'message_pool')))
+			.orderBy(asc(outbox.id));
 		expect(rows).toHaveLength(1);
 		expect(rows[0].notBefore.getTime() - pickedAt.getTime()).toBe(5000);
 	});
@@ -199,7 +201,8 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 		const rows = await env.db
 			.select({ params: outbox.params })
 			.from(outbox)
-			.where(and(eq(outbox.serverId, world.server.id), eq(outbox.triggerKind, 'message_pool')));
+			.where(and(eq(outbox.serverId, world.server.id), eq(outbox.triggerKind, 'message_pool')))
+			.orderBy(asc(outbox.id));
 		expect(rows.map((row) => row.params)).toMatchObject([
 			{ message: 'Start New Map' },
 			{ message: 'Ended Old Map' }
@@ -289,7 +292,8 @@ describe.skipIf(!hasTestDb)('message pools on a real database', () => {
 		const rows = await env.db
 			.select({ params: outbox.params })
 			.from(outbox)
-			.where(and(eq(outbox.serverId, world.server.id), eq(outbox.triggerKind, 'message_pool')));
+			.where(and(eq(outbox.serverId, world.server.id), eq(outbox.triggerKind, 'message_pool')))
+			.orderBy(asc(outbox.id));
 		expect(rows.map((row) => row.params)).toMatchObject([
 			{ message: 'Welcome back Test Player: visit 2/3, time 30m/1h 0m' },
 			{ message: 'Kills Ace 14' },
