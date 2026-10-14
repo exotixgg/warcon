@@ -14,6 +14,8 @@ const ROUTES = join(import.meta.dir, '..', 'routes', 'api');
 const HERE = '76561198000000201';
 const THERE = '76561198000000202';
 const BOTH = '76561198000000203';
+// Closed-session fixtures share one instant for last_seen and left_at.
+const fixtureNow = Date.now();
 
 describe.skipIf(!hasTestDb)("a server's past players", () => {
 	let env: Env;
@@ -35,7 +37,7 @@ describe.skipIf(!hasTestDb)("a server's past players", () => {
 	beforeAll(async () => {
 		env = await testEnv();
 		w = await seedWorld(env);
-		const at = (h: number) => new Date(Date.now() - h * 3600_000);
+		const at = (h: number) => new Date(fixtureNow - h * 3600_000);
 		const session = (serverId: string, steamId: string, name: string, hoursAgo: number) => ({
 			serverId,
 			steamId,
@@ -85,17 +87,17 @@ describe.skipIf(!hasTestDb)("a server's past players", () => {
 				serverId: w.server.id,
 				steamId: old,
 				name: 'Longago',
-				joinedAt: new Date(Date.now() - 5 * day),
-				lastSeen: new Date(Date.now() - 5 * day + 3600_000),
-				leftAt: new Date(Date.now() - 5 * day + 3600_000)
+				joinedAt: new Date(fixtureNow - 5 * day),
+				lastSeen: new Date(fixtureNow - 5 * day + 3600_000),
+				leftAt: new Date(fixtureNow - 5 * day + 3600_000)
 			},
 			{
 				serverId: w.server.id,
 				steamId: HERE,
 				name: 'Krieger-then',
-				joinedAt: new Date(Date.now() - 9 * day),
-				lastSeen: new Date(Date.now() - 9 * day + 3600_000),
-				leftAt: new Date(Date.now() - 9 * day + 3600_000)
+				joinedAt: new Date(fixtureNow - 9 * day),
+				lastSeen: new Date(fixtureNow - 9 * day + 3600_000),
+				leftAt: new Date(fixtureNow - 9 * day + 3600_000)
 			}
 		]);
 		// the last day leaves out who was last on five days ago, and still counts all of HERE's time
