@@ -261,19 +261,19 @@ into your Grafana (Dashboards → New → Import); it expects the two job names 
 database panels, a [postgres_exporter](https://github.com/prometheus-community/postgres_exporter)
 scraped as job `postgres`, which is optional.
 
-| Metric                                                                                | What it is                                                                                  |
-| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
-| `warcon_players_online`, `warcon_servers{tier}`                                       | Players on every reachable server and the roster by observation tier (worker).              |
-| `warcon_observations_total{outcome}`, `warcon_observation_seconds`                    | Looks at game servers per second and how long they take (worker).                           |
-| `warcon_servers_behind`, `warcon_observations_stuck`, `warcon_observations_in_flight` | Whether the worker is keeping up: the same figures as the Admin page's Overview tab.        |
-| `warcon_deliveries_total{outcome}`, `warcon_outbox_pending`                           | Trigger actions delivered, failed, skipped or unknown, and the queue depth (worker).        |
-| `warcon_worker_lease_held`                                                            | 1 on the process that owns observation and delivery.                                        |
-| `warcon_http_requests_total{route,method,status}`, `warcon_http_request_seconds`      | Every request by SvelteKit route id (web).                                                  |
-| `warcon_feed_posts_total{outcome}`, `warcon_feed_kills_total{result}`                 | Kill feed batches accepted, refused or rejected, and events accepted, skipped or duplicate. |
-| `warcon_rate_limited_total{scope}`                                                    | Requests the in-memory limiter refused, by the limit that fired.                            |
-| `warcon_board_reads_total{outcome}`                                                   | Board pages from the minute cache (hit), a read in progress (shared) or read anew (miss).   |
-| `warcon_fleet{table}`                                                                 | Row counts of organizations, users, servers, org members, webhooks and triggers (web).      |
-| `process_*`, `nodejs_*`                                                               | CPU, memory and event-loop lag of each process.                                             |
+| Metric                                                                                | What it is                                                                                          |
+| ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| `warcon_players_online`, `warcon_servers{tier}`                                       | Players on every reachable server and the roster by observation tier (worker).                      |
+| `warcon_observations_total{outcome}`, `warcon_observation_seconds`                    | Looks at game servers per second and how long they take (worker).                                   |
+| `warcon_servers_behind`, `warcon_observations_stuck`, `warcon_observations_in_flight` | Whether the worker is keeping up: the same figures as the Admin page's Overview tab.                |
+| `warcon_deliveries_total{outcome}`, `warcon_outbox_pending`                           | Trigger actions delivered, failed, skipped or unknown, and the queue depth (worker).                |
+| `warcon_worker_lease_held`                                                            | 1 on the process that owns observation and delivery.                                                |
+| `warcon_http_requests_total{route,method,status}`, `warcon_http_request_seconds`      | Every request by SvelteKit route id (web).                                                          |
+| `warcon_feed_posts_total{outcome}`, `warcon_feed_kills_total{result}`                 | Kill feed posts accepted, refused or rejected; events: accepted, skipped, duplicate, other, repeat. |
+| `warcon_rate_limited_total{scope}`                                                    | Requests the in-memory limiter refused, by the limit that fired.                                    |
+| `warcon_board_reads_total{outcome}`                                                   | Board pages from the minute cache (hit), a read in progress (shared) or read anew (miss).           |
+| `warcon_fleet{table}`                                                                 | Row counts of organizations, users, servers, org members, webhooks and triggers (web).              |
+| `process_*`, `nodejs_*`                                                               | CPU, memory and event-loop lag of each process.                                                     |
 
 ### Configuration (`.env`)
 
@@ -344,10 +344,12 @@ them, in the panel and for API keys alike; where the server listens (its RCON ho
 the notes on the Servers page are shown to the organisation's owners only.
 
 No role reads the server's credentials. The config document leaves the panel with the RCON
-`Password`, its `PasswordHash` and the kill feed `Token` shown as `(hidden)`, for every role, org
-owners and API keys included. Leave `(hidden)` as it is and validate and apply put the server's
-current value back; type over it to change the value. A copied or downloaded document carries the
-placeholder too, so it is not a backup of those three lines. Raw RCON does not serve `/v1/config`;
+`Password`, its `PasswordHash`, the kill feed `Token` and each of the game's kill feed endpoints
+(`EventFeedEndpoints`, address and token together) shown as `(hidden)`, for every role, org owners
+and API keys included; so is any other `(…)` value with a password or token among its fields.
+Leave `(hidden)` as it is and validate and apply put the server's current value back; type over it
+to change the value. A copied or downloaded document carries the placeholder too, so it is not a
+backup of those lines. Raw RCON does not serve `/v1/config`;
 the `config`, `configValidate` and `configApply` actions are the way to the document. Nor does it
 serve `/v1/audit`: the `serverLog` action does, with the peers' addresses blank for everyone but
 the site owner, API keys included.
@@ -723,6 +725,39 @@ writes both keys into the config document and applies; the game reads them at it
 panel's origin alone: the game appends `/api/ingest/events` to it by itself. The card shows when
 the last batch arrived, so a config that did not take is visible.
 
+Since Season 2 (build CL-516586) the game ignores `[WDServerFeed]` and drops it on any apply. It
+reads its feed from the RCON block instead, as a switch and a list of endpoints, keys RCON cannot
+write: they must be in the file on the host. On those servers **Configure** mints the token and
+shows the lines to paste under `[/Script/WDRCON.WDRCONSettings]` in `ServerSettings.ini`, then
+restart the server:
+
+```ini
+bEventFeedEnabled=True
++EventFeedEndpoints=(Url="https://your-panel.example/api/ingest/events",Token="wkf_…")
+EventFeedServerName="Your server"
+```
+
+Unlike `[WDServerFeed]`, the game posts to this `Url` exactly as written, so it carries the path.
+Lines copied from the card before 15 October 2026 named the origin alone and never arrive: copy
+the line again and restart the server. The list can hold other endpoints beside Warcon's. After **Replace token**, paste the new line in
+place of the old one. `EventFeedServerName` is the name the game sends with each batch; Warcon
+goes by the token, so keep one such line if the file already has it.
+
+Season 2 also posts the match's state as it changes, the match's result when it ends, and players
+joining and leaving. The state shows on the server's Overview as **Match** (loading the map,
+waiting for players, playing, match over), which the status alone cannot tell; a state from before
+the game last restarted is not shown. The result is the game's own: its winner and final scores go
+on the match in place of what Warcon saw at its last look before the end (a point or two behind,
+or the other side in a close finish), and so into the match history, the players' wins and the
+Match broadcast rule. Warcon still decides from its own looks where one match ends and the next
+begins; a result that arrives up to two minutes after that look corrects the match it closed, and
+one naming other factions than the scoreboard's is not used. Every state and result is also kept
+as it came (the `match_events` table: when it arrived, the game's match clock and match id, the
+winner as the game named it and the scores), the game's own record of its matches; a state the
+same as the last one kept is counted (`repeat` in `warcon_feed_kills_total`) rather than kept again.
+Joins and leaves are counted (`other`, see [Metrics](#metrics-prometheus)) and not used: Warcon
+reads who is on from the server, as on every build.
+
 What the feed adds: a live kill feed on the server's Overview tab, a **Kills** tab with the whole
 history (filter by killer, victim, either side, weapon or vehicle, kind of kill and minimum
 distance, with a count, older pages and new kills arriving live; the filter lives in the URL, so a
@@ -927,8 +962,9 @@ change in cash, each opening its match page. Everything is read at page load; th
 player's totals per server, the matches from the player's own rows.
 
 Every server page has a **Matches** tab: the match history, newest first, with the map, when it
-started, how long it ran, the winner with the final scores (or "abandoned" for a match a restart
-closed without a result) and how many played. A match that has ended opens to its page: the
+started, how long it ran, the winner with the final scores (the game's own where its feed reports
+them, see [Kill feed](#kill-feed); "abandoned" for a match a restart closed without a result) and
+how many played. A match that has ended opens to its page: the
 final scores, the score of each faction over the match (from the analytics samples), awards
 judged at read time (most kills, best K/D at ten kills or more, longest shot, best streak,
 richest match; none for a match under twenty minutes), a sortable scoreboard of every player's
@@ -936,7 +972,8 @@ line and the match's kill feed. Both are public too under the leaderboards switc
 `/s/<id>/matches`.
 
 An org owner can **purge a server's stats** at the foot of its Settings tab: every recorded kill,
-match and match row of the server is deleted, for good, after typing the server's name back.
+match, match row and match event of the server is deleted, for good, after typing the server's
+name back.
 Player sessions stay, since they are presence rather than stats. Careers and boards for the
 server start again from the next match, and the match in progress is recorded from the purge on.
 The purge is audited with the counts.
