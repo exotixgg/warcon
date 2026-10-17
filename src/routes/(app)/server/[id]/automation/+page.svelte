@@ -176,7 +176,9 @@
 										? 'reserved slot'
 										: action === 'rotation_shuffle'
 											? 'shuffle'
-											: action;
+											: action === 'restart_skip'
+												? 'skip map'
+												: action;
 	const label = (kind: TriggerKind) => KINDS.find((k) => k.kind === kind)?.label ?? kind;
 	const blurb = (kind: TriggerKind) => KINDS.find((k) => k.kind === kind)?.blurb ?? '';
 	/** Why a kind cannot run on this server yet, or '' when it can. */
@@ -203,6 +205,11 @@
 					: !canChat
 						? 'Saving needs the Chat capability as well as Automation: the bounty is announced to the server.'
 						: '';
+			case 'empty_reset':
+			case 'restart_skip':
+				return canMatch
+					? ''
+					: 'Saving needs the Match control capability as well as Automation: the rule changes the map.';
 			case 'rotation_shuffle':
 				return canConfig
 					? ''
@@ -231,6 +238,8 @@
 	let canBanHere = $derived(can(data.server.caps, 'bans.manage'));
 	/** a Rotation shuffle rule rewrites the rotation in the config document */
 	let canConfig = $derived(can(data.server.caps, 'config.apply'));
+	/** an Empty-server map reset and a Skip map after restart rule change the map */
+	let canMatch = $derived(can(data.server.caps, 'match.control'));
 	let canBanOrg = $derived(can(data.server.caps, 'lists.ban'));
 	/** Charges that are placed and set off from anywhere: how far away the killer was says nothing. */
 	const PLACED = new Set([
@@ -319,7 +328,9 @@
 							? 'Needs Reserved slots'
 							: kind === 'rotation_shuffle' || kind === 'live_name'
 								? 'Needs Config & settings'
-								: '';
+								: kind === 'empty_reset' || kind === 'restart_skip'
+									? 'Needs Match control'
+									: '';
 	/** A Bounty rule's texts until they are written: a slot is named, an announcement-only rule asks. */
 	const bountyTexts = (reward: 'slot' | 'none') =>
 		reward === 'slot'
@@ -639,7 +650,8 @@
 			bannedElsewhere: b('bannedElsewhere', true),
 			watchlist: b('watchlist', false),
 			kickAtScore: kickAtScoreOf(c),
-			spareReserved: b('spareReserved', true),
+			// a High ping kick saved before it could spare reserved slots spares nobody
+			spareReserved: b('spareReserved', kind !== 'ping_kick' || !t),
 			reason: s(
 				'reason',
 				kind === 'name_filter'
@@ -742,11 +754,13 @@
 			? 'Preview next cycle'
 			: kind === 'rotation_shuffle'
 				? 'Preview next shuffle'
-				: kind === 'name_filter'
-					? 'Dry run, past players'
-					: kind === 'ping_kick'
-						? 'Check dry-run limits'
-						: 'Dry run, last 24 h';
+				: kind === 'restart_skip'
+					? 'Preview next restart'
+					: kind === 'name_filter'
+						? 'Dry run, past players'
+						: kind === 'ping_kick'
+							? 'Check dry-run limits'
+							: 'Dry run, last 24 h';
 	const lines = (text: string) =>
 		text
 			.split(/[\n,]/)
@@ -815,6 +829,7 @@
 				return {
 					maxPingMs: Number(f.maxPingMs),
 					durationSeconds: Number(f.durationSeconds),
+					spareReserved: f.spareReserved,
 					reason: f.reason
 				};
 			case 'restart_notice':
@@ -906,6 +921,8 @@
 				return { maps: f.mapOrder };
 			case 'live_name':
 				return { base: f.liveBase, append: f.liveAppend };
+			case 'restart_skip':
+				return {};
 		}
 	}
 
@@ -1042,7 +1059,7 @@
 					.filter(Boolean)
 					.join(' · ');
 			case 'ping_kick':
-				return `ping over ${c.maxPingMs} ms for ${c.durationSeconds} s`;
+				return `ping over ${c.maxPingMs} ms for ${c.durationSeconds} s${c.spareReserved ? ' · spares reserved slots' : ''}`;
 			case 'restart_notice':
 				return `"${c.message}"${c.leadMinutes ? ` · heads-up ${c.leadMinutes} min before` : ''}${c.repeatMinutes ? ` · again every ${c.repeatMinutes} min` : ''} · at least ${c.minPlayers} on`;
 			case 'match_broadcast':
@@ -1137,6 +1154,8 @@
 			}
 			case 'live_name':
 				return `${c.base} + ${c.append} · at most once a minute`;
+			case 'restart_skip':
+				return 'Skips the map a restart starts on, when the rotation does not have it';
 		}
 	}
 </script>
@@ -1395,7 +1414,9 @@
 				? 'Next cycle'
 				: r.kind === 'rotation_shuffle'
 					? 'Next shuffle'
-					: 'Dry run'} · {title}</span
+					: r.kind === 'restart_skip'
+						? 'Next restart'
+						: 'Dry run'} · {title}</span
 		>
 		{#if r.kind === 'restart_notice'}
 			<span
@@ -1409,6 +1430,8 @@
 					? ''
 					: 's'} before the next restart</span
 			>
+		{:else if r.kind === 'restart_skip'}
+			<span>The map is checked at the first look after the restart</span>
 		{:else if r.kind === 'name_filter'}
 			<span
 				>Everyone who has played here: would have matched <b
@@ -1685,6 +1708,21 @@
 						Only the rotation in the config document is written, as Apply on the Map rotation tab
 						does. The new order is turned so the map that follows the one on comes next. One rule
 						per server.
+					</p>
+				{:else if f.kind === 'restart_skip'}
+					<div class="space-y-1.5 text-[13px]">
+						<span class="field-label">When</span>
+						<p>
+							At the panel's first look after each restart, from the next restart on. A restarted
+							server comes up on a map of the game's own choosing and only then moves on to its
+							rotation. When the rotation does not have that map and its modes, the rule ends the
+							match, so the rotation's next map comes up at once.
+						</p>
+					</div>
+					<p class="note">
+						Left alone: a map the rotation has, a rotation that is off, and a match the panel first
+						sees more than ten minutes after the restart with a side already scoring. To skip the
+						map the server is on now, use Force end match on the Overview. One rule per server.
 					</p>
 				{:else if f.kind === 'live_name'}
 					<label class="block"
@@ -2141,6 +2179,12 @@
 							/>
 							seconds
 						</div>
+					</fieldset>
+					<fieldset class="space-y-1.5 text-[13px]">
+						<legend class="field-label">Never kick</legend>
+						<label class="flex items-center gap-2"
+							><input type="checkbox" bind:checked={f.spareReserved} /> players with a reserved slot</label
+						>
 					</fieldset>
 					<fieldset class="space-y-2">
 						<legend class="field-label">Kick reason, shown to the player</legend>
