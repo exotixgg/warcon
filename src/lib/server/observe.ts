@@ -132,6 +132,11 @@ export interface ServerMemory {
 	closed: ClosedMatch | null;
 	/** each player's line of the match in progress, from the scoreboard (match-players.ts) */
 	tallies: Tallies;
+	/**
+	 * Who holds a reserved slot, for the rules: the server's list as the panel keeps it, the one in
+	 * its config document (Observed.configured). A live build takes that up only when it next
+	 * starts, so its running list can lag by up to a day; the rules do not wait for it.
+	 */
 	reserved: Set<string>;
 	/** when `reserved` was last read from the game; 0 until a read succeeded */
 	reservedAt: number;
@@ -1032,7 +1037,7 @@ async function keepLists(
 	if (started - m.listsAt >= s.listsSnapshotMs) {
 		m.listsAt = started;
 		observed = await liveObserved(client, m.identity.features);
-		m.reserved = new Set(observed.reserved);
+		m.reserved = new Set(observed.configured);
 		m.reservedAt = started;
 		await writeSnapshot(env, m.server.id, observed, ts);
 	}
@@ -1047,7 +1052,7 @@ async function keepLists(
 			lane: 'held'
 		});
 		if (synced.observed) {
-			m.reserved = new Set(synced.observed.reserved);
+			m.reserved = new Set(synced.observed.configured);
 			m.reservedAt = started;
 		}
 		if (synced.bans) m.bans = new Map(synced.bans.map((b) => [b.steamId, b]));
