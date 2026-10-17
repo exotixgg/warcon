@@ -19,6 +19,7 @@ import {
 	timestamp,
 	uniqueIndex
 } from 'drizzle-orm/pg-core';
+import { storable } from './storable';
 
 const ts = (name: string) => timestamp(name, { withTimezone: true, mode: 'date' });
 
@@ -26,11 +27,12 @@ const ts = (name: string) => timestamp(name, { withTimezone: true, mode: 'date' 
  * jsonb that hands the value to Bun's SQL driver as is. Drizzle's own jsonb() stringifies first
  * and Bun then JSON-encodes that string again, so arrays and objects landed in Postgres as JSON
  * *strings* (jsonb_typeof = 'string'): fine to read back through Drizzle, unusable inside SQL.
- * Migration 0008 repairs rows written that way. Reads still accept the old shape.
+ * Migration 0008 repairs rows written that way. Reads still accept the old shape. Strings Postgres
+ * refuses in jsonb (NUL, half a surrogate pair) are made storable first (./storable).
  */
 const jsonb = customType<{ data: unknown; driverData: unknown }>({
 	dataType: () => 'jsonb',
-	toDriver: (value) => value,
+	toDriver: (value) => storable(value),
 	fromDriver: (value) => {
 		if (typeof value !== 'string') return value;
 		try {
@@ -245,6 +247,22 @@ export const orgBanReasons = pgTable('org_ban_reasons', {
 	/** BanReason[], in the order the buttons show */
 	reasons: jsonb('reasons').notNull(),
 	updatedAt: ts('updated_at').notNull().defaultNow()
+});
+
+/**
+ * An org's saved messages ($lib/saved-messages): ready-made chat lines for its staff, written by
+ * its owners. No row means none. A row of its own, like the quick reasons, so the worker's roster
+ * read and every org access check, which select the whole organisations row, never carry them.
+ */
+export const orgSavedMessages = pgTable('org_saved_messages', {
+	orgId: text('org_id')
+		.primaryKey()
+		.references(() => organizations.id, { onDelete: 'cascade' }),
+	/** SavedMessage[], in the order the pickers list them */
+	messages: jsonb('messages').notNull(),
+	updatedAt: ts('updated_at').notNull().defaultNow(),
+	/** who saved them last; null once that account is deleted */
+	updatedBy: text('updated_by').references(() => user.id, { onDelete: 'set null' })
 });
 
 /**
@@ -892,7 +910,8 @@ export const triggers = pgTable(
 				'name_change',
 				'bounty',
 				'rotation_shuffle',
-				'live_name'
+				'live_name',
+				'restart_skip'
 			]
 		}).notNull(),
 		name: text('name').notNull(),
