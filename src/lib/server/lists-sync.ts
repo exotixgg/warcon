@@ -50,6 +50,7 @@ import {
 	type SyncPlan
 } from './lists-plan';
 import type { DbOrTx } from './db';
+import { storableText } from './db/storable';
 import type { Ban, Features, ListSyncServer, ListSyncSummary } from '$lib/types';
 
 /** A failed add or remove is not retried for this long. */
@@ -72,7 +73,7 @@ export interface SyncResult extends ListSyncServer {
 	/** why nothing ran, when nothing ran */
 	skipped?: 'busy' | 'suspended';
 	/** the server's lists after the run; the poller keeps its in-memory copy from this */
-	observed?: { bans: string[]; reserved: string[] };
+	observed?: { bans: string[]; reserved: string[]; configured: string[] };
 	/** the bans the lists put on this server; the worker removes these players on sight */
 	bans?: PanelBan[];
 }
@@ -334,12 +335,13 @@ export async function writeSnapshot(
 			await tx
 				.insert(serverBans)
 				.values(
+					// the game's text can hold what Postgres refuses: a NUL in a reason someone sent it
 					bans.map((b) => ({
 						serverId,
 						steamId: b.steamId,
-						reason: b.reason || '',
-						bannedBy: b.bannedBy || '',
-						bannedAtUtc: b.bannedAtUtc || '',
+						reason: storableText(b.reason || ''),
+						bannedBy: storableText(b.bannedBy || ''),
+						bannedAtUtc: storableText(b.bannedAtUtc || ''),
 						seenAt: ts
 					}))
 				)
@@ -398,7 +400,8 @@ export async function noteLocalEdit(
 	steamId: string,
 	opts: { reason?: string; pendingRestart?: boolean; ts?: Date } = {}
 ): Promise<void> {
-	const { reason = '', pendingRestart = false, ts = new Date() } = opts;
+	const { pendingRestart = false, ts = new Date() } = opts;
+	const reason = storableText(opts.reason ?? '');
 	if (kind === 'ban') {
 		if (op === 'remove') {
 			await env.db
@@ -632,7 +635,11 @@ async function run(
 }
 
 const refOf = (r: { kind: Kind; steamId: string }) => `${r.kind}:${r.steamId}`;
-const flat = (o: Observed) => ({ bans: o.bans.map((b) => b.steamId), reserved: o.reserved });
+const flat = (o: Observed) => ({
+	bans: o.bans.map((b) => b.steamId),
+	reserved: o.reserved,
+	configured: o.configured
+});
 
 interface Failed {
 	kind: Kind;

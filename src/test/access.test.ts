@@ -517,9 +517,11 @@ describe.skipIf(!hasTestDb)('access', () => {
 			const rules: [string, Record<string, unknown>, string][] = [
 				['welcome', { message: 'hello' }, 'chat.send'],
 				['empty_reset', { map: 'Bakurani', afterMinutes: 10 }, 'match.control'],
+				['restart_skip', {}, 'match.control'],
 				['risk_kick', { vacBans: true }, 'players.kick'],
 				['name_filter', { characters: 'ascii' }, 'players.kick'],
 				['name_filter', { characters: 'ascii', action: 'alert' }, 'players.kick'],
+				['ping_kick', { maxPingMs: 250, spareReserved: true }, 'players.kick'],
 				['team_kill', { kickAt: 3 }, 'players.kick'],
 				[
 					'team_kill',
@@ -1331,7 +1333,8 @@ describe.skipIf(!hasTestDb)('access', () => {
 				afk_protection: {},
 				bounty: {},
 				rotation_shuffle: {},
-				live_name: { base: 'Demo Clan #1' }
+				live_name: { base: 'Demo Clan #1' },
+				restart_skip: {}
 			};
 			const save = (kind: string, name: string, config: Record<string, unknown>) =>
 				api(w, 'owner', 'POST api/servers/[id]/triggers', {
