@@ -31,7 +31,14 @@ const LIST_EDITS: Record<string, { kind: Kind; op: 'add' | 'remove' }> = {
 	reservedRemove: { kind: 'reserve', op: 'remove' }
 };
 
-function messageOf(result: unknown): string {
+/**
+ * Game actions one person or key may send in a minute, counted together however they are sent:
+ * one at a time here, or several at once by an announcement (announce.ts).
+ */
+export const ACTIONS_PER_MINUTE = 120;
+export const actionBudget = (userId: string) => `rcon:${userId}`;
+
+export function messageOf(result: unknown): string {
 	if (
 		result &&
 		typeof result === 'object' &&
@@ -113,7 +120,7 @@ export async function runAction(
 			'Use the managed ban form or list API: reason, severity, five-digit ticket and internal description are required.'
 		);
 	// Pages read the live view; direct game reads are for tools and the odd refresh, not a poll loop.
-	assertRate(`rcon:${user.id}`, 120, 60_000);
+	assertRate(actionBudget(user.id), ACTIONS_PER_MINUTE, 60_000);
 
 	// The game's answers as it sent them are what a connection test shows, and that needs Config
 	// & settings; a viewer gets the shaped status and the feature list.
