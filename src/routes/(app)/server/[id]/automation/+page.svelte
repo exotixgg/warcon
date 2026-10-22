@@ -24,7 +24,7 @@
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort, matches } from '$lib/table.svelte';
 	import { watchLive } from '$lib/live';
-	import { RULE_KINDS } from '$lib/rule-kinds';
+	import { FEED_KINDS, RULE_KINDS } from '$lib/rule-kinds';
 	import RulePicker from '$lib/components/RulePicker.svelte';
 	import { identity } from '$lib/health.svelte';
 	import { restartScheduleOf } from '$lib/uptime';
@@ -422,6 +422,23 @@
 	let rows = $derived(
 		onlyFailing ? data.triggers.filter((t) => health.get(t.id)?.failing) : data.triggers
 	);
+	// The kill feed rules that are on while nothing comes from the feed ($lib/feed-health): they say
+	// so on their rows, and one notice above the list names them.
+	let feedSilent = $derived(data.feedStatus.state === 'silent');
+	const onFeed = (t: { kind: TriggerKind; enabled: boolean }) =>
+		feedSilent && t.enabled && FEED_KINDS.includes(t.kind);
+	let waitingOnFeed = $derived(data.triggers.filter(onFeed));
+	/** "Bounty", "Bounty and Team kills", "Bounty, Team kills and Long shots", "5 rules" */
+	let waitingNames = $derived.by(() => {
+		const names = waitingOnFeed.map((t) => t.name);
+		if (names.length > 3) return `${names.length} rules`;
+		return names.length > 1
+			? `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`
+			: (names[0] ?? '');
+	});
+	let feedStarted = $derived(
+		data.feedStatus.startedAt ? fmtAgo(data.feedStatus.startedAt, now) : ''
+	);
 
 	interface Form {
 		id: string | null;
@@ -814,6 +831,7 @@
 					allowed: lines(f.allowed),
 					action: f.nameAction,
 					spareReserved: f.spareReserved,
+					exempt: f.exempt.split(/[\s,]+/).filter(Boolean),
 					reason: f.reason
 				};
 			case 'name_change':
@@ -1027,9 +1045,14 @@
 				);
 				const blocked = ((c.blocked as string[] | undefined) ?? []).length;
 				const allowed = ((c.allowed as string[] | undefined) ?? []).length;
+				const exempt = ((c.exempt as string[] | undefined) ?? []).length;
 				const lists = [
 					c.builtinWords && 'built-in list',
 					blocked && `${blocked} word${blocked === 1 ? '' : 's'}`
+				].filter(Boolean);
+				const spares = [
+					c.spareReserved && 'reserved slots',
+					exempt && `${exempt} player${exempt === 1 ? '' : 's'}`
 				].filter(Boolean);
 				return [
 					c.characters === 'ascii'
@@ -1043,7 +1066,7 @@
 						? `${lists.join(' and ')}${allowed ? `, ${allowed} exception${allowed === 1 ? '' : 's'}` : ''}`
 						: '',
 					c.action === 'alert' ? 'alert only' : 'kick',
-					c.spareReserved ? 'spares reserved slots' : ''
+					spares.length ? `spares ${spares.join(' and ')}` : ''
 				]
 					.filter(Boolean)
 					.join(' · ');
@@ -1177,6 +1200,9 @@
 				{#if lastAction}· last action <span title={fmtTime(lastAction)}
 						>{fmtAgo(lastAction, now)}</span
 					>{/if}
+				{#if waitingOnFeed.length}
+					· <span class="text-warn">{waitingOnFeed.length} waiting on the kill feed</span>
+				{/if}
 				{#if failingCount}
 					· <button
 						type="button"
@@ -1197,6 +1223,22 @@
 		>
 	{/if}
 </div>
+
+{#if waitingOnFeed.length}
+	<div
+		class="mb-3 flex flex-wrap items-center justify-between gap-2 rounded-ctl border border-warn/30 bg-warn/10 px-3 py-2 text-[13px]"
+	>
+		<span class="min-w-0 grow basis-105"
+			><span class="font-semibold">The kill feed is silent.</span>
+			<span class="text-mist-400"
+				>Nothing has come from it since the server started {feedStarted}, so {waitingNames} cannot act.</span
+			></span
+		>
+		{#if can(data.server.caps, 'config.apply')}
+			<a class="btn btn-sm" href="/server/{encodeURIComponent(id)}/config">Check the kill feed</a>
+		{/if}
+	</div>
+{/if}
 
 <!-- A dry run from a row opens here, above the list, so the rows never change height. -->
 {#if dry && dryFor !== 'form' && !form}
@@ -1298,8 +1340,14 @@
 							{/if}
 						</div>
 					{:else}
-						<!-- One of four shapes, most urgent first: failing, off, fired, never fired. -->
-						<div class="mt-0.5 text-[12px] {h?.failing ? 'text-mist-100' : 'text-mist-600'}">
+						<!-- One of five shapes, most urgent first: failing, off, waiting on a silent kill feed, fired, never fired. -->
+						<div
+							class="mt-0.5 text-[12px] {h?.failing
+								? 'text-mist-100'
+								: onFeed(t)
+									? 'text-warn'
+									: 'text-mist-600'}"
+						>
 							{#if h?.failing}
 								Latest actions failed · <span class="font-mono text-[11.5px] text-mist-400"
 									>{h.outcome}</span
@@ -1310,6 +1358,11 @@
 								>
 							{:else if !t.enabled}
 								Off · {#if t.lastFiredAt}last fired <span title={fmtTime(t.lastFiredAt)}
+										>{fmtAgo(t.lastFiredAt, now)}</span
+									>{:else}never fired{/if}
+							{:else if onFeed(t)}
+								Waiting on the kill feed · nothing since the server started {feedStarted} ·
+								{#if t.lastFiredAt}last fired <span title={fmtTime(t.lastFiredAt)}
 										>{fmtAgo(t.lastFiredAt, now)}</span
 									>{:else}never fired{/if}
 							{:else if t.lastFiredAt}
@@ -2042,6 +2095,20 @@
 									><input type="checkbox" bind:checked={f.spareReserved} /> Never players with a reserved
 									slot</label
 								>
+							</fieldset>
+							<fieldset class="space-y-2 text-[13px]">
+								<legend class="field-label">Never these players (optional)</legend>
+								<textarea
+									class="input font-mono text-[12.5px]"
+									rows="3"
+									data-plain
+									bind:value={f.exempt}
+									aria-label="SteamIDs the rule never acts on, one per line"
+									placeholder="SteamID64, one per line"></textarea>
+								<p class="text-[12px] text-mist-600">
+									To keep your clan tag to your staff, block it as a word (abc for [ABC]) and list
+									them here.
+								</p>
 							</fieldset>
 						</div>
 						<div class="space-y-3 sm:border-l sm:border-black sm:pl-6">

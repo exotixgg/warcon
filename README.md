@@ -94,6 +94,10 @@ What is in the box:
 - **A modifier on every map**: the Map rotation tab adds Infantry Only or Hardcore to every rotation
   entry whose map offers it, or takes it off them all, in one apply. It is there where the rotation
   is edited through the config document (every live build so far), so it needs Config & settings.
+- **Map sets**: an organisation keeps whole rotations under a name, say an infantry set and a
+  standard one, and the Map rotation tab loads one in place of the server's rotation in one apply,
+  then switches back the same way. Owners save a server's rotation as a set, or paste one in from
+  a text file. See [Map sets](#map-sets).
 - **A new rotation order every day**: the Map rotation tab's **Shuffle** deals the entries out with
   the maps in turn, so no map plays twice in a row, and each map's control zones in turn too; a
   [Rotation shuffle](#automation-triggers) rule does it once a day, so a server does not start on
@@ -108,6 +112,12 @@ What is in the box:
 - **Group whispers**: one message to everyone on a faction, from the Overview's message box, or to
   the players ticked on the Players tab. The game has no route for it, so Warcon whispers each of
   them in turn and says who got it.
+- **Announcements**: one message on every server of the organisation at once, or on the ones
+  ticked, from the Dashboard, the Players page or the organisation's Servers tab. Each server gets it
+  as a broadcast, with its own row in the audit trail, and the panel says which servers took it.
+- **Everyone online on one page**: the Players page lists the players of all the organisation's
+  servers in one table, the way each server's Players tab does, with the server beside each of
+  them; whisper, move, kill, kick and ban act on that player's server.
 - **Demo mode**: a built-in mock game server so you can try everything before pointing it at a real one.
 
 The protocol was reverse-engineered from `rcon.wardogs.com`; see [docs/wardogs-api.md](docs/wardogs-api.md).
@@ -359,7 +369,7 @@ the site owner, API keys included.
 
 Beyond server roles, an **org owner** adds, edits and removes the org's servers, manages members,
 roles, per-server grants and invite links and Discord webhooks, writes the
-[saved messages](#saved-messages), and sees the org's audit trail. The
+[saved messages](#saved-messages) and the [map sets](#map-sets), and sees the org's audit trail. The
 **site owner** creates and deletes organisations, manages every account, and sees the whole trail.
 
 Members see the audit trail for their own actions plus everything on servers where their role
@@ -430,7 +440,8 @@ through `/api/passkeys/*`, and codes, recovery keys and Steam through the panel'
 Each organisation keeps a list of **saved messages**: ready-made lines its staff send often, such
 as a rules reminder, a restart warning or where to find the community's Discord. Wherever a chat
 line is typed (the Overview's _Message to_, a whisper from the Players tab, to one player or to
-those ticked, and the whisper on a player's page), **Saved messages** beside the box opens the list,
+those ticked, the whisper on a player's page, and an announcement), **Saved messages** beside the
+box opens the list,
 with a search from six messages on. Picking one puts its text in the box, where it can still be
 changed; nothing goes out until it is sent. A saved message is sent as written: placeholders such as
 `{name}` belong to [automation rules](#placeholders) and are not filled in here.
@@ -441,6 +452,67 @@ them. **Save** keeps the whole list, and the tab says when it was last saved and
 who can chat on a server (_Chat_) sees the list there, API keys with _Chat_ included; only an owner
 changes it, never a key, and every save is in the organisation's audit trail with the list it
 saved.
+
+### Map sets
+
+A **map set** is a whole rotation kept under a name, such as an infantry set and a standard King of
+the Hill one, for any of the organisation's servers. On a server's **Map rotation** tab, pick one
+under _Map set_ and **Load** it: its entries take the place of the rotation in the table, and
+**Apply to server** writes them to the server's config document like any other rotation edit, so
+nothing changes until then and **Discard** goes back. To switch back, load the other set. The note
+under the table names the set a server's rotation is, also after a Shuffle has put it in another
+order. A set is its entries only: whether the rotation is on, and Ordered or Random, stay as each
+server has them.
+
+The organisation's owners keep the sets. **Save as…** on the Map rotation tab keeps the entries in
+the table (unapplied edits included) as a new set, or, given the name of one that exists, in place
+of its entries. The organisation's **Map sets** tab lists them, with how many entries each has on
+each map and its modifiers, and makes or changes one from its lines as `ServerSettings.ini` has
+them, one entry a line (`.RotationEntries=(Map="Kavkazi",Experiences="Bakurani_KOTH_02+KOTH_InfantryOnly",…)`),
+so a rotation kept in a text file, or the output of the community rotation builder, can be pasted
+in as it is; headings, comments and the section's other keys are passed over, and a line that sets
+an entry the panel cannot read is named, with the reason, before anything is saved. The lines are
+read as the server reads its file, so the set plays what they would: `!RotationEntries=ClearArray`
+starts the list again, `+` adds an entry only once, and `-` takes one out. **Copy lines**
+gives a set's lines back. An organisation keeps up to 20 sets of up to 300 entries each, names
+unique ignoring case. Each map, game mode, time of day and control zone is one of the game's ids
+(letters, digits, `_`, `.` and `-`), as the game's own pickers name them.
+
+Loading a set is a config apply, so it needs _Config & settings_ on the server, as the rest of the
+tab's document editing does, and it is there on builds that edit the rotation through the config
+document (every live build so far). Whoever holds _Config & settings_ on a server sees the sets
+there, API keys with it included; only an owner saves, renames or deletes one, never a key, and
+each change is in the organisation's audit trail with the set's name and size.
+
+### Announcements
+
+**Announce**, on the Dashboard, the Players page and an organisation's Servers tab, sends one
+message to several of the organisation's servers at once: a broadcast on each, the same as one sent
+from a server's Overview. It lists the organisation's servers on which you hold _Chat_, all ticked,
+with how many are on each; untick those that should not get it. A server where your role does not
+include Chat is not offered (the dialog says how many there are), and an announcement goes to one
+organisation's servers, so someone who can see several picks one. The organisation's
+[saved messages](#saved-messages) are there to pick from.
+
+Each server answers for itself. The dialog marks each one sent or not sent, with the reason (a
+server that cannot be reached, say), and those that did not take it stay ticked, so **Send again**
+goes to them alone. Every server keeps its broadcast in its own audit trail, and in its Discord
+channels, as one sent from its Overview would be. The rows of one announcement carry the same id in
+their detail, which tells them from another sending of the same text, and a search of the trail for
+the message finds them. Each server counts as one of the 120 game actions a minute a person or key
+may send.
+
+### Players online
+
+The **Players** page in the header lists everyone on the organisation's servers in one table: each
+server's Online now table, with a Server column and a filter by server, and the same flags
+(watched, risk, new), reserved slots, faction and score. Each row acts on its own server with what
+you may do there: whisper, move, kill, kick and ban show where your role includes them, and players
+ticked on several servers get one group whisper per server. The page follows the header's
+organisation scope and shows one organisation at a time, with a picker when you can see several.
+A server whose last look failed is named above the table, and its players are left out until it
+answers again. Anyone who can open a server sees its players here, as on its own Players tab, and
+nothing its own tab would not show them.
 
 ### Player dossiers, risk and the watchlist
 
@@ -692,7 +764,7 @@ opens the rule it has.
 | Empty-server map reset | After the server has been empty for N minutes on a different map or mode, sets the chosen map as next and ends the match (or requests it directly when there is no rotation).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Skip map after restart | After a restart the game puts the server on a map of its own (standard Bakurani on Season 2, hosts report) and moves on to the rotation only once that match ends, so an infantry-only rotation still opens on a standard match. At the first look after each restart the rule reads the server's rotation and, when the map and modes the server came up on are not an entry of it (the time of day counts where the entry names one; the control zone does not), ends that match, as Force end match on the Overview does: the game moves on to its rotation's next entry, and its place in the list moves with it. It leaves alone a server that came up on a map its rotation has, a rotation that is off (ending the match would only load the same map again), and a match the panel first sees more than ten minutes after the restart with a side already scoring (the worker was down at the time, say). It acts from the next restart after it is switched on, never on the run already going. A skip names the map it skipped and the one next, in the audit trail and on Discord; one it left alone stays under Recent actions as skipped, with the reason. Ending the match by hand as well, or from another tool, can end two matches in a row. Its preview shows when the next restart is due and what the server came up on this time. One rule per server.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | Kick on connect risk   | Kicks players who match rules: VAC ban or game ban (optionally only within the last N days), Steam account younger than N days (optionally private profiles too), banned on another server in the org, or on the watchlist; or whose advisory risk score is at or above a set number from 1 to 100 (medium starts at 20, high at 50; the players table badges 20 and up). Joiners and players reconnecting are judged at once, and everyone on is judged again every minute (a player whose kick did not land, every five). Nobody is judged until the server's reserved slots have been read. Reserved-slot players can be spared.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| Name filter            | Kicks joiners whose name breaks the rule, or with _Alert only_ just records them (audit trail and Discord). A character policy: any, Latin letters (keeps José and Müller, optionally with Cyrillic, Greek, Arabic, Hebrew, Thai, Devanagari, Chinese, Japanese or Korean beside them) or ASCII only; digits, spaces and keyboard punctuation always pass, emoji and symbols only when allowed, and a name can be required to hold N letters. Blocked words: a built-in English list of slurs and hate terms, your own words (up to 200) and exceptions for names that would match but are fine. Words are caught through case, leetspeak, look-alike letters, stretching and spelling out (`n.a.z.i`). The kick reason's `{why}` says what kind of fault it was, never the word. Reserved-slot players can be spared. Checked at the join and again whenever the name changes, clan tag included: the game can show the tag a moment after the player is in. A kick rule also checks a player who reconnects. Its dry run checks everyone who has played on the server, under each name they used.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
+| Name filter            | Kicks joiners whose name breaks the rule, or with _Alert only_ just records them (audit trail and Discord). A character policy: any, Latin letters (keeps José and Müller, optionally with Cyrillic, Greek, Arabic, Hebrew, Thai, Devanagari, Chinese, Japanese or Korean beside them) or ASCII only; digits, spaces and keyboard punctuation always pass, emoji and symbols only when allowed, and a name can be required to hold N letters. Blocked words: a built-in English list of slurs and hate terms, your own words (up to 200) and exceptions for names that would match but are fine. Words are caught through case, leetspeak, look-alike letters, stretching and spelling out (`n.a.z.i`). The kick reason's `{why}` says what kind of fault it was, never the word. Reserved-slot players can be spared, and so can up to 100 players listed by SteamID64, whatever their name. A rule that spares reserved slots acts on nobody until the server's reserved slots have been read (on the worker's first look after a start), so a name changed while the worker was down is let by. To keep your clan tag to your staff, block the tag as a word (`abc` for `[ABC]`, which also finds `[4BC]` and `[A B C]`, and the letters inside other names, which the exceptions are for), list the staff, and spare reserved slots only if nobody else holds one. Checked at the join and again whenever the name changes, clan tag included: the game can show the tag a moment after the player is in. A kick rule also checks a player who reconnects. Its dry run checks everyone who has played on the server, under each name they used, and counts the names it spares.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | Name change watch      | Flags a player who changes their name mid-game, or with _Kick_ kicks them (a reserved slot can be flagged instead). The game's player list keeps the name a player joined with (a clan tag changed mid-game aside), while the [kill feed](#kill-feed) names both players of every kill as the others see them: each time a player kills or dies, the rule holds the name the feed shows against the one the list has for them. Counts every change, or only a change to the name of another player on the server. Names are compared as they read: case, spacing, punctuation, symbols, invisible characters, look-alike letters, I/l/1 and 0/O are no disguise, nor is a clan tag in brackets dropped or added to a copied name (names of five letters or more); a player's own name with a clan tag put on, taken off or swapped is not a change. Acts at N changes within M minutes (up to two hours): an alert flags a player once a window, a kick acts at every count, and a kicked player who comes back under the taken name goes again. In the kick reason `{name}` is the name the feed showed and `{previous}` the one they are listed under. Flags go to the audit trail and Discord with the name they are listed under and their SteamID (the post opens the player's page). Changing or switching it off drops what it had queued. Needs the kill feed; the worker's memory of names starts over when it restarts. The dry run holds the day's kills against the names of the sessions open at each.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | High ping kick         | Kicks a player whose reported ping remains above a configurable limit for a configurable number of seconds. Normal or unavailable ping, leaving, or interrupted player-list polling resets the timer. Reserved-slot players can be spared (a new rule spares them): such a rule kicks nobody until the server's reserved slots have been read, and then whoever stayed over the limit meanwhile. Historical ping is not stored, so this rule cannot be replayed in a dry run.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | Team kill limit        | Whispers a player from N team kills in one match, and kicks them at M; leaving and rejoining does not start the count over. Team kills by what the rule leaves out are not counted and still show as team kills everywhere else: barbed wire unless unticked (a player who runs into a teammate's wire is reported as killed by whoever built it), any other buildable or placed charge ticked, and vehicle crashes when ticked (when a vehicle blows up, a helicopter flown into the ground say, the game reports everyone aboard as killed by its driver or pilot; a teammate who blows a vehicle up with a charge, rocket or gun is still counted). Needs the [kill feed](#kill-feed); acted on as each kill arrives, not per poll.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -768,6 +840,32 @@ Lines copied from the card before 15 October 2026 named the origin alone and nev
 the line again and restart the server. The list can hold other endpoints beside Warcon's. After **Replace token**, paste the new line in
 place of the old one. `EventFeedServerName` is the name the game sends with each batch; Warcon
 goes by the token, so keep one such line if the file already has it.
+
+A token is not a working feed, so the panel checks what actually arrives. A Season 2 server posts
+its match state within a minute or two of starting, with nobody on, and reads its feed lines only
+at that start. So when a server with a token has sent nothing in the five minutes after its game
+last started, the feed is **silent**: the Config card says so in amber, with what to check on the
+host (the section, the Url's path, a restart since the lines went in, the new line after
+**Replace token**); the Automation tab names the kill feed rules that are on (Team kill limit,
+Kill rate, Kill distance, Name change watch, Bounty) in a notice above the list and on each of
+their rows, since none of them can act; and the Overview's kill feed panel marks where the game
+started, with older kills dated. For the org's owners, a token made or replaced after the game
+started shows as **waiting** instead: the game cannot have it until it restarts. While a server is
+down, or before the panel has read when it started, nothing is judged. A feed that stops in the
+middle of a run is still shown on the Overview as no events for so many minutes with players on.
+
+Season 2 also reports on its own feed, and those who may apply the config see that report on the
+card under **What the game reports**, read when the card opens and on **Read again**: whether the
+feed was switched on when the server started and, for each endpoint it posts to, the scheme and
+host (never the full Url or the token), whether it is healthy, the last answer it had, how many
+batches went or were dropped and when the last one went through. It names every service the
+server posts to, which is why it stays with the config. The host is all the game gives, so the
+card reads the fault from what this panel answered: 405 is a page of the panel (a Url that names
+the site alone), 404 a wrong path under `/api/ingest/`, 403 a wrong path elsewhere under `/api`,
+401 a token the panel does not know (a line from before **Replace token**). A silent feed's
+warning then names that fault instead of the general checks, as it does when the feed is off in
+the file, lists no endpoint, lists only other services, gets no answer at all, or is taken in under
+another server's token (the panel accepts the posts while nothing comes in for this server).
 
 Season 2 also posts the match's state as it changes, the match's result when it ends, and players
 joining and leaving. The state shows on the server's Overview as **Match** (loading the map,
@@ -1346,6 +1444,7 @@ game's (a 401 or a 5xx from it becomes a 502), and `error` carries the game's `c
 | `rotationSettings`                  | Save rotation     | `rotationEnabled`, `rotationMode` (`ordered` or `random`)                                                          |
 | `settings`                          | Config & settings | `scoreTick` (1 to 600), `rotationEnabled`, `rotationMode`                                                          |
 | `config`                            | Config & settings | none (the config document, credentials as `(hidden)`)                                                              |
+| `feed`                              | Config & settings | none (the game's report on its kill feed, Season 2 builds; see [Kill feed](#kill-feed))                            |
 | `configValidate`, `configApply`     | Config & settings | `text`; apply also `revision`, `force`, `fullApply`                                                                |
 | `serverLog`                         | Audit trail       | `limit` (1 to 500, default 50)                                                                                     |
 | `raw`                               | Raw RCON          | `method`, `path` (a `/v1` route), `body`                                                                           |
@@ -1366,6 +1465,53 @@ The organisation's [saved messages](#saved-messages) are not an action:
 server (`{"ok": true, "messages": [{"name": "Restart soon", "text": "Restart in 5 minutes."}]}`).
 Send one as the `message` of `broadcast`, `whisper` or `whisperMany`. Only the organisation's owners
 change them, never a key.
+
+The organisation's [map sets](#map-sets) are not an action either:
+`GET /api/servers/:id/map-sets` answers them, by name, to a key holding _Config & settings_ on the
+server (`{"ok": true, "mapSets": [{"id": "…", "name": "Infantry", "entries": [{"map": "Kavkazi",
+"experiences": ["Bakurani_KOTH_02", "KOTH_InfantryOnly"], "lighting": "DayClear", "zoneAlternator":
+""}]}]}`). Loading one is a `configApply` of the document with its entries as the rotation's. Only
+the organisation's owners change them, never a key.
+
+An announcement is a `broadcast` on several servers of one organisation at once, and not an action
+either:
+
+```sh
+curl -s -X POST "$ORIGIN/api/orgs/$ORG_ID/broadcast" \
+  -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+  -d '{"message":"Restart in 5 minutes","serverIds":null}'
+```
+
+```json
+{
+	"ok": true,
+	"sent": 1,
+	"failed": 1,
+	"results": [
+		{
+			"serverId": "…",
+			"serverName": "Demo One",
+			"ok": true,
+			"message": "Announcement sent to 15 player(s)."
+		},
+		{
+			"serverId": "…",
+			"serverName": "Demo Two",
+			"ok": false,
+			"message": "Could not reach the game server (connection refused).",
+			"code": "unreachable"
+		}
+	]
+}
+```
+
+`serverIds` lists the servers, or is `null` for every server of the organisation on which the key
+holds _Chat_; anything else is a 400 `bad_scope`. A server the key cannot see is a 404 and one it
+may not chat on a 403, and either sends nothing, as does a 429 when the servers do not fit in what
+is left of the key's game actions this minute (each server named is one, sent or refused; at most
+120 at once).
+Otherwise every server is tried at the same time: `results` says how each took it, `ok` is true
+when at least one did, and when none did the answer is a 502 `not_sent` with the same `results`.
 
 The reads answer:
 
@@ -1499,7 +1645,7 @@ valid one is to make the rule in the panel and read it back.
 
 | Calls                                                                        | Limit                                                                                        |
 | ---------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| game actions                                                                 | 120 a minute per key, `raw` at most 30 of them                                               |
+| game actions                                                                 | 120 a minute per key, `raw` at most 30 of them; an announcement counts one per server        |
 | `GET /api/servers/:id/players/seen`                                          | 60 a minute per key                                                                          |
 | `GET /api/servers/:id/analytics/periods`                                     | 30 a minute per key                                                                          |
 | `GET /api/steam/profiles` and `POST /api/servers/:id/players/:steamId/steam` | 60 and 20 a minute per key, counted together                                                 |
@@ -1684,6 +1830,7 @@ src/lib/server/lists.ts        organisation ban and reserved-slot lists and each
 src/lib/server/lists-plan.ts / lists-sync.ts   what to add or remove on a server (pure) / the per-server sync run and API fan-out
 src/lib/server/actions.ts      every panel action -> capability + /v1 call(s)
 src/lib/server/rcon-run.ts     /api/servers/:id/rcon/:action dispatcher with audit rows
+src/lib/server/announce.ts     an announcement: one broadcast on several of an org's servers, each checked and audited
 src/lib/server/rcon.ts         WardogsClient (Bearer auth, JSON/text calls, demo routing)
 src/lib/server/transport.ts    fetch to the game server
 src/lib/server/poller.ts       the worker's scheduler: tiers, phases, concurrency budget, roster, housekeeping, stats
@@ -1715,7 +1862,7 @@ src/lib/config-doc.ts / config-fields.ts   ServerSettings.ini parser and line-le
 src/lib/components/            Modal, MapPicker, PopulationChart, CashChart, ConfigForm, Toasts, badges…
 src/routes/(auth)/             /sign-in (+ /verify), /setup, /join/[token], /recover (form actions)     src/routes/sign-out
 src/routes/api/passkeys/       WebAuthn ceremonies relayed to Better Auth; src/routes/auth/steam/ the Steam callback
-src/routes/(app)/              dashboard, /server/[id]/{,players,players/[steamId],bans,rotation,config,automation,analytics,leaderboard,log,settings}, /audit, /orgs, /orgs/[id]/{,bans,reserved,seasons}, /admin/{,users,settings}, /servers, /account
+src/routes/(app)/              dashboard, /players, /server/[id]/{,players,players/[steamId],bans,rotation,config,automation,analytics,leaderboard,log,settings}, /audit, /orgs, /orgs/[id]/{,bans,reserved,seasons}, /admin/{,users,settings}, /servers, /account
 src/routes/(public)/           /s/[id]{,/leaderboard,/players/[steamId]}: the public pages, no session
 src/routes/api/                JSON API (below)
 docs/wardogs-api.md            the reverse-engineered game-server API
@@ -1733,6 +1880,7 @@ own `/api/auth/*` routes only the OAuth callback is reachable over HTTP; everyth
 ```
 GET/POST /api/orgs  PATCH/DELETE /api/orgs/:id   PATCH {name} | {discordInviteUrl} | {boardOpens: official|custom|30d|all} | {boardHidden: [column]} | {membersReserved} | {banMessage} | {banReasons: [{label,reason,days}] | null} | {savedMessages: [{name,text}]} | site owner: {serverLimit, suspended, reason, allowPublicStatus, allowPublicLeaderboards}
 GET/POST /api/orgs/:id/seasons {name,startsAt}  PATCH/DELETE .../:seasonId {name?,startsAt?}   the official seasons and the organisation's own, what its boards open on and the columns its public boards leave out (`hidden`) (owners; a start is still to come, and a started season's stays put)
+POST /api/orgs/:id/map-sets {name,entries[]}  PATCH/DELETE .../:setId {name?,entries?}   the organisation's map sets: whole rotations for its servers' Map rotation tabs (owners; 409 name_taken on a name in use, ignoring case)
 GET  /api/orgs/:id/members  PATCH/DELETE /api/orgs/:id/members/:userId {role}  PUT .../:userId/grants {grants:[{serverId,roleId}]}
 GET/POST /api/orgs/:id/roles {name,capabilities[]}  PATCH/DELETE .../:roleId {name?,capabilities?}  POST .../:roleId/reset  PUT .../order {ids[]} (every role once, else 409 stale)
 GET/POST /api/orgs/:id/keys {label,capabilities[],serverIds[]|null,expiresDays}  DELETE .../:keyId   (POST returns the token once)
@@ -1742,6 +1890,8 @@ GET/POST /api/users  PATCH/DELETE /api/users/:id  PUT /api/users/:id/grants {gra
 GET/POST /api/servers {orgId,...}  PATCH/DELETE /api/servers/:id  POST /api/servers/:id/test   (PATCH also {publicStatus, publicLeaderboards, publicKills}, org owners, within the site owner's allowance; a PATCH that changes host, port or scheme must carry password, or it is 400 password_required)
 GET/PUT /api/servers/:id/grants {grants:[{userId,roleId}]}   GET /api/servers/:id/summary
 GET  /api/servers/:id/saved-messages                    the organisation's saved messages, in order (Chat; its owners change them with PATCH /api/orgs/:id)
+GET  /api/servers/:id/map-sets                          the organisation's map sets, by name, with their entries (Config & settings; its owners change them under /api/orgs/:id/map-sets)
+POST /api/orgs/:id/broadcast {message,serverIds[]|null}  an announcement: a broadcast on each server named, or (null) on every server of the org the caller may chat on (Chat on each)
 GET|POST /api/servers/:id/rcon/:action   (GET for reads with query params, POST JSON for mutations)
 GET  /api/servers/:id/analytics?range=24h|7d|30d       includes `combat` from the kill feed when the server has one
 GET  /api/servers/:id/analytics/periods?range=7d&tz=Europe/Berlin   players, new players and session lengths per hour (24h) or per day in that zone
@@ -1749,7 +1899,7 @@ GET  /api/servers/:id/kills?before=<iso>&beforeTime=<s>&limit=50&count=1&match=<
 GET  /api/servers/:id/matches?page=1                    match history, newest first, fifty a page   GET /api/servers/:id/matches/:matchId   a match that ended: lines, score timeline, awards
 POST /api/servers/:id/stats/purge {name}                 deletes the server's kills, matches and match rows (org owners; the name must be the server's; sessions stay)
      &killer=&victim=&player=&cause=&kind=&minM=            filters: a SteamID exactly, else part of a name; the raw cause tag; kind headshot|teamKill|suicide|vehicle|environment; metres at least
-GET/POST/DELETE /api/servers/:id/feed                   the kill feed setup: token and URL (POST mints or replaces, owners only)
+GET/POST/DELETE /api/servers/:id/feed                   the kill feed setup: token and URL (POST mints or replaces, owners only), and whether it arrives (state)
 POST /api/ingest/events                                 where the game posts: [WDServerFeed] Url is the origin, the game adds this path (Authorization: Bearer wkf_…); not a panel route
 GET  /api/servers/:id/cash?since=<iso>                  cash-in-play samples since a moment (24 h at most), seeds the dashboard chart
 GET  /api/servers/:id/players/marks?ids=a,b&names=…     watchlist / first-visit / risk / record here per connected player
@@ -1782,7 +1932,7 @@ experiences alternators catalog rotation bans reserved sponsor` (View) ·
 `broadcast whisper whisperMany` (Chat) · `kick` (Kick) · `kill` (Kill) · `changeTeam` (Move) · `endMatch restartMatch
 changeMap setWeather setNextMap` (Match control) · `rotationAdd rotationRemove rotationMove
 rotationReorder` (Live rotation) · `ban unban` (Bans) · `reservedAdd reservedRemove` (Reserved
-slots) · `rotationSave rotationSettings` (Save rotation) · `config settings configValidate configApply` (Config &
+slots) · `rotationSave rotationSettings` (Save rotation) · `config feed settings configValidate configApply` (Config &
 settings) · `serverLog` (Audit trail) · `raw` (Raw RCON).
 
 ## Notes and limits
