@@ -444,12 +444,9 @@ describe.skipIf(!hasTestDb)('AFK protection rounds at delivery', () => {
 		});
 		invalidateTriggers(w.server.id);
 		spy = spyOn(WardogsClient, 'forServer').mockImplementation(
-			async (_env, server) =>
+			async () =>
 				({
 					json: async (method: string, path: string) => {
-						// The shared delivery loop can drain another fixture's queued broadcasts.
-						// Only this world's server belongs in this round's request assertions.
-						if (server.id !== w.server.id) return { ok: true };
 						requests.push(`${method} ${path}`);
 						const killOf = /^\/v1\/players\/(\d+)\/kill$/.exec(path)?.[1];
 						if (killOf && notAlive.has(killOf))

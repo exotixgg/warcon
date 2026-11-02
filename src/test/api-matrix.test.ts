@@ -20,8 +20,6 @@ const ROUTES = join(import.meta.dir, '..', 'routes');
  * metrics token, a public-page switch, a WebAuthn ceremony. Each has tests of its own.
  */
 const NOT_ROLE_BASED = [
-	// Explicit API-key-only, bounded multi-server query; player-stats.test.ts checks each scope.
-	'POST api/stats/players/query',
 	'GET api/health',
 	'POST api/ingest/events',
 	'POST api/passkeys',
@@ -109,14 +107,6 @@ const MATRIX: Record<string, Policy | typeof PER_LIST> = {
 
 	// its ban and reserved-slot lists
 	'GET api/orgs/[id]/lists': 'lists',
-	'GET api/orgs/[id]/lists/reserve/entries/[steamId]/owned': 'lists:reserve',
-	'POST api/orgs/[id]/lists/reserve/entries/[steamId]/owned': 'lists:reserve',
-	'PATCH api/orgs/[id]/lists/reserve/entries/[steamId]/owned': 'lists:reserve',
-	'GET api/orgs/[id]/ban-policy': 'lists:ban',
-	'PATCH api/orgs/[id]/ban-policy': 'orgOwner',
-	'GET api/orgs/[id]/message-pools': 'site',
-	'PUT api/orgs/[id]/message-pools': 'site',
-	'POST api/orgs/[id]/message-pools/test-weapon': 'site',
 	'GET api/orgs/[id]/lists/[kind]/entries': PER_LIST,
 	'POST api/orgs/[id]/lists/[kind]/entries': PER_LIST,
 	'PATCH api/orgs/[id]/lists/[kind]/entries/[steamId]': PER_LIST,
@@ -161,7 +151,6 @@ const MATRIX: Record<string, Policy | typeof PER_LIST> = {
 	'GET api/servers/[id]/matches': 'cap:server.view',
 	'GET api/servers/[id]/matches/[matchId]': 'cap:server.view',
 	'GET api/servers/[id]/lists/state': 'cap:server.view',
-	'GET api/servers/[id]/lists/reserve/entries/[steamId]': 'cap:slots.manage',
 	'GET api/servers/[id]/players/[steamId]': 'cap:server.view',
 	'GET api/servers/[id]/players/[steamId]/career': 'cap:server.view',
 	'POST api/servers/[id]/players/[steamId]/steam': 'cap:server.view',
@@ -178,7 +167,6 @@ const MATRIX: Record<string, Policy | typeof PER_LIST> = {
 	'PATCH api/servers/[id]/lists/ban/entries/[steamId]': 'cap:bans.manage',
 	'DELETE api/servers/[id]/lists/ban/entries/[steamId]': 'cap:bans.manage',
 	'POST api/servers/[id]/lists/reserve/entries': 'cap:slots.manage',
-	'PATCH api/servers/[id]/lists/reserve/entries/[steamId]': 'cap:slots.manage',
 	'DELETE api/servers/[id]/lists/reserve/entries/[steamId]': 'cap:slots.manage',
 	'POST api/servers/[id]/lists/sync': 'listsHere',
 	'POST api/servers/[id]/test': 'cap:config.apply',
@@ -232,7 +220,7 @@ function routeFiles(dir: string): string[] {
 }
 
 const onDisk = routeFiles(ROUTES).flatMap((file) => {
-	const path = relative(ROUTES, join(file, '..')).replaceAll('\\', '/');
+	const path = relative(ROUTES, join(file, '..'));
 	const methods = readFileSync(file, 'utf8').matchAll(
 		/^export const (GET|POST|PUT|PATCH|DELETE)\b/gm
 	);

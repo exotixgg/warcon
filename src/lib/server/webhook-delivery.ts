@@ -5,13 +5,15 @@
 import { and, eq, inArray } from 'drizzle-orm';
 import type { Env } from './env';
 import { decryptSecret } from './crypto';
-import { forLog } from './http';
+import { forLog, str } from './http';
 import { playerMarks, servers, webhooks, type AuditRow, type WebhookRow } from './db/schema';
 import { OWNERS_ROWS } from './audit-rows';
 import { escapeMarkdown } from './webhook-status-core';
 import { KILL_DISTANCE_SKIP } from './kill-distance';
 import { causeLabel } from '$lib/causes';
+import { MAX_CHAT } from '$lib/chat';
 import { mapName } from '$lib/format';
+import { oneLine } from '$lib/saved-messages';
 import type { BountyLapse } from './bounty';
 import { FAILURES_ONLY } from '$lib/rule-kinds';
 import type { KillView } from '$lib/types';
@@ -30,7 +32,7 @@ export const WEBHOOK_EVENTS = [
 export type WebhookEvent = (typeof WEBHOOK_EVENTS)[number];
 export const WEBHOOK_EVENT_LABELS: Record<WebhookEvent, string> = {
 	bans: 'Bans and unbans',
-	commands: 'Other game commands (kick, broadcast, map, config…)',
+	commands: 'Game commands and chat (kick, map, config…; whisper and broadcast text)',
 	triggers: 'Automation (trigger actions)',
 	players: 'Player notes and watchlist changes',
 	management: 'Servers, members, invite links, accounts',
@@ -160,10 +162,12 @@ const ACTION_TITLES: Record<string, string> = {
 	'trigger.two_teams': 'Trigger · team balance',
 	'trigger.kill_distance': 'Trigger · kill distance watch',
 	'trigger.afk_protection': 'Trigger · AFK protection',
+	'trigger.afk_watch': 'Trigger · AFK watch',
 	'trigger.name_change': 'Trigger · name change watch',
 	'trigger.bounty': 'Trigger · bounty',
 	'trigger.rotation_shuffle': 'Trigger · rotation shuffle',
 	'trigger.live_name': 'Trigger · live server name',
+	'trigger.weather_cycle': 'Trigger · weather cycle',
 	'player.note': 'Player note',
 	'player.watch': 'Watchlist',
 	'list.add': 'Org list · added',
@@ -192,6 +196,19 @@ const plain = (s: string, n: number) =>
 /** The same inside a code span, which no escape reaches: its own backtick would close the span. */
 const code = (s: string, n: number) => `\`${clip(s.replace(/`/g, 'ˋ'), n)}\``;
 
+/** Whispers by hand, whose detail keeps what they said and whose message is the game's answer. A
+ *  rule's whisper keeps no words of its own (see OWN_WORDS in outbox.ts). */
+const WHISPERS = new Set(['rcon.whisper', 'rcon.whisperMany']);
+
+/** What a whisper by hand said, as the action cut it for the game, on one line; none on a refused
+ *  request, whose words stay in the audit trail. */
+function whisperOf(row: AuditRow): string {
+	const message = (row.detail as { message?: unknown } | null)?.message;
+	return WHISPERS.has(row.action) && row.outcome !== 'denied' && typeof message === 'string'
+		? oneLine(str(message, MAX_CHAT), MAX_CHAT)
+		: '';
+}
+
 export function buildEmbed(appName: string, row: AuditRow): Embed {
 	const title = ACTION_TITLES[row.action] || row.action;
 	const lines: string[] = [];
@@ -203,6 +220,8 @@ export function buildEmbed(appName: string, row: AuditRow): Embed {
 	const target = row.target && !bare ? ` → ${code(row.target, 120)}` : '';
 	lines.push(`**${plain(who, 60)}**${target}`);
 	if (row.serverName) lines.push(`Server: ${plain(row.serverName, 80)}`);
+	const said = whisperOf(row);
+	if (said) lines.push(`Message: ${plain(said, MAX_CHAT)}`);
 	if (row.outcome !== 'ok')
 		lines.push(`Outcome: **${row.outcome}**${row.status ? ` (${row.status})` : ''}`);
 	if (row.message && !bare) lines.push(plain(row.message, 600));
@@ -370,6 +389,9 @@ export function buildWatchedJoinEmbed(
 
 const FLUSH_AFTER_MS = 1500;
 const MAX_EMBEDS = 10;
+/** Discord refuses a message whose embeds hold more characters than this between them, titles,
+ *  descriptions, fields, footers and authors counted together. */
+const MAX_CHARS = 6000;
 const MAX_QUEUE = 100;
 
 interface Queue {
@@ -413,9 +435,29 @@ function scheduleFlush(env: Env, hook: WebhookRow, q: Queue): void {
 		});
 }
 
+const charsOf = (e: Embed) =>
+	e.title.length +
+	e.description.length +
+	(e.footer?.text.length ?? 0) +
+	(e.author?.name.length ?? 0) +
+	(e.fields ?? []).reduce((n, f) => n + f.name.length + f.value.length, 0);
+
+/** Takes the next message's embeds off the front of a queue: as many as Discord takes in one, and
+ *  at least one, so a burst of long cards goes as several messages, not one that Discord refuses. */
+export function nextBatch(embeds: Embed[]): Embed[] {
+	let n = 0;
+	let chars = 0;
+	while (n < embeds.length && n < MAX_EMBEDS) {
+		chars += charsOf(embeds[n]);
+		if (n > 0 && chars > MAX_CHARS) break;
+		n++;
+	}
+	return embeds.splice(0, n);
+}
+
 async function flush(env: Env, hook: WebhookRow, q: Queue): Promise<void> {
 	while (q.embeds.length) {
-		const batch = q.embeds.splice(0, MAX_EMBEDS);
+		const batch = nextBatch(q.embeds);
 		const result = await postDiscord(env, hook, { embeds: batch });
 		await recordResult(env, hook.id, result);
 		if (result.retryAfterMs) {
@@ -567,7 +609,8 @@ export async function recordResult(env: Env, id: string, result: PostResult): Pr
 
 /**
  * Rules whose actions come by the hundred as a matter of course: a Team balance sort at every match
- * start, an AFK protection round every few minutes while a server seeds. The audit trail keeps each
+ * start, an AFK protection round every few minutes while a server seeds, a Weather cycle change every
+ * few minutes all day. The audit trail keeps each
  * one; Discord hears only of those that fail, so they neither flood a staff channel nor push another
  * rule's card out of the webhook's queue.
  */
