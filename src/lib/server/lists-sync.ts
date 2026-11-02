@@ -12,7 +12,6 @@
 import { and, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import { banUid, renderBanMessage } from '$lib/ban-message';
-import { caseOf } from './exotix/ban-policy';
 import { ApiError, forLog } from './http';
 import { writeAudit } from './audit';
 import { ACTIONS, configResult, liveReservedIds, readConfig } from './actions';
@@ -986,11 +985,9 @@ export async function kickBanned(
 		}
 		let error = '';
 		try {
-			const moderation = await caseOf(env.db, entry.id);
 			await ACTIONS.kick.run(client, {
 				steamId,
-				reason:
-					moderation?.message ?? renderBanMessage(org.banMessage, { ...entry, entryId: entry.id })
+				reason: renderBanMessage(org.banMessage, { ...entry, entryId: entry.id })
 			});
 		} catch (err) {
 			const f = failure(err);

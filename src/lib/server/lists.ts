@@ -43,19 +43,6 @@ import { desiredFor, memberSlots, summaryOf } from './lists-sync';
 import { isListOn } from './lists-plan';
 import { latestNames } from './sessions';
 import { gateway } from './gateway';
-import type { BanCaseView } from '$lib/exotix/ban-policy';
-import { queueBanAnnouncements } from './exotix/message-pools';
-import {
-	prepareManualBan,
-	automaticCase,
-	writeCase,
-	caseOf,
-	casesOf,
-	changeDescription,
-	refreshCaseDuration,
-	policyOf,
-	resolveReview
-} from './exotix/ban-policy';
 import type {
 	ImportCandidate,
 	ListEntryState,
@@ -536,13 +523,6 @@ export async function rosterOf(
 	const out = rows.map((r) =>
 		shapeEntry(r, kind, names.get(r.steamId) ?? null, r.removedAt ? [] : perServer(r.steamId), now)
 	);
-	if (kind === 'ban') {
-		const metadata = await casesOf(
-			env.db,
-			rows.map((r) => r.id)
-		);
-		for (const entry of out) entry.moderation = metadata.get(entry.id) ?? null;
-	}
 	for (const m of members)
 		out.push({
 			id: `member:${m.userId}`,
@@ -587,15 +567,9 @@ export async function touch(db: DbLike, listId: string): Promise<void> {
 interface NewEntry {
 	steamId: string;
 	reason: string;
-	/** Explicitly approved text for the player's policy kick message. Other automation reasons stay internal. */
-	playerReason?: string;
-	playerMessageTemplate?: string;
-	/** A weapon rule sends its own public pool after the ban is saved. */
-	suppressBanAnnouncement?: boolean;
 	expiresAt: Date | null;
 	addedBy: string | null;
 	addedByName: string;
-	moderation?: BanCaseView | null;
 }
 
 /** Inserts an active entry; `added` is false when the player is already on the list. */
@@ -622,15 +596,6 @@ async function insertInto(
 	lengthen = false
 ): Promise<{ id: string; added: boolean; lengthened: boolean }> {
 	const id = newId();
-	if (list.kind === 'ban' && entry.addedBy !== null) {
-		// Share the policy editor's lock: enabling/changing policy cannot race a manual insert.
-		await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtextextended(${list.orgId}, 179088))`);
-		const policy = await policyOf(tx, list.orgId);
-		if (policy.enabled && (!entry.moderation || entry.moderation.policyVersion !== policy.version))
-			throw new ApiError(409, 'The ban policy changed. Reopen the ban form.');
-		if (!policy.enabled && entry.moderation)
-			throw new ApiError(409, 'The ban policy was disabled. Reopen the ban form.');
-	}
 	// Serialise adds to one list so two writers cannot race past the duplicate check; the
 	// partial unique index on (list_id, steam_id) where removed_at is null is the backstop.
 	await tx.execute(sql`SELECT 1 FROM ${lists} WHERE ${lists.id} = ${list.id} FOR UPDATE`);
@@ -659,42 +624,9 @@ async function insertInto(
 			.set({ expiresAt: entry.expiresAt })
 			.where(eq(listEntries.id, dup.id));
 		await touch(tx, list.id);
-		await refreshCaseDuration(tx, dup.id, entry.expiresAt, entry.addedByName, entry.reason);
 		return { id: dup.id, added: false, lengthened: true };
 	}
-	const { moderation, playerReason, playerMessageTemplate, suppressBanAnnouncement, ...values } =
-		entry;
-	await tx.insert(listEntries).values({ id, listId: list.id, ...values });
-	const record =
-		moderation ??
-		(list.kind === 'ban' && entry.addedBy === null
-			? await automaticCase(
-					tx,
-					list.orgId,
-					entry.reason,
-					entry.expiresAt
-						? Math.max(1, Math.round((entry.expiresAt.getTime() - Date.now()) / 86400000))
-						: 0,
-					entry.addedByName,
-					entry.expiresAt,
-					playerReason,
-					playerMessageTemplate
-				)
-			: null);
-	if (record) await writeCase(tx, id, record);
-	if (list.kind === 'ban' && !entry.suppressBanAnnouncement)
-		await queueBanAnnouncements(
-			tx,
-			list,
-			{
-				id,
-				steamId: entry.steamId,
-				reason: entry.reason,
-				expiresAt: entry.expiresAt,
-				automatic: entry.addedBy === null
-			},
-			record
-		);
+	await tx.insert(listEntries).values({ id, listId: list.id, ...entry });
 	await touch(tx, list.id);
 	return { id, added: true, lengthened: false };
 }
@@ -709,15 +641,7 @@ async function insertInto(
 export async function grantEntry(
 	env: Env,
 	list: ListRow,
-	entry: {
-		steamId: string;
-		reason: string;
-		playerReason?: string;
-		playerMessageTemplate?: string;
-		suppressBanAnnouncement?: boolean;
-		expiresAt: Date | null;
-		addedByName: string;
-	},
+	entry: { steamId: string; reason: string; expiresAt: Date | null; addedByName: string },
 	opts: { tx?: Tx; lengthen?: boolean } = {}
 ): Promise<{ id: string; added: boolean; lengthened: boolean }> {
 	const row = { ...entry, addedBy: null };
@@ -735,21 +659,15 @@ export async function addEntry(
 	body: Record<string, unknown>
 ): Promise<{ entry: ListEntryView; sync: ListSyncSummary }> {
 	const steamId = requireSteamId(body.steamId);
-	const moderation = kind === 'ban' ? await prepareManualBan(env.db, org.id, body) : null;
-	const reason = moderation?.category ?? str(body.reason, 200);
-	const expiresAt = moderation
-		? moderation.expiresAt
-			? new Date(moderation.expiresAt)
-			: null
-		: parseExpiry(body.expiresAt);
+	const reason = str(body.reason, 200);
+	const expiresAt = parseExpiry(body.expiresAt);
 	const list = await listOf(env, org.id, kind);
 	const { id, added } = await insertEntry(env, list, {
 		steamId,
 		reason,
 		expiresAt,
 		addedBy: actor.id,
-		addedByName: actor.username,
-		moderation
+		addedByName: actor.username
 	});
 	if (!added)
 		throw new ApiError(409, `${steamId} is already on the ${KIND_LABEL[kind]}.`, 'duplicate');
@@ -805,7 +723,6 @@ export async function removeEntry(
 		)
 		.returning({ id: listEntries.id, reason: listEntries.reason });
 	if (!row) throw new ApiError(404, `${steamId} is not on the ${KIND_LABEL[kind]}.`, 'not_found');
-	if (kind === 'ban') await resolveReview(env.db, row.id);
 	await touch(env.db, list.id);
 	await writeAudit(env, req, {
 		actor,
@@ -840,21 +757,15 @@ export async function addServerEntry(
 	body: Record<string, unknown>
 ): Promise<{ sync: ListSyncServer }> {
 	const steamId = requireSteamId(body.steamId);
-	const moderation = kind === 'ban' ? await prepareManualBan(env.db, org.id, body) : null;
-	const reason = moderation?.category ?? str(body.reason, 200);
-	const expiresAt = moderation
-		? moderation.expiresAt
-			? new Date(moderation.expiresAt)
-			: null
-		: parseExpiry(body.expiresAt);
+	const reason = str(body.reason, 200);
+	const expiresAt = parseExpiry(body.expiresAt);
 	const list = await serverListOf(env, server, kind);
 	const { added } = await insertEntry(env, list, {
 		steamId,
 		reason,
 		expiresAt,
 		addedBy: actor.id,
-		addedByName: actor.username,
-		moderation
+		addedByName: actor.username
 	});
 	if (!added)
 		throw new ApiError(
@@ -918,7 +829,6 @@ export async function removeServerEntry(
 				: `${steamId} holds no reserved slot of ${server.name}'s own.`,
 			'not_found'
 		);
-	if (kind === 'ban') await resolveReview(env.db, row.id);
 	await touch(env.db, list.id);
 	await writeAudit(env, req, {
 		actor,
@@ -952,51 +862,6 @@ export async function updateEntry(
 	body: Record<string, unknown>
 ): Promise<{ entry: { steamId: string; reason: string; expiresAt: string | null } }> {
 	const steamId = requireSteamId(steamIdIn);
-	const targetList = server
-		? await serverListOf(env, server, kind)
-		: await listOf(env, org.id, kind);
-	const [target] = await env.db
-		.select({ id: listEntries.id, reason: listEntries.reason, expiresAt: listEntries.expiresAt })
-		.from(listEntries)
-		.where(
-			and(
-				eq(listEntries.listId, targetList.id),
-				eq(listEntries.steamId, steamId),
-				isNull(listEntries.removedAt)
-			)
-		)
-		.limit(1);
-	if (kind === 'ban' && target && (await caseOf(env.db, target.id))) {
-		if ('reason' in body || 'expiresAt' in body)
-			throw new ApiError(
-				400,
-				'A policy ban keeps its reason and fixed duration. Only its internal description can be edited.'
-			);
-		if (!('description' in body)) throw new ApiError(400, 'Internal description is required.');
-		await env.db.transaction(async (tx) => {
-			const [active] = await tx
-				.select({ id: listEntries.id })
-				.from(listEntries)
-				.where(and(eq(listEntries.id, target.id), isNull(listEntries.removedAt)))
-				.for('update');
-			if (!active) throw new ApiError(409, 'This ban has been removed.');
-			await changeDescription(tx, target.id, body.description);
-		});
-		await writeAudit(env, req, {
-			actor,
-			orgId: org.id,
-			...(server ? { server: { id: server.id, name: server.name } } : {}),
-			category: server ? 'server' : 'org',
-			action: 'ban.description',
-			target: steamId,
-			outcome: 'ok',
-			message: 'Internal ban description updated',
-			detail: { entryId: target.id }
-		});
-		return { entry: { steamId, reason: target.reason, expiresAt: iso(target.expiresAt) } };
-	}
-	if ('description' in body)
-		throw new ApiError(400, 'This legacy ban has no structured case record.');
 	const set: { reason?: string; expiresAt?: Date | null } = {};
 	if ('reason' in body) set.reason = str(body.reason, 200);
 	if ('expiresAt' in body) set.expiresAt = parseExpiry(body.expiresAt);
@@ -1050,282 +915,6 @@ export async function updateEntry(
 		}
 	});
 	return { entry: { steamId, reason: row.reason, expiresAt: iso(row.expiresAt) } };
-}
-
-/**
- * Guarded server-only lease extension. No create, remove, reason edit or game call.
- * Active server list entries are nonmember rows; implicit member slots have no row here.
- */
-export async function renewOwnedServerReservation(
-	env: Env,
-	req: Request,
-	actor: SessionUser,
-	server: ServerRow,
-	org: OrgRow,
-	steamIdIn: unknown,
-	body: Record<string, unknown>
-): Promise<{ entry: { steamId: string; reason: string; expiresAt: string }; changed: boolean }> {
-	const steamId = requireSteamId(steamIdIn);
-	if (
-		Object.keys(body).some(
-			(key) => !['expectedMarker', 'expectedExpiresAt', 'expiresAt'].includes(key)
-		)
-	)
-		throw new ApiError(400, 'Only the ownership preconditions and new expiry are accepted.');
-	const marker = body.expectedMarker;
-	if (
-		typeof marker !== 'string' ||
-		!/^EXOTIX VIP [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(marker)
-	)
-		throw new ApiError(400, 'An exact EXOTIX VIP ownership marker is required.');
-	const expected =
-		typeof body.expectedExpiresAt === 'string' ? new Date(body.expectedExpiresAt) : null;
-	if (
-		!expected ||
-		!Number.isFinite(expected.getTime()) ||
-		expected.toISOString() !== body.expectedExpiresAt
-	)
-		throw new ApiError(400, 'A canonical finite expectedExpiresAt is required.');
-	const expiresAt = parseExpiry(body.expiresAt);
-	if (!expiresAt || expiresAt.getTime() < expected.getTime())
-		throw new ApiError(400, 'A finite expiry at least as late as expectedExpiresAt is required.');
-	const conflict = () =>
-		new ApiError(409, 'Reservation ownership or expiry changed.', 'reservation_conflict');
-	const result = await env.db.transaction(async (tx) => {
-		// Match existing insert lock order, then lock the actual active row. Do not ensure/create lists.
-		const [list] = await tx
-			.select({ id: lists.id })
-			.from(lists)
-			.innerJoin(serverLists, eq(serverLists.listId, lists.id))
-			.where(
-				and(
-					eq(lists.serverId, server.id),
-					eq(lists.orgId, org.id),
-					eq(lists.kind, 'reserve'),
-					eq(serverLists.serverId, server.id)
-				)
-			)
-			.limit(1)
-			.for('update');
-		if (!list || server.orgId !== org.id) throw conflict();
-		const [row] = await tx
-			.select()
-			.from(listEntries)
-			.where(
-				and(
-					eq(listEntries.listId, list.id),
-					eq(listEntries.steamId, steamId),
-					isNull(listEntries.removedAt)
-				)
-			)
-			.limit(1)
-			.for('update');
-		if (
-			!row ||
-			row.reason !== marker ||
-			row.addedBy !== actor.id ||
-			!row.expiresAt ||
-			row.expiresAt.getTime() <= Date.now()
-		)
-			throw conflict();
-		// Validate again after lock waits; no lease may have aged past the API future bound.
-		parseExpiry(body.expiresAt);
-		// A lost response may be retried with its old expected expiry. Exact same result is safe.
-		if (row.expiresAt.getTime() === expiresAt.getTime())
-			return {
-				entry: { steamId, reason: row.reason, expiresAt: row.expiresAt.toISOString() },
-				changed: false,
-				listId: list.id,
-				entryId: row.id
-			};
-		if (row.expiresAt.getTime() !== expected.getTime()) throw conflict();
-		// Include immutable row identity plus both preconditions even though the row is locked.
-		const [updated] = await tx
-			.update(listEntries)
-			.set({ expiresAt })
-			.where(
-				and(
-					eq(listEntries.id, row.id),
-					eq(listEntries.listId, list.id),
-					eq(listEntries.steamId, steamId),
-					eq(listEntries.reason, marker),
-					eq(listEntries.addedBy, actor.id),
-					eq(listEntries.expiresAt, expected),
-					isNull(listEntries.removedAt)
-				)
-			)
-			.returning({ reason: listEntries.reason, expiresAt: listEntries.expiresAt });
-		if (!updated?.expiresAt) throw conflict();
-		await touch(tx, list.id);
-		return {
-			entry: { steamId, reason: updated.reason, expiresAt: updated.expiresAt.toISOString() },
-			changed: true,
-			listId: list.id,
-			entryId: row.id
-		};
-	});
-	if (result.changed)
-		await writeAudit(env, req, {
-			actor,
-			server: { id: server.id, name: server.name },
-			orgId: org.id,
-			category: 'server',
-			action: 'list.renew',
-			target: steamId,
-			outcome: 'ok',
-			message: 'Extended an attributed EXOTIX server reservation.',
-			detail: {
-				kind: 'reserve',
-				listId: result.listId,
-				entryId: result.entryId,
-				expectedExpiresAt: expected.toISOString(),
-				expiresAt: result.entry.expiresAt
-			}
-		});
-	return { entry: result.entry, changed: result.changed };
-}
-
-/** Withdraws only the exact finite owned row; a lost reply can repeat its tombstone. */
-export async function removeOwnedServerReservation(
-	env: Env,
-	req: Request,
-	actor: SessionUser,
-	server: ServerRow,
-	org: OrgRow,
-	steamIdIn: unknown,
-	body: Record<string, unknown>
-): Promise<{
-	entry: { steamId: string; reason: string; expiresAt: string };
-	removed: true;
-	changed: boolean;
-}> {
-	const steamId = requireSteamId(steamIdIn),
-		marker = body.expectedMarker;
-	if (
-		body.remove !== true ||
-		Object.keys(body).some(
-			(key) => !['expectedMarker', 'expectedExpiresAt', 'remove'].includes(key)
-		) ||
-		typeof marker !== 'string' ||
-		!/^EXOTIX VIP [0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(marker)
-	)
-		throw new ApiError(400, 'Owned removal requires exact ownership preconditions.');
-	const expected =
-		typeof body.expectedExpiresAt === 'string' ? new Date(body.expectedExpiresAt) : null;
-	if (
-		!expected ||
-		!Number.isFinite(expected.getTime()) ||
-		expected.toISOString() !== body.expectedExpiresAt
-	)
-		throw new ApiError(400, 'A canonical finite expectedExpiresAt is required.');
-	const conflict = () =>
-		new ApiError(409, 'Reservation ownership or expiry changed.', 'reservation_conflict');
-	const result = await env.db.transaction(async (tx) => {
-		const [list] = await tx
-			.select({ id: lists.id })
-			.from(lists)
-			.innerJoin(serverLists, eq(serverLists.listId, lists.id))
-			.where(
-				and(
-					eq(lists.serverId, server.id),
-					eq(lists.orgId, org.id),
-					eq(lists.kind, 'reserve'),
-					eq(serverLists.serverId, server.id)
-				)
-			)
-			.limit(1)
-			.for('update');
-		if (!list || server.orgId !== org.id) throw conflict();
-		const [row] = await tx
-			.select()
-			.from(listEntries)
-			.where(
-				and(
-					eq(listEntries.listId, list.id),
-					eq(listEntries.steamId, steamId),
-					isNull(listEntries.removedAt)
-				)
-			)
-			.limit(1)
-			.for('update');
-		if (!row) {
-			// Only a matching finite historical row withdrawn by this actor proves this retry.
-			const [removed] = await tx
-				.select()
-				.from(listEntries)
-				.where(
-					and(
-						eq(listEntries.listId, list.id),
-						eq(listEntries.steamId, steamId),
-						eq(listEntries.reason, marker),
-						eq(listEntries.expiresAt, expected),
-						eq(listEntries.addedBy, actor.id),
-						eq(listEntries.removedBy, actor.id),
-						eq(listEntries.removal, 'manual'),
-						sql`${listEntries.removedAt} IS NOT NULL`
-					)
-				)
-				.orderBy(desc(listEntries.removedAt))
-				.limit(1)
-				.for('update');
-			if (!removed) throw conflict();
-			return { changed: false, entryId: removed.id, listId: list.id };
-		}
-		if (
-			row.reason !== marker ||
-			row.addedBy !== actor.id ||
-			!row.expiresAt ||
-			row.expiresAt.getTime() !== expected.getTime()
-		)
-			throw conflict();
-		const [removed] = await tx
-			.update(listEntries)
-			.set({
-				removedAt: new Date(),
-				removedBy: actor.id,
-				removedByName: actor.username,
-				removal: 'manual'
-			})
-			.where(
-				and(
-					eq(listEntries.id, row.id),
-					eq(listEntries.listId, list.id),
-					eq(listEntries.steamId, steamId),
-					eq(listEntries.reason, marker),
-					eq(listEntries.addedBy, actor.id),
-					eq(listEntries.expiresAt, expected),
-					isNull(listEntries.removedAt)
-				)
-			)
-			.returning({ id: listEntries.id });
-		if (!removed) throw conflict();
-		await touch(tx, list.id);
-		return { changed: true, entryId: removed.id, listId: list.id };
-	});
-	if (result.changed)
-		await writeAudit(env, req, {
-			actor,
-			server: { id: server.id, name: server.name },
-			orgId: org.id,
-			category: 'server',
-			action: 'list.owned_remove',
-			target: steamId,
-			outcome: 'ok',
-			message: 'Withdrew an attributed EXOTIX server reservation.',
-			detail: {
-				kind: 'reserve',
-				entryId: result.entryId,
-				listId: result.listId,
-				expectedExpiresAt: expected.toISOString()
-			}
-		});
-	// Repeat sync after a lost reply; no deletion or adoption of a foreign row follows.
-	await gateway().syncServer(env, server, org, 15_000);
-	return {
-		entry: { steamId, reason: marker, expiresAt: expected.toISOString() },
-		removed: true,
-		changed: result.changed
-	};
 }
 
 // ---- import: adopt what servers already hold -----------------------------------------------------
@@ -1673,7 +1262,6 @@ export async function serverListsState(
 		const sourceOf = new Map(desired.bans.map((d) => [d.steamId, d.listId]));
 		const entries = await env.db
 			.select({
-				id: listEntries.id,
 				listId: listEntries.listId,
 				steamId: listEntries.steamId,
 				reason: listEntries.reason,
@@ -1689,12 +1277,6 @@ export async function serverListsState(
 					isNull(listEntries.removedAt)
 				)
 			);
-		const metadata = staff
-			? await casesOf(
-					env.db,
-					entries.map((e) => e.id)
-				)
-			: new Map<string, BanCaseView>();
 		for (const e of entries) {
 			if (sourceOf.get(e.steamId) !== e.listId) continue;
 			const b = out.bans[e.steamId];
@@ -1703,7 +1285,6 @@ export async function serverListsState(
 			b.addedAt = iso(e.addedAt);
 			b.reason = e.reason;
 			if (staff) b.addedByName = e.addedByName;
-			if (staff) b.moderation = metadata.get(e.id) ?? null;
 		}
 	}
 	for (const d of desired.reserved) {
