@@ -6,12 +6,12 @@ features separately after the upstream baseline has been verified.
 
 ## Branches and environments
 
-| Branch | Purpose |
-| --- | --- |
-| `main` | Clean mirror of official upstream `main` |
-| `exotix` | Reviewed integration branch; default branch for future features |
-| `staging` | Promotion branch for the isolated staging application |
-| `production` | Promotion branch for the production application |
+| Branch       | Purpose                                                         |
+| ------------ | --------------------------------------------------------------- |
+| `main`       | Clean mirror of official upstream `main`                        |
+| `exotix`     | Reviewed integration branch; default branch for future features |
+| `staging`    | Promotion branch for the isolated staging application           |
+| `production` | Promotion branch for the production application                 |
 
 Existing Coolify resources:
 
