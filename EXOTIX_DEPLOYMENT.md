@@ -58,6 +58,20 @@ rollback when the schema remains compatible; do not restore the database or drop
 old extension tables as routine cleanup. Do not enable new AFK/weather rules or
 alter game rotations as part of a code upgrade.
 
+### Specific revisions on the installed Coolify 4.1.2
+
+The regular Compose deployment path replaces the requested commit with the current
+branch head, even when `git_commit_sha` is saved. For production promotion, use
+Coolify's specific-revision queue path with the tested `commit` and `rollback: true`.
+In this installed version that flag preserves the requested code revision; it does
+not restore database data. Keep the branch set to `production` and automatic
+deployment disabled. Verify the completed deployment record and both running image
+tags against the tested staging SHA, rather than trusting the saved commit field.
+
+The existing Compose build context also removes `.git` before the image build, so
+WARCON's embedded commit file can be empty. Use the verified deployment/image SHA
+as the current provenance record until build-metadata wiring is added separately.
+
 ## Backups
 
 The existing root-only host helper is `/usr/local/sbin/exotix-warcon-backup`,
