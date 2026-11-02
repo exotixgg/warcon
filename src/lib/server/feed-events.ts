@@ -111,7 +111,6 @@ export async function onKillsIngested(
 		if (!(err instanceof LostOwnership))
 			console.warn(`[warcon] kill-distance rules on ${serverId}:`, publicMessage(err));
 	}
-	// Weapon actions were queued atomically by ingestBatch, before these notifications.
 	try {
 		await actOnNameChange(env, serverId, named, vars);
 	} catch (err) {

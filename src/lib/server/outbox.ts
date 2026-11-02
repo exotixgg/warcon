@@ -36,11 +36,10 @@ import { KILL_DISTANCE_FLAG, KILL_DISTANCE_SKIP } from './kill-distance';
 import { BOUNTY_CLAIM, BOUNTY_LAPSE, BOUNTY_REWARD } from './bounty';
 import { writeAudit } from './audit';
 import { PANEL_BAN, type PanelBanParams } from './rule-ban';
-import { poolConfigOf, poolStillHolds, queuePoolEvent } from './exotix/message-pools';
-import { effectivePools } from '$lib/message-pools';
 import { killAndTell, RULE_KILL, RULE_KILL_MAX_AGE_MS } from './rule-kill';
 import { ROTATION_SHUFFLE, shuffleOnServer } from './rotation-shuffle';
 import { RESTART_SKIP, skipStartupMap } from './restart-skip';
+import { changeWeather, WEATHER_CYCLE } from './weather-cycle';
 import { queueEvent } from './json-webhook-queue';
 import { seedRewardGranted } from './json-webhook-events';
 import {
@@ -49,6 +48,7 @@ import {
 	AFK_ROUND_MAX_MS,
 	AFK_ROUND_MAX_PLAYERS
 } from './afk-protection';
+import { AFK_WATCH_FLAG, type AfkCounters } from './afk-watch';
 import { MAX_CHAT } from '$lib/chat';
 import type { OutboxView } from '$lib/types';
 
@@ -60,6 +60,7 @@ const PANEL_ACTIONS = new Set([
 	KILL_RATE_FLAG,
 	KILL_DISTANCE_FLAG,
 	KILL_DISTANCE_SKIP,
+	AFK_WATCH_FLAG,
 	BOUNTY_REWARD,
 	BOUNTY_CLAIM,
 	BOUNTY_LAPSE
@@ -299,12 +300,7 @@ type Outcome = 'delivered' | 'failed' | 'skipped' | 'unknown';
 /** Why a row must not be sent right now, or null. Checked again inside the lane, right before sending. */
 function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | null {
 	if (!m) return 'Server no longer polled.';
-	// Delayed pool lines age from when they became due, not from the event that scheduled them.
-	const age =
-		Date.now() -
-		(row.triggerKind === 'message_pool'
-			? new Date(row.notBefore).getTime()
-			: new Date(row.createdAt).getTime());
+	const age = Date.now() - new Date(row.createdAt).getTime();
 	if (age > settings().outboxMaxAgeMs) return `Stale (${Math.round(age / 1000)}s old).`;
 	if (
 		row.steamId &&
@@ -328,6 +324,15 @@ function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | nu
 		const count = Math.max(m.status.playerCount || 0, m.players.length);
 		if (m.status.scores.some((s) => s.score > 0) || !(count < goal))
 			return 'The match started before this was sent.';
+	}
+	// An AFK watch warning or kick for a player who has played since it was decided (a kill, a death,
+	// cash earned; or the next match started their counters again) while it waited. Cash spent is no
+	// play: a macro can buy something.
+	if (row.triggerKind === 'afk_watch' && row.steamId) {
+		const seen = (row.params as { seen?: AfkCounters } | null)?.seen;
+		const p = m.players.find((q) => q.steamId === row.steamId);
+		if (seen && p && (p.kills !== seen.kills || p.deaths !== seen.deaths || p.cash > seen.cash))
+			return 'Played again before this was sent.';
 	}
 	// A Team balance move for a player already off the side it was decided from: the move before it
 	// landed, or they changed side themselves. Moving someone twice is not harmless.
@@ -425,14 +430,6 @@ function holdsFor(
  * table could not be read: the row waits, and the error goes to the log, never to the row.
  */
 async function stillHolds(env: Env, row: OutboxRow): Promise<boolean | null> {
-	if (row.triggerKind === 'message_pool') {
-		try {
-			return await poolStillHolds(env.db, row.serverId, row.params);
-		} catch (err) {
-			console.error('[warcon] message pool check', forLog(err));
-			return null;
-		}
-	}
 	if (!SETTINGS_KEYS[row.triggerKind]) return true;
 	if (!row.triggerId) return false;
 	let rule: { enabled: boolean; config: unknown; state: unknown } | undefined;
@@ -493,14 +490,15 @@ async function deliverOne(env: Env, row: OutboxRow): Promise<'held' | 'refused' 
 	if (row.action === 'seed_reward') return deliverSeedReward(env, row);
 	if (row.action === BOUNTY_REWARD) return deliverBountyReward(env, row);
 	if (row.action === PANEL_BAN) return deliverPanelBan(env, row);
-	// An alert-only Name filter match, a Name change, Kill rate or Kill distance flag, a Kill
-	// distance rule's note of a kill it left out, or a bounty claimed or lapsed: the audit row (and,
-	// but for the Kill distance note, its Discord card) is the whole delivery.
+	// An alert-only Name filter match, a Name change, Kill rate, Kill distance or AFK watch flag, a
+	// Kill distance rule's note of a kill it left out, or a bounty claimed or lapsed: the audit row
+	// (and, but for the Kill distance note, its Discord card) is the whole delivery.
 	if (
 		row.action === NAME_FLAG ||
 		row.action === KILL_RATE_FLAG ||
 		row.action === KILL_DISTANCE_FLAG ||
 		row.action === KILL_DISTANCE_SKIP ||
+		row.action === AFK_WATCH_FLAG ||
 		row.action === BOUNTY_CLAIM ||
 		row.action === BOUNTY_LAPSE
 	) {
@@ -779,50 +777,18 @@ async function deliverPanelBan(env: Env, row: OutboxRow): Promise<void> {
 						.where(eq(triggers.id, row.triggerId))
 						.for('share')
 				: [];
-			if (row.triggerKind === 'message_pool') {
-				if (!(await poolStillHolds(tx, row.serverId, row.params))) return null;
-			} else if (!holdsFor(row, rule)) return null;
-			const pool =
-				row.triggerKind === 'message_pool' && p.weaponTag
-					? effectivePools(await poolConfigOf(tx, server.orgId), server.id).find(
-							(candidate) => candidate.id === (row.params as { poolId?: string }).poolId
-						)
-					: undefined;
-			const announcementMessages = pool?.thresholds.find(
-				(step) => step.count === p.thresholdCount && step.action === 'ban'
-			)?.announcementMessages;
-			const written = await grantEntry(
+			if (!holdsFor(row, rule)) return null;
+			return grantEntry(
 				env,
 				list,
 				{
 					steamId: p.steamId,
 					reason: p.reason,
-					playerReason: row.triggerKind === 'message_pool' ? p.reason : undefined,
-					playerMessageTemplate:
-						row.triggerKind === 'message_pool' ? p.banMessageTemplate : undefined,
-					suppressBanAnnouncement: !!announcementMessages?.length,
 					expiresAt: p.days ? new Date(Date.now() + p.days * 86400_000) : null,
 					addedByName: `trigger: ${row.triggerName}`
 				},
 				{ tx, lengthen: true }
 			);
-			if (written.added && pool && announcementMessages?.length)
-				await queuePoolEvent(tx, server.orgId, server.id, pool, {
-					eventKey: `weapon-ban:${written.id}`,
-					values: {
-						server_name: server.name,
-						map: '',
-						players: 0,
-						max_players: 0,
-						player_name: p.playerName || p.steamId,
-						victim_name: p.victimName || '',
-						weapon: p.weaponTag || '',
-						weapon_type: p.weaponType || p.weaponTag || '',
-						count: p.count || 0
-					},
-					announcementMessages
-				});
-			return written;
 		});
 		if (!written) return await finish(env, row, 'skipped', CHANGED);
 		if (!written.added && !written.lengthened)
@@ -887,11 +853,18 @@ const retryAfterOf = (r: unknown): number =>
  * which staff of this server read (Recent actions, the audit trail, Discord) and which might repeat
  * the text. A kill says in its own fixed words whether the player was killed and told. A rotation
  * shuffle writes the config document, whose refusals can quote the file. A skip of the map a server
- * came up on says which maps in its own words.
+ * came up on, and a rule's change of the weather, say which maps or lighting in their own words.
  */
-const OWN_WORDS = new Set(['whisper', 'kick', RULE_KILL, ROTATION_SHUFFLE, RESTART_SKIP]);
+const OWN_WORDS = new Set([
+	'whisper',
+	'kick',
+	RULE_KILL,
+	ROTATION_SHUFFLE,
+	RESTART_SKIP,
+	WEATHER_CYCLE
+]);
 /** Of those, the ones whose result is the panel's own account (names, counts), kept as it is. */
-const OWN_RESULT = new Set([RULE_KILL, ROTATION_SHUFFLE, RESTART_SKIP]);
+const OWN_RESULT = new Set([RULE_KILL, ROTATION_SHUFFLE, RESTART_SKIP, WEATHER_CYCLE]);
 
 /** Why the game refused a whisper or kick, as a fixed phrase: its status and its code. */
 function refusal(err: unknown): string {
@@ -997,6 +970,12 @@ async function execute(client: WardogsClient, row: OutboxRow): Promise<unknown> 
 	if (row.action === RESTART_SKIP) {
 		// Nothing to skip (the rotation has the map, say) is kept as skipped, with no audit row.
 		const r = await skipStartupMap(client, params);
+		if (r.skipped) throw new Skipped(r.message);
+		return r;
+	}
+	if (row.action === WEATHER_CYCLE) {
+		// A lighting the server does not list is kept as skipped, with no audit row.
+		const r = await changeWeather(client, params);
 		if (r.skipped) throw new Skipped(r.message);
 		return r;
 	}

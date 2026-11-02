@@ -8,10 +8,8 @@ export const BAN_MESSAGE_VARS = [
 	'reason',
 	'duration',
 	'expires',
-	'unban_at',
 	'banned',
 	'uid',
-	'reference',
 	'admin'
 ] as const;
 export type BanMessageVar = (typeof BAN_MESSAGE_VARS)[number];
@@ -26,8 +24,6 @@ export interface BanFacts {
 	addedByName: string;
 	addedAt: Date;
 	expiresAt: Date | null;
-	/** Policy ticket (t-12345) or automation case (a-0000001); absent on legacy bans. */
-	reference?: string;
 }
 
 /** A short id for a ban, stable for the life of its entry: enough to find it on the ban list. */
@@ -39,13 +35,6 @@ export const banUid = (entryId: string): string =>
 
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 const two = (n: number) => String(n).padStart(2, '0');
-
-/** Compact and timezone-independent player-facing expiry; no expiry means permanent. */
-export function formatBanExpiry(expiresAt: Date | null): string {
-	if (!expiresAt) return 'Permanent';
-	if (!Number.isFinite(expiresAt.getTime())) throw new Error('Invalid ban expiry.');
-	return `${two(expiresAt.getUTCDate())}.${two(expiresAt.getUTCMonth() + 1)}.${two(expiresAt.getUTCFullYear() % 100)} ${two(expiresAt.getUTCHours())}:${two(expiresAt.getUTCMinutes())} UTC`;
-}
 
 /** 26 Sep 2026 09:12 UTC: the game shows the text to anyone anywhere, so no local time. */
 const stamp = (d: Date): string =>
@@ -65,10 +54,8 @@ export function banMessageVars(f: BanFacts): Record<BanMessageVar, string> {
 		reason: f.reason,
 		duration: duration(f.addedAt, f.expiresAt),
 		expires: f.expiresAt ? stamp(f.expiresAt) : 'never',
-		unban_at: formatBanExpiry(f.expiresAt),
 		banned: stamp(f.addedAt),
 		uid: banUid(f.entryId),
-		reference: f.reference ?? '',
 		admin: f.addedByName
 	};
 }
@@ -82,18 +69,14 @@ export const unknownBanVars = (template: string): string[] => [
 	)
 ];
 
-/** One pass: inserted values are literal text, never interpreted as more placeholders. */
-export function substituteBanVariables(template: string, vars: Record<string, string>): string {
-	return template.replace(/\{([^{}]+)\}/g, (m, key: string) => vars[key.toLowerCase()] ?? m);
-}
-
 /**
  * The text for one ban. Separators left dangling by an empty value (a ban with no reason) are
  * trimmed off the ends, so "{reason} | Expires {expires}" does not open with a bar.
  */
 export function renderBanMessage(template: string, f: BanFacts): string {
 	const vars: Record<string, string> = banMessageVars(f);
-	return substituteBanVariables(template || DEFAULT_BAN_MESSAGE, vars)
+	return (template || DEFAULT_BAN_MESSAGE)
+		.replace(/\{([a-z_]+)\}/gi, (m, key: string) => vars[key.toLowerCase()] ?? m)
 		.replace(/^[\s|·:,;-]+|[\s|·:,;-]+$/g, '')
 		.slice(0, MAX_BAN_MESSAGE);
 }

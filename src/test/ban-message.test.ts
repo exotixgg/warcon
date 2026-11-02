@@ -27,21 +27,6 @@ const facts = {
 };
 
 describe('renderBanMessage', () => {
-	test('compact expiry is available to legacy templates without changing the existing expires variable', () => {
-		expect(renderBanMessage('Unban: {unban_at}', facts)).toBe('Unban: 26.09.26 09:12 UTC');
-		expect(renderBanMessage('Unban: {unban_at}', { ...facts, expiresAt: null })).toBe(
-			'Unban: Permanent'
-		);
-		expect(unknownBanVars('{unban_at}')).toEqual([]);
-	});
-	test('reference expands to the recorded ticket or automation ID and is empty on legacy bans', () => {
-		for (const reference of ['t-00123', 'a-0000001'])
-			expect(renderBanMessage('{reason} | {reference}', { ...facts, reference })).toBe(
-				`Team killing | ${reference}`
-			);
-		expect(renderBanMessage('{reason} | {reference}', facts)).toBe('Team killing');
-		expect(unknownBanVars('{reference}')).toEqual([]);
-	});
 	test('fills in the facts of the ban, in UTC', () => {
 		expect(
 			renderBanMessage('{reason} | {duration} | {banned} > {expires} | {uid} | {admin}', facts)
