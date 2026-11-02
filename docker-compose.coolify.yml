@@ -1,4 +1,4 @@
-# EXOTIX Coolify deployment overlay for Warcon.
+# Coolify deployment wiring for unmodified upstream Warcon.
 #
 # Coolify generates every SERVICE_* value independently for each resource. Production and
 # staging therefore receive separate credentials and database volumes without secrets in Git.
@@ -19,7 +19,7 @@ x-warcon: &warcon
     RELAY_SECRET: ${SERVICE_PASSWORD_64_WARCON_RELAY}
     RELAY_URL: http://worker:7700
     SETUP_TOKEN: ${SERVICE_PASSWORD_64_WARCON_SETUP}
-    APP_NAME: EXOTIX Warcon
+    APP_NAME: Warcon
     ALLOW_ORG_SIGNUP: 'false'
     ALLOW_DEMO_SERVER: 'false'
 

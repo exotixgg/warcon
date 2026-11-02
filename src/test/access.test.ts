@@ -518,6 +518,7 @@ describe.skipIf(!hasTestDb)('access', () => {
 				['welcome', { message: 'hello' }, 'chat.send'],
 				['empty_reset', { map: 'Bakurani', afterMinutes: 10 }, 'match.control'],
 				['restart_skip', {}, 'match.control'],
+				['weather_cycle', { lightings: ['DayClear', 'DayLateRain'] }, 'match.control'],
 				['risk_kick', { vacBans: true }, 'players.kick'],
 				['name_filter', { characters: 'ascii' }, 'players.kick'],
 				['name_filter', { characters: 'ascii', action: 'alert' }, 'players.kick'],
@@ -536,6 +537,8 @@ describe.skipIf(!hasTestDb)('access', () => {
 				['kill_distance', { causes: [DEFIB], action: 'ban', banScope: 'org' }, 'lists.ban'],
 				['two_teams', { closedFaction: 'Lonestar' }, 'players.move'],
 				['afk_protection', {}, 'players.kill'],
+				['afk_watch', {}, 'players.kick'],
+				['afk_watch', { action: 'alert' }, 'players.kick'],
 				['name_change', { takenOnly: true }, 'players.kick'],
 				['name_change', { action: 'kick' }, 'players.kick'],
 				['seed_reward', { minutes: 60, scope: 'server' }, 'slots.manage'],
@@ -743,78 +746,91 @@ describe.skipIf(!hasTestDb)('access', () => {
 			expect(second.status).toBe(409);
 		});
 
-		test('a Name filter rule: who may save, dry-run, switch it on and say whom it leaves alone', async () => {
-			const w = await seedWorld(env);
-			const config = { characters: 'ascii', action: 'alert', exempt: ['76561198000000801'] };
-			const body = { kind: 'name_filter', config };
-			const made = await api(w, 'owner', 'POST api/servers/[id]/triggers', {
-				params: { id: w.server.id },
-				body
+		// All three kick, so all need Kick as well as Automation; each keeps a list of players it never
+		// acts on, which nobody who could not save the rule can change.
+		for (const [what, kind, rule] of [
+			['a Name filter rule', 'name_filter', { characters: 'ascii', action: 'alert' }],
+			['a Kick on connect risk rule', 'risk_kick', { watchlist: true }],
+			['an AFK watch rule', 'afk_watch', { minutes: 10 }]
+		] as const)
+			test(`${what}: who may save, dry-run, switch it on and say whom it leaves alone`, async () => {
+				const w = await seedWorld(env);
+				const config = { ...rule, exempt: ['76561198000000801'] };
+				const body = { kind, config };
+				const made = await api(w, 'owner', 'POST api/servers/[id]/triggers', {
+					params: { id: w.server.id },
+					body
+				});
+				expect(made.status).toBe(201);
+				const triggerId = (made.body as { trigger: { id: string } }).trigger.id;
+				// Automation without Kick: the rule is not theirs to make, replay or enable.
+				await env.db
+					.update(orgRoles)
+					.set({ capabilities: ['server.view', 'automation.manage'] })
+					.where(eq(orgRoles.id, w.roles.viewer));
+				const expected: Record<PrincipalName, number> = {
+					anon: 401,
+					stranger: 404,
+					outsider: 404,
+					member: 404,
+					viewer: 403,
+					operator: 403,
+					admin: 200,
+					elsewhere: 404,
+					orgBans: 403,
+					orgSlots: 403,
+					owner: 200,
+					site: 200,
+					keyView: 403,
+					keyAll: 200,
+					keyElsewhere: 404,
+					keyBans: 403
+				};
+				const principals = Object.entries(expected) as [PrincipalName, number][];
+				for (const [i, [who, status]] of principals.entries()) {
+					// each names a player of their own for the rule to leave alone
+					const own = String(76561198000000810n + BigInt(i));
+					const got = [
+						await api(w, who, 'POST api/servers/[id]/triggers/dry-run', {
+							params: { id: w.server.id },
+							body
+						}),
+						await api(w, who, 'PATCH api/servers/[id]/triggers/[triggerId]', {
+							params: { id: w.server.id, triggerId },
+							body: { enabled: true }
+						}),
+						await api(w, who, 'POST api/servers/[id]/triggers', {
+							params: { id: w.server.id },
+							body
+						}),
+						await api(w, who, 'PATCH api/servers/[id]/triggers/[triggerId]', {
+							params: { id: w.server.id, triggerId },
+							body: { config: { ...config, exempt: [own] } }
+						})
+					].map((r) => r.status);
+					// a create that gets through answers 201
+					expect([who, ...got]).toEqual([
+						who,
+						status,
+						status,
+						status === 200 ? 201 : status,
+						status
+					]);
+					// a change let through is saved; a refused one leaves the list as it was
+					const [saved] = await env.db
+						.select({ config: triggers.config })
+						.from(triggers)
+						.where(eq(triggers.id, triggerId));
+					const kept = (saved.config as { exempt: string[] }).exempt;
+					expect([who, kept.includes(own)]).toEqual([who, status === 200]);
+				}
+				// The rule's id under another server's path is not found, even for its org's owner.
+				const moved = await api(w, 'owner', 'PATCH api/servers/[id]/triggers/[triggerId]', {
+					params: { id: w.otherServer.id, triggerId },
+					body: { enabled: false }
+				});
+				expect(moved.status).toBe(404);
 			});
-			expect(made.status).toBe(201);
-			const triggerId = (made.body as { trigger: { id: string } }).trigger.id;
-			// Automation without Kick: the rule is not theirs to make, replay or enable.
-			await env.db
-				.update(orgRoles)
-				.set({ capabilities: ['server.view', 'automation.manage'] })
-				.where(eq(orgRoles.id, w.roles.viewer));
-			const expected: Record<PrincipalName, number> = {
-				anon: 401,
-				stranger: 404,
-				outsider: 404,
-				member: 404,
-				viewer: 403,
-				operator: 403,
-				admin: 200,
-				elsewhere: 404,
-				orgBans: 403,
-				orgSlots: 403,
-				owner: 200,
-				site: 200,
-				keyView: 403,
-				keyAll: 200,
-				keyElsewhere: 404,
-				keyBans: 403
-			};
-			const principals = Object.entries(expected) as [PrincipalName, number][];
-			for (const [i, [who, status]] of principals.entries()) {
-				// each names a player of their own for the rule to leave alone
-				const own = String(76561198000000810n + BigInt(i));
-				const got = [
-					await api(w, who, 'POST api/servers/[id]/triggers/dry-run', {
-						params: { id: w.server.id },
-						body
-					}),
-					await api(w, who, 'PATCH api/servers/[id]/triggers/[triggerId]', {
-						params: { id: w.server.id, triggerId },
-						body: { enabled: true }
-					}),
-					await api(w, who, 'POST api/servers/[id]/triggers', {
-						params: { id: w.server.id },
-						body
-					}),
-					await api(w, who, 'PATCH api/servers/[id]/triggers/[triggerId]', {
-						params: { id: w.server.id, triggerId },
-						body: { config: { ...config, exempt: [own] } }
-					})
-				].map((r) => r.status);
-				// a create that gets through answers 201
-				expect([who, ...got]).toEqual([who, status, status, status === 200 ? 201 : status, status]);
-				// a change let through is saved; a refused one leaves the list as it was
-				const [saved] = await env.db
-					.select({ config: triggers.config })
-					.from(triggers)
-					.where(eq(triggers.id, triggerId));
-				const kept = (saved.config as { exempt: string[] }).exempt;
-				expect([who, kept.includes(own)]).toEqual([who, status === 200]);
-			}
-			// The rule's id under another server's path is not found, even for its org's owner.
-			const moved = await api(w, 'owner', 'PATCH api/servers/[id]/triggers/[triggerId]', {
-				params: { id: w.otherServer.id, triggerId },
-				body: { enabled: false }
-			});
-			expect(moved.status).toBe(404);
-		});
 
 		test('a Kill rate rule: who may save, dry-run and switch it on', async () => {
 			const w = await seedWorld(env);
@@ -1264,6 +1280,52 @@ describe.skipIf(!hasTestDb)('access', () => {
 			}
 		});
 
+		test('an AFK watch rule that warns needs Chat as well', async () => {
+			const w = await seedWorld(env);
+			const params = { id: w.server.id };
+			const warns = { warnMinutes: 10, warnMessage: 'Idle {idle} min: play on.' };
+			const holds = (caps: string[]) =>
+				env.db
+					.update(orgRoles)
+					.set({ capabilities: ['server.view', 'automation.manage', ...caps] })
+					.where(eq(orgRoles.id, w.roles.viewer));
+			const dryRun = (config: Record<string, unknown>) =>
+				api(w, 'viewer', 'POST api/servers/[id]/triggers/dry-run', {
+					params,
+					body: { kind: 'afk_watch', config }
+				});
+			const create = (config: Record<string, unknown>) =>
+				api(w, 'viewer', 'POST api/servers/[id]/triggers', {
+					params,
+					body: { kind: 'afk_watch', config }
+				});
+			// Chat alone, or Kick alone, is not enough for a rule that warns and kicks
+			for (const caps of [['chat.send'], ['players.kick']]) {
+				await holds(caps);
+				expect([caps, (await dryRun(warns)).status, (await create(warns)).status]).toEqual([
+					caps,
+					403,
+					403
+				]);
+			}
+			// Kick alone makes one that does not warn, but cannot add the warning to it
+			const made = await create({});
+			expect(made.status).toBe(201);
+			const triggerId = (made.body as { trigger: { id: string } }).trigger.id;
+			const addWarning = () =>
+				api(w, 'viewer', 'PATCH api/servers/[id]/triggers/[triggerId]', {
+					params: { ...params, triggerId },
+					body: { config: warns }
+				});
+			expect((await addWarning()).status).toBe(403);
+			const [kept] = await env.db.select().from(triggers).where(eq(triggers.id, triggerId));
+			expect((kept.config as { warnMinutes: number }).warnMinutes).toBe(0);
+			// both: the warning is theirs to add
+			await holds(['players.kick', 'chat.send']);
+			expect((await dryRun(warns)).status).toBe(200);
+			expect((await addWarning()).status).toBe(200);
+		});
+
 		test('a rule that tells players their stats is saved only by those who read them: View', async () => {
 			// Stats are the leaderboard's, a View read. Every role holds View, and a key without it
 			// does not reach the server at all, so saving such a rule asks for nothing more.
@@ -1352,7 +1414,8 @@ describe.skipIf(!hasTestDb)('access', () => {
 				bounty: {},
 				rotation_shuffle: {},
 				live_name: { base: 'Demo Clan #1' },
-				restart_skip: {}
+				restart_skip: {},
+				weather_cycle: { lightings: ['DayClear', 'DayLateRain'] }
 			};
 			const save = (kind: string, name: string, config: Record<string, unknown>) =>
 				api(w, 'owner', 'POST api/servers/[id]/triggers', {
