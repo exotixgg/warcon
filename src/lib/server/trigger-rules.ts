@@ -8,11 +8,14 @@ import { validateKillRate, type KillRateConfig } from './kill-rate';
 import { validateKillDistance, type KillDistanceConfig } from './kill-distance';
 import { validateTwoTeams, type TwoTeamsConfig } from './two-teams';
 import { validateAfkProtection, type AfkProtectionConfig } from './afk-protection';
+import { validateAfkWatch, type AfkWatchConfig } from './afk-watch';
 import { validateNameChange, type NameChangeConfig } from './name-change';
 import { validateBounty, type BountyConfig } from './bounty';
 import { validateRotationShuffle, type RotationShuffleConfig } from './rotation-shuffle';
 import { validateLiveName } from './live-name';
 import { validateRestartSkip, type RestartSkipConfig } from './restart-skip';
+import { validateWeatherCycle, type WeatherCycleConfig } from './weather-cycle';
+import { steamIdList } from './steam';
 import type { LiveNameConfig } from '$lib/live-name';
 import { causeTags } from './cause-tags';
 import { MAX_RESTART_LEAD_MINUTES, restartWindow, type RestartSchedule } from '$lib/uptime';
@@ -43,7 +46,9 @@ export const TRIGGER_KINDS: TriggerKind[] = [
 	'bounty',
 	'rotation_shuffle',
 	'live_name',
-	'restart_skip'
+	'restart_skip',
+	'afk_watch',
+	'weather_cycle'
 ];
 export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	welcome: 'Welcome whisper',
@@ -65,7 +70,9 @@ export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	bounty: 'Bounty',
 	rotation_shuffle: 'Rotation shuffle',
 	live_name: 'Live server name',
-	restart_skip: 'Skip map after restart'
+	restart_skip: 'Skip map after restart',
+	afk_watch: 'AFK watch',
+	weather_cycle: 'Weather cycle'
 };
 
 export interface WelcomeConfig {
@@ -106,6 +113,8 @@ export interface RiskKickConfig {
 	/** also kick at this advisory risk score or more (the score the players table shows); null is off */
 	kickAtScore: number | null;
 	spareReserved: boolean;
+	/** SteamIDs the rule never kicks, whatever it finds on them (absent on rules saved before it) */
+	exempt?: string[];
 	reason: string;
 }
 export interface PingKickConfig {
@@ -230,10 +239,14 @@ export type TriggerConfig =
 	| BountyConfig
 	| RotationShuffleConfig
 	| LiveNameConfig
-	| RestartSkipConfig;
+	| RestartSkipConfig
+	| AfkWatchConfig
+	| WeatherCycleConfig;
 
 /** A kick reason: not chat, so not held to the game's chat cap. */
 export const MAX_REASON = 200;
+/** Players a Kick on connect risk rule leaves alone, as many as the Name filter's. */
+const RISK_MAX_EXEMPT = 100;
 
 export const isTriggerKind = (v: unknown): v is TriggerKind =>
 	TRIGGER_KINDS.includes(v as TriggerKind);
@@ -314,6 +327,7 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 				watchlist: !!c.watchlist,
 				kickAtScore: riskKickScore(c),
 				spareReserved: c.spareReserved === undefined ? true : !!c.spareReserved,
+				exempt: steamIdList(c.exempt, RISK_MAX_EXEMPT),
 				reason:
 					str(c.reason, MAX_REASON) || 'Your account does not meet this server’s requirements.'
 			};
@@ -432,6 +446,10 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 			return validateLiveName(c);
 		case 'restart_skip':
 			return validateRestartSkip();
+		case 'afk_watch':
+			return validateAfkWatch(c);
+		case 'weather_cycle':
+			return validateWeatherCycle(c);
 	}
 }
 

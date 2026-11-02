@@ -580,11 +580,13 @@ export type TriggerKind =
 	| 'two_teams'
 	| 'kill_distance'
 	| 'afk_protection'
+	| 'afk_watch'
 	| 'name_change'
 	| 'bounty'
 	| 'rotation_shuffle'
 	| 'live_name'
-	| 'restart_skip';
+	| 'restart_skip'
+	| 'weather_cycle';
 
 export interface TriggerView {
 	id: string;

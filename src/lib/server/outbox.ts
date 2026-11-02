@@ -39,6 +39,7 @@ import { PANEL_BAN, type PanelBanParams } from './rule-ban';
 import { killAndTell, RULE_KILL, RULE_KILL_MAX_AGE_MS } from './rule-kill';
 import { ROTATION_SHUFFLE, shuffleOnServer } from './rotation-shuffle';
 import { RESTART_SKIP, skipStartupMap } from './restart-skip';
+import { changeWeather, WEATHER_CYCLE } from './weather-cycle';
 import { queueEvent } from './json-webhook-queue';
 import { seedRewardGranted } from './json-webhook-events';
 import {
@@ -47,6 +48,7 @@ import {
 	AFK_ROUND_MAX_MS,
 	AFK_ROUND_MAX_PLAYERS
 } from './afk-protection';
+import { AFK_WATCH_FLAG, type AfkCounters } from './afk-watch';
 import { MAX_CHAT } from '$lib/chat';
 import type { OutboxView } from '$lib/types';
 
@@ -58,6 +60,7 @@ const PANEL_ACTIONS = new Set([
 	KILL_RATE_FLAG,
 	KILL_DISTANCE_FLAG,
 	KILL_DISTANCE_SKIP,
+	AFK_WATCH_FLAG,
 	BOUNTY_REWARD,
 	BOUNTY_CLAIM,
 	BOUNTY_LAPSE
@@ -322,6 +325,15 @@ function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | nu
 		if (m.status.scores.some((s) => s.score > 0) || !(count < goal))
 			return 'The match started before this was sent.';
 	}
+	// An AFK watch warning or kick for a player who has played since it was decided (a kill, a death,
+	// cash earned; or the next match started their counters again) while it waited. Cash spent is no
+	// play: a macro can buy something.
+	if (row.triggerKind === 'afk_watch' && row.steamId) {
+		const seen = (row.params as { seen?: AfkCounters } | null)?.seen;
+		const p = m.players.find((q) => q.steamId === row.steamId);
+		if (seen && p && (p.kills !== seen.kills || p.deaths !== seen.deaths || p.cash > seen.cash))
+			return 'Played again before this was sent.';
+	}
 	// A Team balance move for a player already off the side it was decided from: the move before it
 	// landed, or they changed side themselves. Moving someone twice is not harmless.
 	if (row.triggerKind === 'two_teams' && row.action === 'changeTeam') {
@@ -478,14 +490,15 @@ async function deliverOne(env: Env, row: OutboxRow): Promise<'held' | 'refused' 
 	if (row.action === 'seed_reward') return deliverSeedReward(env, row);
 	if (row.action === BOUNTY_REWARD) return deliverBountyReward(env, row);
 	if (row.action === PANEL_BAN) return deliverPanelBan(env, row);
-	// An alert-only Name filter match, a Name change, Kill rate or Kill distance flag, a Kill
-	// distance rule's note of a kill it left out, or a bounty claimed or lapsed: the audit row (and,
-	// but for the Kill distance note, its Discord card) is the whole delivery.
+	// An alert-only Name filter match, a Name change, Kill rate, Kill distance or AFK watch flag, a
+	// Kill distance rule's note of a kill it left out, or a bounty claimed or lapsed: the audit row
+	// (and, but for the Kill distance note, its Discord card) is the whole delivery.
 	if (
 		row.action === NAME_FLAG ||
 		row.action === KILL_RATE_FLAG ||
 		row.action === KILL_DISTANCE_FLAG ||
 		row.action === KILL_DISTANCE_SKIP ||
+		row.action === AFK_WATCH_FLAG ||
 		row.action === BOUNTY_CLAIM ||
 		row.action === BOUNTY_LAPSE
 	) {
@@ -840,11 +853,18 @@ const retryAfterOf = (r: unknown): number =>
  * which staff of this server read (Recent actions, the audit trail, Discord) and which might repeat
  * the text. A kill says in its own fixed words whether the player was killed and told. A rotation
  * shuffle writes the config document, whose refusals can quote the file. A skip of the map a server
- * came up on says which maps in its own words.
+ * came up on, and a rule's change of the weather, say which maps or lighting in their own words.
  */
-const OWN_WORDS = new Set(['whisper', 'kick', RULE_KILL, ROTATION_SHUFFLE, RESTART_SKIP]);
+const OWN_WORDS = new Set([
+	'whisper',
+	'kick',
+	RULE_KILL,
+	ROTATION_SHUFFLE,
+	RESTART_SKIP,
+	WEATHER_CYCLE
+]);
 /** Of those, the ones whose result is the panel's own account (names, counts), kept as it is. */
-const OWN_RESULT = new Set([RULE_KILL, ROTATION_SHUFFLE, RESTART_SKIP]);
+const OWN_RESULT = new Set([RULE_KILL, ROTATION_SHUFFLE, RESTART_SKIP, WEATHER_CYCLE]);
 
 /** Why the game refused a whisper or kick, as a fixed phrase: its status and its code. */
 function refusal(err: unknown): string {
@@ -950,6 +970,12 @@ async function execute(client: WardogsClient, row: OutboxRow): Promise<unknown> 
 	if (row.action === RESTART_SKIP) {
 		// Nothing to skip (the rotation has the map, say) is kept as skipped, with no audit row.
 		const r = await skipStartupMap(client, params);
+		if (r.skipped) throw new Skipped(r.message);
+		return r;
+	}
+	if (row.action === WEATHER_CYCLE) {
+		// A lighting the server does not list is kept as skipped, with no audit row.
+		const r = await changeWeather(client, params);
 		if (r.skipped) throw new Skipped(r.message);
 		return r;
 	}
