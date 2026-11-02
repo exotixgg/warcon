@@ -31,16 +31,21 @@ upstream merge into `exotix`. It does not promote or deploy an update.
 1. Merge official upstream into a proposal based on `exotix`. Keep custom features
    scoped and resolve conflicts explicitly. Require the existing `test` and
    `docker` checks before merging.
-2. Back up staging before its promotion. Open a pull request from `exotix` to
-   `staging`; retain its required checks. Verify the deployed commit, web and
-   worker health, sign-in page, and the affected read-only application flows.
+2. Back up staging before its promotion. Create a promotion branch from the current
+   `staging`, merge `exotix` into it, and resolve conflicts there. Compare the resulting
+   tree with the reviewed integration revision. Open its pull request into `staging`
+   and retain the required checks, including the up-to-date branch requirement.
+   Verify the deployed commit, web and worker health, sign-in page, and the affected
+   read-only application flows.
 3. Run integration and smoke suites against fresh disposable databases, never
    the environment's real database. Staging must not contain live RCON targets.
 4. Back up production and validate its archive before promotion. Rehearse a
    production-data restore in an isolated database with no worker or live game
    connections; verify row counts and the candidate's migrations.
-5. Open the `staging` -> `production` promotion pull request. Verify that its
-   resulting application/deployment tree matches the tested staging revision.
+5. Create a production promotion branch from the current `production` and merge the
+   verified `staging` revision into it. Open its pull request into `production` and
+   retain the required checks. Its resulting tree must match the tested staging
+   revision. This preserves both branches' histories without weakening protection.
 6. Set production's Coolify branch to `production` and its commit pin to that
    exact verified staging commit. Queue the production deployment deliberately.
    Keep production auto-deployment disabled.
