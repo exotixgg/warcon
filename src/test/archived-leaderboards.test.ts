@@ -2,7 +2,7 @@ import { describe, expect, test } from 'bun:test';
 import { eq } from 'drizzle-orm';
 import { DEFAULT_BOARD_QUERY } from '$lib/leaderboard';
 import { getOrg } from '$lib/server/access';
-import { archivedServers, playerSessions, servers } from '$lib/server/db/schema';
+import { archivedServers, kills, playerSessions, servers } from '$lib/server/db/schema';
 import { orgLeaderboardServers, publicLeaderboardServers } from '$lib/server/leaderboard-servers';
 import { loadBoard } from '$lib/server/leaderboards';
 import { hasTestDb, testEnv } from './db';
@@ -17,7 +17,7 @@ describe.skipIf(!hasTestDb)('archived leaderboards', () => {
 		const steamId = '76561198000000042';
 		await env.db
 			.update(servers)
-			.set({ publicLeaderboards: true })
+			.set({ publicLeaderboards: true, feedTokenHash: null })
 			.where(eq(servers.id, w.server.id));
 		await env.db.insert(archivedServers).values([
 			{
@@ -61,6 +61,19 @@ describe.skipIf(!hasTestDb)('archived leaderboards', () => {
 			}))
 		);
 
+		await env.db.insert(kills).values({
+			ts: joinedAt,
+			serverId: publishedId,
+			eventId: 'archived-kill',
+			instanceId: 'retired-instance',
+			matchId: 'retired-match',
+			eventTime: 0,
+			map: 'Test map',
+			victimSteamId: steamId,
+			victimName: 'Seeder',
+			tags: []
+		});
+
 		const org = (await getOrg(env, w.org.id))!;
 		const publicServers = await publicLeaderboardServers(env, org);
 		expect(publicServers.map((s) => s.id)).toEqual([w.server.id, publishedId]);
@@ -87,6 +100,8 @@ describe.skipIf(!hasTestDb)('archived leaderboards', () => {
 			org.id
 		);
 		const serverBoard = await loadBoard(env, [w.server.id], { ...query, scope: 'server' }, org.id);
+		expect(orgBoard.hasFeed).toBe(true);
+		expect(serverBoard.hasFeed).toBe(false);
 		expect(orgBoard.rows[0]).toMatchObject({ steamId, seedMinutes: 40 });
 		expect(serverBoard.rows[0]).toMatchObject({ steamId, seedMinutes: 10 });
 	});
