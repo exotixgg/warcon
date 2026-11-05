@@ -66,6 +66,11 @@ describe('EXOTIX ban policy', () => {
 
 	test('uses neutral Player Review defaults without a misconduct allegation', () => {
 		const review = DEFAULT_BAN_POLICY.categories.find((item) => item.id === 'player-review')!;
+		const griefing = DEFAULT_BAN_POLICY.categories.find((item) => item.id === 'griefing')!;
+		expect(griefing.playerMessage).toBe(
+			'{category} | {duration} | discord.gg/exotix | {reference}'
+		);
+		expect(griefing.announcementMessages[0]).not.toContain('{reason}');
 		expect(review.playerMessage).toContain('staff complete a Player Review');
 		expect(review.announcementMessages[0]).toContain('staff review');
 		expect(review.announcementMessages[0]).not.toContain('banned');
@@ -83,7 +88,7 @@ describe('EXOTIX ban policy', () => {
 		).toBeFalse();
 	});
 
-	test('requires category-approved durations, a public reason and an optional five-digit ticket', () => {
+	test('requires category-approved durations and normalizes optional five-digit tickets', () => {
 		expect(
 			validateBanCase({
 				categoryId: 'griefing',
@@ -101,8 +106,11 @@ describe('EXOTIX ban policy', () => {
 		expect(() => validateBanCase({ categoryId: 'cheating', reason: 'Cheating', days: 7 })).toThrow(
 			'approved durations'
 		);
-		expect(() => validateBanCase({ categoryId: 'griefing', reason: '', days: 3 })).toThrow(
-			'public reason'
+		expect(validateBanCase({ categoryId: 'griefing', reason: '', days: 3 }).reason).toBe(
+			'Griefing'
+		);
+		expect(validateBanCase({ categoryId: 'griefing', days: 3, ticketId: 't-00123' }).ticketId).toBe(
+			'00123'
 		);
 		expect(() =>
 			validateBanCase({ categoryId: 'griefing', reason: 'X', days: 3, ticketId: '1234' })
@@ -127,17 +135,17 @@ describe('EXOTIX ban policy', () => {
 			reason: 'Account review',
 			originServerId: 'eu-01'
 		});
-		expect(complete.playerMessage).toContain('T-00420');
+		expect(complete.playerMessage).toContain('t-00420');
 		expect(complete.playerMessage).not.toContain('Evidence retained.');
 	});
 
 	test('renders player and public text without exposing internal notes', () => {
 		const policy = validateBanPolicy(DEFAULT_BAN_POLICY);
-		expect(banReference('00123', 'entry-abcdef')).toBe('T-00123');
+		expect(banReference('00123', 'entry-abcdef')).toBe('t-00123');
 		expect(banReference(null, 'entry-abcdef')).toBe('B-ENTRYA');
 		const player = playerMessageFor(policy, 'griefing', values);
 		expect(player).toContain('Griefing');
-		expect(player).toContain('T-00123');
+		expect(player).toContain('t-00123');
 		expect(player).not.toContain('Only staff');
 		expect(announcementFor(policy, 'griefing', values)).toContain('Mercury');
 	});

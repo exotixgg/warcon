@@ -78,6 +78,8 @@
 	let busy = $state(false);
 	let policyOn = $derived(!!banPolicy?.enabled);
 	let category = $derived(categoryFor(categoryId) ?? BAN_CATEGORIES[0]);
+	let policyReason = $derived(category.label);
+	let normalizedTicketId = $derived(ticketId.trim().replace(/^t-/i, ''));
 	let policyExpiresAt = $derived(days ? new Date(Date.now() + days * 86400_000) : null);
 	let originName = $derived(
 		server?.name ?? originServers.find((item) => item.id === originServerId)?.name ?? orgName
@@ -95,11 +97,11 @@
 			return {
 				text: playerMessageFor(banPolicy, categoryId, {
 					category: category.label,
-					reason: reason.trim(),
+					reason: policyReason,
 					days,
 					expiresAt: policyExpiresAt,
 					entryId: '000000',
-					ticketId: ticketId.trim() || null,
+					ticketId: normalizedTicketId || null,
 					playerName: name || id.trim() || 'Player',
 					source: originName
 				}).replaceAll('B-000000', 'B-······'),
@@ -161,7 +163,7 @@
 				? {
 						categoryId,
 						days,
-						ticketId: ticketId.trim(),
+						ticketId: normalizedTicketId,
 						notes: notes.trim(),
 						originServerId: originServerId || null
 					}
@@ -172,7 +174,7 @@
 					`/api/orgs/${encodeURIComponent(orgId)}/lists/ban/entries`,
 					{
 						steamId: target,
-						reason: reason.trim(),
+						reason: policyOn ? policyReason : reason.trim(),
 						expiresAt: policyOn
 							? (policyExpiresAt?.toISOString() ?? null)
 							: expiryIso(expiry, custom),
@@ -186,7 +188,7 @@
 					`/api/servers/${encodeURIComponent(server.id)}/lists/ban/entries`,
 					{
 						steamId: target,
-						reason: reason.trim(),
+						reason: policyOn ? policyReason : reason.trim(),
 						expiresAt: policyOn
 							? (policyExpiresAt?.toISOString() ?? null)
 							: expiryIso(expiry, custom),
@@ -315,16 +317,17 @@
 			{/if}
 		{/if}
 
-		<label class="block"
-			><span class="field-label">{policyOn ? 'Public reason' : 'Reason'}</span><input
-				class="input"
-				type="text"
-				placeholder={policyOn ? category.label : "Optional, shown in the server's ban list"}
-				maxlength="200"
-				bind:value={reason}
-				required={policyOn}
-			/></label
-		>
+		{#if !policyOn}
+			<label class="block"
+				><span class="field-label">Reason</span><input
+					class="input"
+					type="text"
+					placeholder="Optional, shown in the server's ban list"
+					maxlength="200"
+					bind:value={reason}
+				/></label
+			>
+		{/if}
 		{#if !policyOn && reasons.length}
 			<div class="flex flex-wrap gap-1.5">
 				{#each reasons as r (r.label)}
@@ -342,31 +345,24 @@
 		{/if}
 
 		{#if policyOn}
-			<div class="grid gap-3 sm:grid-cols-2">
-				<label class="block"
-					><span class="field-label"
-						>Ticket ID <span class="text-mist-600 normal-case">optional</span></span
+			<label class="block sm:max-w-56"
+				><span class="field-label"
+					>Ticket <span class="text-mist-600 normal-case">optional</span></span
+				><span class="flex"
+					><span
+						class="rounded-l-ctl border border-r-0 border-black bg-ink-950 px-3 py-2 font-mono text-[12.5px] text-mist-400"
+						>t-</span
 					><input
-						class="input font-mono"
+						class="input rounded-l-none font-mono"
 						type="text"
 						inputmode="numeric"
-						maxlength="5"
-						placeholder="01234"
-						bind:value={ticketId}
-					/></label
-				>
-				<label class="block"
-					><span class="field-label"
-						>Internal notes <span class="text-mist-600 normal-case">private</span></span
-					><input
-						class="input"
-						type="text"
-						maxlength="10000"
-						placeholder="Visible only to ban-list staff"
-						bind:value={notes}
-					/></label
-				>
-			</div>
+						maxlength="7"
+						placeholder="XXXXX"
+						value={normalizedTicketId}
+						oninput={(event) => (ticketId = event.currentTarget.value.replace(/^t-/i, ''))}
+					/></span
+				></label
+			>
 		{:else}
 			<div class="flex flex-wrap gap-3">
 				<label class="block sm:w-48"
@@ -405,6 +401,17 @@
 		{#if policyOn && policyPreview.problem}<p class="note text-danger">
 				{policyPreview.problem}
 			</p>{/if}
+		{#if policyOn}
+			<label class="block"
+				><span class="field-label"
+					>Internal notes <span class="text-mist-600 normal-case">private</span></span
+				><textarea
+					class="min-h-28 input"
+					maxlength="10000"
+					placeholder="Visible only to ban-list staff"
+					bind:value={notes}></textarea></label
+			>
+		{/if}
 
 		<div class="flex justify-end gap-2 pt-2">
 			<button type="button" class="btn" data-close onclick={onclose}>Cancel</button>

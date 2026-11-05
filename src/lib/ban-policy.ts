@@ -150,14 +150,13 @@ export const durationText = (days: number): string =>
 export const categoryFor = (id: unknown): BanCategoryDefinition | undefined =>
 	BAN_CATEGORIES.find((category) => category.id === id);
 
-const defaultPlayerMessage =
-	'{category} | {reason} | {duration} | Appeal discord.gg/exotix | Ref {reference}';
+const defaultPlayerMessage = '{category} | {duration} | discord.gg/exotix | {reference}';
 
-const defaultAnnouncement = '{source} | {player} was banned for {duration} for {reason}.';
+const defaultAnnouncement = '{source} | {player} was banned for {category} ({duration}).';
 
 function defaultPlayerMessageFor(category: BanCategoryDefinition): string {
 	return category.id === 'player-review'
-		? 'Your access is restricted while staff complete a Player Review | Appeal discord.gg/exotix | Ref {reference}'
+		? 'Your access is restricted while staff complete a Player Review | {duration} | discord.gg/exotix | {reference}'
 		: defaultPlayerMessage;
 }
 
@@ -268,13 +267,15 @@ export function validateBanCase(raw: unknown): Omit<BanCase, 'category' | 'playe
 	const days = caseInput.days;
 	if (typeof days !== 'number' || !Number.isInteger(days) || !category.durations.includes(days))
 		throw new Error(`${category.label}: choose one of its approved durations.`);
-	const reason = oneLine(caseInput.reason, 200);
-	if (!reason) throw new Error('Give the player a public reason.');
+	// The fixed category supplies a clear public reason for the simplified ban flow. Older API
+	// callers and existing cases may still carry an explicit reason for backwards compatibility.
+	const reason = oneLine(caseInput.reason, 200) || category.label;
 	const ticketRaw = caseInput.ticketId;
-	const ticketId =
-		ticketRaw === undefined || ticketRaw === null || ticketRaw === '' ? null : String(ticketRaw);
-	if (ticketId !== null && !/^\d{5}$/.test(ticketId))
-		throw new Error('Ticket ID must be exactly five digits.');
+	const ticketInput = ticketRaw === undefined || ticketRaw === null ? '' : String(ticketRaw).trim();
+	const ticketMatch = /^(?:t-)?(\d{5})$/i.exec(ticketInput);
+	if (ticketInput && !ticketMatch)
+		throw new Error('Ticket ID must be exactly five digits, optionally prefixed with t-.');
+	const ticketId = ticketMatch?.[1] ?? null;
 	const notes = String(caseInput.notes ?? '')
 		.toWellFormed()
 		.trim();
@@ -297,8 +298,8 @@ export function prepareBanCase(
 	moderation: unknown,
 	facts: { reason: string; scope: 'org' | 'server'; originServerId: string | null }
 ): Omit<BanCase, 'category' | 'playerMessage'> {
-	// Existing BanDialog callers still hold their public reason separately. Let a structured case
-	// explicitly replace it, but never silently turn an empty reason into a category label.
+	// Existing callers can keep supplying a public reason. An absent or blank value falls back to
+	// the fixed category label, which is what the simplified ban dialog now sends.
 	const source = asRecord(moderation);
 	const input = validateBanCase({
 		...source,
@@ -338,7 +339,7 @@ const expiryText = (expiresAt: Date | null): string =>
 		: `${expiresAt.getUTCDate()} ${expiresAt.toLocaleString('en-GB', { month: 'short', timeZone: 'UTC' })} ${expiresAt.getUTCFullYear()} ${String(expiresAt.getUTCHours()).padStart(2, '0')}:${String(expiresAt.getUTCMinutes()).padStart(2, '0')} UTC`;
 
 export function banReference(ticketId: string | null, entryId: string): string {
-	return ticketId ? `T-${ticketId}` : banUid(entryId);
+	return ticketId ? `t-${ticketId}` : banUid(entryId);
 }
 
 /** Renders text as WARDOGS will receive it. Notes are deliberately absent from this object. */

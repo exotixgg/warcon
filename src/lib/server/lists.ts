@@ -716,7 +716,7 @@ export async function addEntry(
 	body: Record<string, unknown>
 ): Promise<{ entry: ListEntryView; sync: ListSyncSummary }> {
 	const steamId = requireSteamId(body.steamId);
-	const reason = str(body.reason, 200);
+	let reason = str(body.reason, 200);
 	const list = await listOf(env, org.id, kind);
 	const moderation = body.moderation;
 	const source =
@@ -752,6 +752,7 @@ export async function addEntry(
 						{ reason, scope: 'org', originServerId: source?.id ?? null }
 					)
 				: null;
+		if (prepared) reason = prepared.reason;
 		const expiresAt = prepared ? expiryForDays(prepared.days) : parseExpiry(body.expiresAt);
 		const inserted = await insertInto(tx, list, {
 			steamId,
@@ -872,7 +873,7 @@ export async function addServerEntry(
 	body: Record<string, unknown>
 ): Promise<{ sync: ListSyncServer }> {
 	const steamId = requireSteamId(body.steamId);
-	const reason = str(body.reason, 200);
+	let reason = str(body.reason, 200);
 	const list = await serverListOf(env, server, kind);
 	const moderation = body.moderation;
 	const source =
@@ -898,6 +899,7 @@ export async function addServerEntry(
 						{ reason, scope: 'server', originServerId: source?.id ?? null }
 					)
 				: null;
+		if (prepared) reason = prepared.reason;
 		const expiresAt = prepared ? expiryForDays(prepared.days) : parseExpiry(body.expiresAt);
 		const inserted = await insertInto(tx, list, {
 			steamId,

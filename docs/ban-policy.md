@@ -18,7 +18,9 @@ Announcement scope is separate from ban scope. Player Review's announcement scop
 the origin; owners can switch announcements off and configure the other categories' destinations.
 
 Every new managed manual ban requires a category while the policy is enabled. An optional
-five-digit ticket keeps leading zeroes. Public reason and private case notes are separate; only
+five-digit ticket keeps leading zeroes and displays as `t-01234`. The category supplies the public
+reason; there is no separate public-reason field. Private notes use a full-width textarea below
+the player-message preview. Only
 staff with ban-management access receive case notes. Notes are excluded from game messages,
 announcements, generic list responses, audit details and webhooks.
 
@@ -35,7 +37,7 @@ community policy. Player Review text describes an access restriction while staff
 Available placeholders: `{category}`, `{reason}`, `{duration}`, `{expires}`, `{reference}`,
 `{ticket_id}`, `{name}` / `{player}`, and `{source}` / `{server}` / `{event_server}`.
 The server placeholders refer to the originating server, not each broadcast destination.
-`{reference}` uses `T-01234` for a ticket or the existing WARCON ban reference when unticketed.
+`{reference}` uses `t-01234` for a ticket or the existing WARCON ban reference when unticketed.
 There is no private-note placeholder.
 
 Player text is limited to 200 characters and broadcast text to 256 after expansion. The player

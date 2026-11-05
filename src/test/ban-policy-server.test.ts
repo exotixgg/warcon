@@ -66,12 +66,12 @@ describe.skipIf(!hasTestDb)('structured ban policy writes', () => {
 		const added = await call('POST', 'servers/[id]/lists/ban/entries', {
 			body: {
 				steamId: PLAYER,
-				reason: 'Intentional team killing',
 				moderation: { categoryId: 'griefing', days: 3, ticketId: '00123', notes: 'staff evidence' }
 			}
 		});
 		expect(added.status).toBe(201);
 		const row = await entry();
+		expect(row.reason).toBe('Griefing');
 		const [caseRow] = await env.db.select().from(banCases).where(eq(banCases.entryId, row.id));
 		expect(caseRow.record).toMatchObject({
 			categoryId: 'griefing',

@@ -5,7 +5,8 @@ import { beforeAll, describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
 import { and, desc, eq } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
-import type { SessionUser } from '$lib/server/access';
+import { getServer, type SessionUser } from '$lib/server/access';
+import { DEFAULT_BAN_POLICY } from '$lib/ban-policy';
 import {
 	auditLog,
 	orgBanReasons,
@@ -312,7 +313,12 @@ describe.skipIf(!hasTestDb)("an org's quick reasons", () => {
 		expect(here.body).toMatchObject({ canEditOrgBans: false, banMessage: '{reason}' });
 		expect((await orgLists(bansOnly)).status).toBe(404);
 		// and so does the dossier's ban dialog, which bans onto the same list
-		expect(dossierDialog(await dossier(bansOnly))).toEqual({ reasons: LIST, message: '{reason}' });
+		expect(dossierDialog(await dossier(bansOnly))).toEqual({
+			reasons: LIST,
+			message: '{reason}',
+			banPolicy: { ...DEFAULT_BAN_POLICY, version: 'default' },
+			servers: [{ id: w.server.id, name: (await getServer(env, w.server.id))!.name }]
+		});
 		expect((await patch(bansOnly, [])).status).toBe(403);
 		expect(await stored()).toEqual(LIST);
 	});

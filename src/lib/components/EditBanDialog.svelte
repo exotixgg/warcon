@@ -39,6 +39,7 @@
 	let days = $state(untrack(() => banCase?.days ?? 0));
 	let ticketId = $state(untrack(() => banCase?.ticketId ?? ''));
 	let notes = $state(untrack(() => banCase?.notes ?? ''));
+	let normalizedTicketId = $derived(ticketId.trim().replace(/^t-/i, ''));
 	let policyCategory = $derived(banCase ? categoryFor(banCase.categoryId) : undefined);
 	// The expiry goes out only when it was touched: the form holds it to the minute, and a ban
 	// already past it would be refused as not in the future.
@@ -49,13 +50,13 @@
 		busy = true;
 		try {
 			await api('PATCH', path, {
-				reason: reason.trim(),
+				reason: banCase ? reasonNow : reason.trim(),
 				...(banCase
 					? {
 							moderation: {
 								categoryId: banCase.categoryId,
 								days,
-								ticketId: ticketId.trim(),
+								ticketId: normalizedTicketId,
 								notes: notes.trim(),
 								originServerId: banCase.originServerId
 							}
@@ -90,14 +91,15 @@
 				<div><b>{banCase.category}</b> · original duration {durationText(banCase.days)}</div>
 			</div>
 		{/if}
-		<label class="block"
-			><span class="field-label">Reason</span><input
-				class="input"
-				type="text"
-				maxlength="200"
-				bind:value={reason}
-			/></label
-		>
+		{#if !banCase}<label class="block"
+				><span class="field-label">Reason</span><input
+					class="input"
+					type="text"
+					maxlength="200"
+					bind:value={reason}
+				/></label
+			>
+		{/if}
 		{#if banCase && policyCategory}
 			<div class="grid gap-3 sm:grid-cols-2">
 				<label class="block"
@@ -112,21 +114,35 @@
 				>
 				<label class="block"
 					><span class="field-label"
-						>Ticket ID <span class="text-mist-600 normal-case">optional</span></span
-					><input
-						class="input font-mono"
-						type="text"
-						inputmode="numeric"
-						maxlength="5"
-						placeholder="01234"
-						bind:value={ticketId}
-					/></label
+						>Ticket <span class="text-mist-600 normal-case">optional</span></span
+					><span class="flex"
+						><span
+							class="rounded-l-ctl border border-r-0 border-black bg-ink-950 px-3 py-2 font-mono text-[12.5px] text-mist-400"
+							>t-</span
+						><input
+							class="input rounded-l-none font-mono"
+							type="text"
+							inputmode="numeric"
+							maxlength="7"
+							placeholder="XXXXX"
+							value={normalizedTicketId}
+							oninput={(event) => (ticketId = event.currentTarget.value.replace(/^t-/i, ''))}
+						/></span
+					></label
 				>
+			</div>
+			<div>
+				<span class="field-label">The player is shown</span>
+				<div
+					class="rounded-ctl border border-black bg-ink-950 px-3.5 py-2.5 font-mono text-[12.5px] leading-relaxed break-words"
+				>
+					{banCase.playerMessage}
+				</div>
 			</div>
 			<label class="block"
 				><span class="field-label"
 					>Internal notes <span class="text-mist-600 normal-case">private</span></span
-				><textarea class="min-h-22 input" maxlength="10000" bind:value={notes}></textarea></label
+				><textarea class="min-h-28 input" maxlength="10000" bind:value={notes}></textarea></label
 			>
 			<p class="note mt-0!">
 				Keeping the same duration preserves this ban's current expiry. Choosing another approved
