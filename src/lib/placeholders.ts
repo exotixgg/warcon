@@ -111,7 +111,11 @@ export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> 
 	},
 	risk_kick: { fields: ['reason'], own: [], player: true },
 	name_filter: { fields: ['reason'], own: ['why'], player: true },
-	ping_kick: { fields: ['reason'], own: [], player: true },
+	ping_kick: {
+		fields: ['reason', 'warnMessage'],
+		own: ['limit', 'duration', 'elapsed', 'remaining', 'warning', 'warnings'],
+		player: true
+	},
 	// how long the player has been idle, and the idle time the rule acts at (both whole minutes)
 	afk_watch: { fields: ['warnMessage', 'reason'], own: ['idle', 'limit'], player: true },
 	team_kill: { fields: ['warnMessage', 'kickReason'], own: ['victim', 'count'], player: true },
