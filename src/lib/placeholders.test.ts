@@ -21,6 +21,7 @@ describe('placeholdersFor', () => {
 			{ key: 'server', names: [...SERVER_PLACEHOLDERS] }
 		]);
 		expect(placeholdersFor('welcome').map((g) => g.key)).toEqual([
+			'own',
 			'player',
 			'stats',
 			'org',
