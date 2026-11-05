@@ -68,10 +68,10 @@ describe('EXOTIX ban policy', () => {
 		const review = DEFAULT_BAN_POLICY.categories.find((item) => item.id === 'player-review')!;
 		const griefing = DEFAULT_BAN_POLICY.categories.find((item) => item.id === 'griefing')!;
 		expect(griefing.playerMessage).toBe(
-			'{category} | {duration} | discord.gg/exotix | {reference}'
+			'Reason: {category} | Duration: {duration} | Until: {expires} | Appeal on discord.gg/exotix | {reference}'
 		);
 		expect(griefing.announcementMessages[0]).not.toContain('{reason}');
-		expect(review.playerMessage).toContain('staff complete a Player Review');
+		expect(review.playerMessage).toContain('Player Review (pending staff decision)');
 		expect(review.announcementMessages[0]).toContain('staff review');
 		expect(review.announcementMessages[0]).not.toContain('banned');
 	});
@@ -144,6 +144,9 @@ describe('EXOTIX ban policy', () => {
 		expect(banReference('00123', 'entry-abcdef')).toBe('t-00123');
 		expect(banReference(null, 'entry-abcdef')).toBe('B-ENTRYA');
 		const player = playerMessageFor(policy, 'griefing', values);
+		expect(player).toBe(
+			'Reason: Griefing | Duration: 3 days | Until: 8 Nov 2026 12:30 UTC | Appeal on discord.gg/exotix | t-00123'
+		);
 		expect(player).toContain('Griefing');
 		expect(player).toContain('t-00123');
 		expect(player).not.toContain('Only staff');

@@ -150,13 +150,14 @@ export const durationText = (days: number): string =>
 export const categoryFor = (id: unknown): BanCategoryDefinition | undefined =>
 	BAN_CATEGORIES.find((category) => category.id === id);
 
-const defaultPlayerMessage = '{category} | {duration} | discord.gg/exotix | {reference}';
+const defaultPlayerMessage =
+	'Reason: {category} | Duration: {duration} | Until: {expires} | Appeal on discord.gg/exotix | {reference}';
 
 const defaultAnnouncement = '{source} | {player} was banned for {category} ({duration}).';
 
 function defaultPlayerMessageFor(category: BanCategoryDefinition): string {
 	return category.id === 'player-review'
-		? 'Your access is restricted while staff complete a Player Review | {duration} | discord.gg/exotix | {reference}'
+		? 'Reason: Player Review (pending staff decision) | Duration: {duration} | Until: {expires} | Appeal on discord.gg/exotix | {reference}'
 		: defaultPlayerMessage;
 }
 
