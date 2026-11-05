@@ -2,12 +2,8 @@
 // the cache only, so viewers can never spend the site's Steam quota.
 import type { PageServerLoad } from './$types';
 import { getEnv } from '$lib/server/env';
-import {
-	publicHeading,
-	publicLoad,
-	publicOrgServers,
-	requirePublicServer
-} from '$lib/server/public';
+import { publicHeading, publicLoad, requirePublicServer } from '$lib/server/public';
+import { publicLeaderboardServers } from '$lib/server/leaderboard-servers';
 import { loadCareer, lastNameOf } from '$lib/server/leaderboards';
 import { combatSummary } from '$lib/server/players';
 import { cachedProfiles } from '$lib/server/steam';
@@ -19,7 +15,7 @@ export const load: PageServerLoad = (event) =>
 		const ps = await requirePublicServer(env, event.params.id, 'leaderboards');
 		const steamId = event.params.steamId;
 		if (!/^\d{17}$/.test(steamId)) throw new ApiError(404, 'Not found.', 'not_found');
-		const orgServers = await publicOrgServers(env, ps.org, 'leaderboards');
+		const orgServers = await publicLeaderboardServers(env, ps.org);
 		const ids = orgServers.map((s) => s.id);
 		// A player these servers never saw is a 404 before the career reads anything: any 17
 		// digits reach this page, and the career reads the boards.
@@ -42,6 +38,7 @@ export const load: PageServerLoad = (event) =>
 			combat,
 			player: { steamId, name, avatar: steam?.avatar ?? '' },
 			multiServer: orgServers.length > 1,
+			archivedServerIds: orgServers.filter((s) => s.archived).map((s) => s.id),
 			heading: publicHeading(ps)
 		};
 	});
