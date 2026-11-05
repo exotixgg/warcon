@@ -24,6 +24,13 @@ describe('automation message input', () => {
 		expect(automationPoolEditorValue(['One\nTwo', 'Three'])).toBe('"One\\nTwo"\nThree');
 	});
 
+	test('reopening a multiline message in a single-line input preserves its line breaks', () => {
+		const stored = 'One\nTwo';
+		const input = automationMessageEditorValue(stored);
+		expect(input.includes('\n')).toBe(false);
+		expect(normalizeAutomationMessage(input)).toBe(stored);
+	});
+
 	test('keeps a legacy JSON-quoted message stable when reopening the editor', () => {
 		expect(automationMessageEditorValue('"Welcome\\n{player}"')).toBe(
 			'"\\\"Welcome\\\\n{player}\\\""'

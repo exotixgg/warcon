@@ -15,12 +15,14 @@ export function normalizeAutomationMessage(value: unknown): string {
 }
 
 /**
- * Makes an existing legacy JSON-quoted message safe to open and save without changing it.
+ * Makes multiline and legacy JSON-quoted messages safe even in single-line inputs.
  * New input is normalized once, on the server.
  */
 export function automationMessageEditorValue(value: unknown): string {
 	const text = String(value ?? '');
-	return normalizeAutomationMessage(text) === text ? text : JSON.stringify(text);
+	return /\r|\n/.test(text) || normalizeAutomationMessage(text) !== text
+		? JSON.stringify(text)
+		: text;
 }
 
 /** Message pools still use one physical line per choice. A quoted JSON string can hold `\\n`. */
@@ -32,10 +34,5 @@ export function normalizeAutomationPool(value: unknown): string[] {
 
 /** Turns a stored pool back into one-choice-per-physical-line editor text. */
 export function automationPoolEditorValue(values: readonly string[]): string {
-	return values
-		.map((value) => {
-			const editorValue = automationMessageEditorValue(value);
-			return /\r|\n/.test(editorValue) ? JSON.stringify(editorValue) : editorValue;
-		})
-		.join('\n');
+	return values.map(automationMessageEditorValue).join('\n');
 }
