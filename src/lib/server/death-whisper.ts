@@ -13,7 +13,6 @@ import { steamIdList } from './steam';
 import { causeLabel } from '$lib/causes';
 import { MAX_CHAT } from '$lib/chat';
 import { canonical } from '$lib/placeholders';
-import { oneLine } from '$lib/saved-messages';
 import type { MessageVars } from './message-vars';
 
 export const DEATH_WHISPER_MAX_MESSAGES = 20;
@@ -47,8 +46,22 @@ export interface DeathWhisperConfig {
 
 export function validateDeathWhisper(c: Record<string, unknown>): DeathWhisperConfig {
 	const list = Array.isArray(c.messages) ? c.messages : String(c.messages ?? '').split('\n');
-	// each on one line and cut to what the game takes, the same text once
-	const messages = [...new Set(list.map((m) => oneLine(m, MAX_CHAT)).filter(Boolean))];
+	// Pool entries may contain line breaks decoded from a JSON string by validateConfig.
+	const messages = [
+		...new Set(
+			list
+				.map((m) =>
+					String(m ?? '')
+						.toWellFormed()
+						.replace(/\r\n?/g, '\n')
+						.replace(/[^\S\n]+|[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, ' ')
+						.trim()
+						.slice(0, MAX_CHAT)
+						.replace(/[\uD800-\uDBFF]$/, '')
+				)
+				.filter(Boolean)
+		)
+	];
 	if (!messages.length) throw new ApiError(400, 'Add at least one message to whisper.');
 	if (messages.length > DEATH_WHISPER_MAX_MESSAGES)
 		throw new ApiError(400, `A rule holds at most ${DEATH_WHISPER_MAX_MESSAGES} messages.`);
