@@ -9,7 +9,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 	const env = getEnv();
 	try {
 		const { org } = await requireListsRole(env, locals, params.id, 'ban');
-		return { entries: await entriesView(env, org, 'ban') };
+		return { entries: await entriesView(env, org, 'ban', { includeBanCases: true }) };
 	} catch (err) {
 		const known = normalizeError(err);
 		if (!known) throw err;

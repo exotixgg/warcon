@@ -6,7 +6,7 @@ import { beforeAll, describe, expect, test } from 'bun:test';
 import { join } from 'node:path';
 import { and, eq, inArray, isNull } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
-import { keyUser, type SessionUser } from '$lib/server/access';
+import { accessibleServers, keyUser, type SessionUser } from '$lib/server/access';
 import { hashToken, mintToken, principalOf, tokenHint } from '$lib/server/apikeys-core';
 import { writeAudit } from '$lib/server/audit';
 import { ensureOrgLists, ensureServerLists, listOf, serverListOf } from '$lib/server/lists';
@@ -133,6 +133,7 @@ describe.skipIf(!hasTestDb)('the player page', () => {
 			bans: Record<string, { reason: string; addedByName: string; scope: string }>;
 			banReasons: unknown;
 			banMessage: string | null;
+			banPolicy: unknown;
 		};
 	};
 	const line = (b: PlayerBanView) =>
@@ -567,8 +568,18 @@ describe.skipIf(!hasTestDb)('the player page', () => {
 		for (const who of READERS) {
 			const d = await read(who);
 			const tab = await stateOf(who, homeOf(who));
+			const origins = (await accessibleServers(env, as(who)!))
+				.filter((server) => server.orgId === w.org.id)
+				.map((server) => ({ id: server.id, name: server.name }));
 			const want =
-				tab.banReasons === null ? null : { reasons: tab.banReasons, message: tab.banMessage };
+				tab.banReasons === null
+					? null
+					: {
+							reasons: tab.banReasons,
+							message: tab.banMessage,
+							banPolicy: tab.banPolicy,
+							servers: origins
+						};
 			expect({ who, dialog: d.banDialog as unknown }).toEqual({ who, dialog: want });
 			if (d.banDialog) staff.push(who);
 		}

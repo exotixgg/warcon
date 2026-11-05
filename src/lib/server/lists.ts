@@ -23,6 +23,7 @@ import {
 } from './access';
 import type { Db, Tx } from './db';
 import {
+	banCases,
 	listEntries,
 	lists,
 	organizations,
@@ -37,6 +38,14 @@ import {
 	type ListRow
 } from './db/schema';
 import { DEFAULT_BAN_MESSAGE } from '$lib/ban-message';
+import {
+	banCaseOf,
+	banPolicyOf,
+	finalizedBanCase,
+	preparedBanCase,
+	writeBanCase
+} from './ban-policy';
+import { enqueueBanAnnouncements } from './ban-announcements';
 import { banReasonsFor } from './ban-reasons';
 import { requireSteamId } from './steam';
 import { desiredFor, memberSlots, summaryOf } from './lists-sync';
@@ -331,7 +340,7 @@ function shapeEntry(
 export async function orgListsView(env: Env, org: OrgRow, role: ListsRole): Promise<OrgListsView> {
 	const rows = (await orgLists(env, org.id)).filter((l) => role.kinds.includes(l.kind));
 	const bans = role.kinds.includes('ban');
-	const [counts, srv, banReasons] = await Promise.all([
+	const [counts, srv, banReasons, banPolicy] = await Promise.all([
 		env.db
 			.select({ listId: listEntries.listId, n: count() })
 			.from(listEntries)
@@ -346,7 +355,8 @@ export async function orgListsView(env: Env, org: OrgRow, role: ListsRole): Prom
 			)
 			.groupBy(listEntries.listId),
 		orgServerRefs(env, org.id),
-		bans ? banReasonsFor(env, org.id) : null
+		bans ? banReasonsFor(env, org.id) : null,
+		bans ? banPolicyOf(env.db, org.id) : null
 	]);
 	const syncRows = srv.length
 		? await env.db
@@ -367,6 +377,7 @@ export async function orgListsView(env: Env, org: OrgRow, role: ListsRole): Prom
 		membersReserved: org.membersReserved,
 		banMessage: bans ? org.banMessage : null,
 		banReasons,
+		banPolicy,
 		servers: srv.map((s) => {
 			const y = syncOf.get(s.id);
 			return {
@@ -464,11 +475,12 @@ export async function entriesView(
 	env: Env,
 	org: OrgRow,
 	kind: Kind,
-	opts: { includeRemoved?: boolean } = {}
+	opts: { includeRemoved?: boolean; includeBanCases?: boolean } = {}
 ): Promise<ListEntryView[]> {
 	const list = await listOf(env, org.id, kind);
 	return rosterOf(env, org, list, await orgServerRefs(env, org.id), {
 		includeRemoved: opts.includeRemoved,
+		includeBanCases: opts.includeBanCases,
 		members: kind === 'reserve' && org.membersReserved && !opts.includeRemoved
 	});
 }
@@ -482,7 +494,7 @@ export async function rosterOf(
 	org: OrgRow,
 	list: ListRow,
 	srv: ServerRef[],
-	opts: { includeRemoved?: boolean; members?: boolean } = {}
+	opts: { includeRemoved?: boolean; includeBanCases?: boolean; members?: boolean } = {}
 ): Promise<ListEntryView[]> {
 	const kind = list.kind;
 	const rows = await env.db
@@ -509,10 +521,24 @@ export async function rosterOf(
 		])
 	];
 	const serverIds = srv.map((s) => s.id);
-	const [names, byServer] = await Promise.all([
+	const [names, byServer, cases] = await Promise.all([
 		namesFor(env, serverIds, [...rows.map((r) => r.steamId), ...members.map((m) => m.steamId)]),
-		standings(env, kind, serverIds, ids)
+		standings(env, kind, serverIds, ids),
+		opts.includeBanCases && kind === 'ban' && rows.length
+			? env.db
+					.select({ entryId: banCases.entryId, record: banCases.record })
+					.from(banCases)
+					.where(
+						inArray(
+							banCases.entryId,
+							rows.map((row) => row.id)
+						)
+					)
+			: []
 	]);
+	const caseOf = new Map(
+		cases.map((row) => [row.entryId, row.record as import('$lib/ban-policy').BanCaseView])
+	);
 	const now = new Date();
 	const perServer = (steamId: string) =>
 		srv.map((s) => ({
@@ -520,9 +546,16 @@ export async function rosterOf(
 			serverName: s.name,
 			...standingOf(byServer.get(s.id), steamId)
 		}));
-	const out = rows.map((r) =>
-		shapeEntry(r, kind, names.get(r.steamId) ?? null, r.removedAt ? [] : perServer(r.steamId), now)
-	);
+	const out = rows.map((r) => ({
+		...shapeEntry(
+			r,
+			kind,
+			names.get(r.steamId) ?? null,
+			r.removedAt ? [] : perServer(r.steamId),
+			now
+		),
+		...(opts.includeBanCases && kind === 'ban' ? { banCase: caseOf.get(r.id) ?? null } : {})
+	}));
 	for (const m of members)
 		out.push({
 			id: `member:${m.userId}`,
@@ -571,6 +604,30 @@ interface NewEntry {
 	addedBy: string | null;
 	addedByName: string;
 }
+
+/** The server named in a moderation case must remain inside the organisation being moderated. */
+async function moderationSource(
+	env: Env,
+	orgId: string,
+	originServerId: unknown,
+	fallback: ServerRef | null
+): Promise<ServerRef | null> {
+	if (originServerId === undefined || originServerId === null || originServerId === '')
+		return fallback;
+	const id = String(originServerId);
+	if (fallback && id !== fallback.id)
+		throw new ApiError(400, 'A server ban must use its own server as the origin.');
+	const [source] = await env.db
+		.select({ id: servers.id, name: servers.name })
+		.from(servers)
+		.where(and(eq(servers.id, id), eq(servers.orgId, orgId)))
+		.limit(1);
+	if (!source) throw new ApiError(400, 'The moderation origin server is not in this organisation.');
+	return source;
+}
+
+const expiryForDays = (days: number, now = Date.now()): Date | null =>
+	days === 0 ? null : new Date(now + days * 86_400_000);
 
 /** Inserts an active entry; `added` is false when the player is already on the list. */
 export async function insertEntry(
@@ -660,15 +717,71 @@ export async function addEntry(
 ): Promise<{ entry: ListEntryView; sync: ListSyncSummary }> {
 	const steamId = requireSteamId(body.steamId);
 	const reason = str(body.reason, 200);
-	const expiresAt = parseExpiry(body.expiresAt);
 	const list = await listOf(env, org.id, kind);
-	const { id, added } = await insertEntry(env, list, {
-		steamId,
-		reason,
-		expiresAt,
-		addedBy: actor.id,
-		addedByName: actor.username
+	const moderation = body.moderation;
+	const source =
+		kind === 'ban'
+			? await moderationSource(
+					env,
+					org.id,
+					moderation && typeof moderation === 'object'
+						? (moderation as Record<string, unknown>).originServerId
+						: undefined,
+					null
+				)
+			: null;
+	const refs = await orgServerRefs(env, org.id);
+	const playerName =
+		(
+			await namesFor(
+				env,
+				refs.map((server) => server.id),
+				[steamId]
+			)
+		).get(steamId) ?? steamId;
+	const result = await env.db.transaction(async (tx) => {
+		// The same org lock is held by policy updates, preventing a policy toggle between
+		// validation and the entry/case write.
+		await lockOrg(tx, org.id);
+		const policy = kind === 'ban' ? await banPolicyOf(tx, org.id) : null;
+		const prepared =
+			policy && kind === 'ban'
+				? preparedBanCase(
+						policy,
+						{ ...(moderation && typeof moderation === 'object' ? moderation : {}), reason },
+						{ reason, scope: 'org', originServerId: source?.id ?? null }
+					)
+				: null;
+		const expiresAt = prepared ? expiryForDays(prepared.days) : parseExpiry(body.expiresAt);
+		const inserted = await insertInto(tx, list, {
+			steamId,
+			reason: prepared?.reason ?? reason,
+			expiresAt,
+			addedBy: actor.id,
+			addedByName: actor.username
+		});
+		if (!inserted.added) return { ...inserted, expiresAt, banCase: null, policy: null };
+		if (!prepared || !policy) return { ...inserted, expiresAt, banCase: null, policy: null };
+		const banCase = finalizedBanCase(policy, prepared, {
+			entryId: inserted.id,
+			playerName,
+			source: source?.name ?? org.name,
+			expiresAt
+		});
+		await writeBanCase(tx, inserted.id, banCase);
+		await enqueueBanAnnouncements(tx, {
+			orgId: org.id,
+			entryId: inserted.id,
+			steamId,
+			expiresAt,
+			policy,
+			banCase,
+			source,
+			name: playerName
+		});
+		return { ...inserted, expiresAt, banCase, policy };
 	});
+	const { id, added, expiresAt } = result;
 	if (!added)
 		throw new ApiError(409, `${steamId} is already on the ${KIND_LABEL[kind]}.`, 'duplicate');
 	await writeAudit(env, req, {
@@ -692,7 +805,9 @@ export async function addEntry(
 		}
 	});
 	const sync = await gateway().syncOrg(env, org);
-	const entry = (await entriesView(env, org, kind)).find((e) => e.id === id)!;
+	const entry = (await entriesView(env, org, kind, { includeBanCases: kind === 'ban' })).find(
+		(e) => e.id === id
+	)!;
 	return { entry, sync };
 }
 
@@ -758,15 +873,61 @@ export async function addServerEntry(
 ): Promise<{ sync: ListSyncServer }> {
 	const steamId = requireSteamId(body.steamId);
 	const reason = str(body.reason, 200);
-	const expiresAt = parseExpiry(body.expiresAt);
 	const list = await serverListOf(env, server, kind);
-	const { added } = await insertEntry(env, list, {
-		steamId,
-		reason,
-		expiresAt,
-		addedBy: actor.id,
-		addedByName: actor.username
+	const moderation = body.moderation;
+	const source =
+		kind === 'ban'
+			? await moderationSource(
+					env,
+					org.id,
+					moderation && typeof moderation === 'object'
+						? (moderation as Record<string, unknown>).originServerId
+						: undefined,
+					{ id: server.id, name: server.name }
+				)
+			: null;
+	const playerName = (await namesFor(env, [server.id], [steamId])).get(steamId) ?? steamId;
+	const result = await env.db.transaction(async (tx) => {
+		await lockOrg(tx, org.id);
+		const policy = kind === 'ban' ? await banPolicyOf(tx, org.id) : null;
+		const prepared =
+			policy && kind === 'ban'
+				? preparedBanCase(
+						policy,
+						{ ...(moderation && typeof moderation === 'object' ? moderation : {}), reason },
+						{ reason, scope: 'server', originServerId: source?.id ?? null }
+					)
+				: null;
+		const expiresAt = prepared ? expiryForDays(prepared.days) : parseExpiry(body.expiresAt);
+		const inserted = await insertInto(tx, list, {
+			steamId,
+			reason: prepared?.reason ?? reason,
+			expiresAt,
+			addedBy: actor.id,
+			addedByName: actor.username
+		});
+		if (!inserted.added || !prepared || !policy)
+			return { ...inserted, expiresAt, banCase: null, policy: null };
+		const banCase = finalizedBanCase(policy, prepared, {
+			entryId: inserted.id,
+			playerName,
+			source: source?.name ?? server.name,
+			expiresAt
+		});
+		await writeBanCase(tx, inserted.id, banCase);
+		await enqueueBanAnnouncements(tx, {
+			orgId: org.id,
+			entryId: inserted.id,
+			steamId,
+			expiresAt,
+			policy,
+			banCase,
+			source,
+			name: playerName
+		});
+		return { ...inserted, expiresAt, banCase, policy };
 	});
+	const { added, expiresAt } = result;
 	if (!added)
 		throw new ApiError(
 			409,
@@ -862,27 +1023,88 @@ export async function updateEntry(
 	body: Record<string, unknown>
 ): Promise<{ entry: { steamId: string; reason: string; expiresAt: string | null } }> {
 	const steamId = requireSteamId(steamIdIn);
-	const set: { reason?: string; expiresAt?: Date | null } = {};
-	if ('reason' in body) set.reason = str(body.reason, 200);
-	if ('expiresAt' in body) set.expiresAt = parseExpiry(body.expiresAt);
-	if (!('reason' in set) && !('expiresAt' in set))
-		throw new ApiError(400, 'Nothing to change: send reason, expiresAt or both.');
 	const list = server ? await serverListOf(env, server, kind) : await listOf(env, org.id, kind);
-	const [row] = await env.db
-		.update(listEntries)
-		.set(set)
-		.where(
-			and(
-				eq(listEntries.listId, list.id),
-				eq(listEntries.steamId, steamId),
-				isNull(listEntries.removedAt)
+	const result = await env.db.transaction(async (tx) => {
+		await lockOrg(tx, org.id);
+		const [existing] = await tx
+			.select({ id: listEntries.id, reason: listEntries.reason, expiresAt: listEntries.expiresAt })
+			.from(listEntries)
+			.where(
+				and(
+					eq(listEntries.listId, list.id),
+					eq(listEntries.steamId, steamId),
+					isNull(listEntries.removedAt)
+				)
 			)
-		)
-		.returning({
-			id: listEntries.id,
-			reason: listEntries.reason,
-			expiresAt: listEntries.expiresAt
-		});
+			.limit(1)
+			.for('update');
+		if (!existing) return null;
+		const currentCase = kind === 'ban' ? await banCaseOf(tx, existing.id) : null;
+		const set: { reason?: string; expiresAt?: Date | null } = {};
+		if (currentCase) {
+			if (body.moderation === undefined)
+				throw new ApiError(400, 'Categorised bans must keep a ban category.');
+			const policy = await banPolicyOf(tx, org.id);
+			const requestedOrigin =
+				body.moderation && typeof body.moderation === 'object'
+					? (body.moderation as Record<string, unknown>).originServerId
+					: currentCase.originServerId;
+			const source = await moderationSource(
+				env,
+				org.id,
+				requestedOrigin,
+				server ? { id: server.id, name: server.name } : null
+			);
+			const publicReason = 'reason' in body ? str(body.reason, 200) : existing.reason;
+			const prepared = preparedBanCase(
+				{ ...policy, enabled: true },
+				{
+					...(body.moderation && typeof body.moderation === 'object' ? body.moderation : {}),
+					reason: publicReason
+				},
+				{
+					reason: publicReason,
+					scope: server ? 'server' : 'org',
+					originServerId: source?.id ?? null
+				}
+			)!;
+			// Editing wording or notes must not silently extend a running fixed-term ban.
+			// Selecting a different duration deliberately starts that new term at this edit.
+			const expiresAt =
+				prepared.days === currentCase.days ? existing.expiresAt : expiryForDays(prepared.days);
+			set.reason = prepared.reason;
+			set.expiresAt = expiresAt;
+			const name =
+				(await namesFor(env, source ? [source.id] : [], [steamId])).get(steamId) ?? steamId;
+			await writeBanCase(
+				tx,
+				existing.id,
+				finalizedBanCase(policy, prepared, {
+					entryId: existing.id,
+					playerName: name,
+					source: source?.name ?? org.name,
+					expiresAt
+				})
+			);
+		} else {
+			if ('reason' in body) set.reason = str(body.reason, 200);
+			if ('expiresAt' in body) set.expiresAt = parseExpiry(body.expiresAt);
+			if (!('reason' in set) && !('expiresAt' in set))
+				throw new ApiError(400, 'Nothing to change: send reason, expiresAt or both.');
+		}
+		const [updated] = await tx
+			.update(listEntries)
+			.set(set)
+			.where(eq(listEntries.id, existing.id))
+			.returning({
+				id: listEntries.id,
+				reason: listEntries.reason,
+				expiresAt: listEntries.expiresAt
+			});
+		return { row: updated, set };
+	});
+	const row = result?.row;
+	const set = result?.set ?? {};
 	const where = server ? server.name : org.name;
 	if (!row)
 		throw new ApiError(
@@ -1207,6 +1429,7 @@ export async function serverListsState(
 		orgId: server.orgId,
 		banMessage: null,
 		banReasons: null,
+		banPolicy: null,
 		bans: {},
 		reserved: {},
 		sync: sync
@@ -1233,7 +1456,8 @@ export async function serverListsState(
 		reason: '',
 		addedByName: '',
 		addedAt: null,
-		expiresAt: null
+		expiresAt: null,
+		banCase: null
 	});
 	for (const b of bans) out.bans[b.steamId] = ban('local', false);
 	const inDocument = new Set(reserved.map((r) => r.steamId));
@@ -1248,7 +1472,12 @@ export async function serverListsState(
 	};
 	if (staff) {
 		out.banMessage = org.banMessage;
-		out.banReasons = await banReasonsFor(env, server.orgId);
+		const [banReasons, banPolicy] = await Promise.all([
+			banReasonsFor(env, server.orgId),
+			banPolicyOf(env.db, server.orgId)
+		]);
+		out.banReasons = banReasons;
+		out.banPolicy = banPolicy;
 	}
 	const desired = await desiredFor(env, server, org);
 	// a ban on the lists is in force: the panel removes the player itself. One the game also
@@ -1262,14 +1491,17 @@ export async function serverListsState(
 		const sourceOf = new Map(desired.bans.map((d) => [d.steamId, d.listId]));
 		const entries = await env.db
 			.select({
+				id: listEntries.id,
 				listId: listEntries.listId,
 				steamId: listEntries.steamId,
 				reason: listEntries.reason,
 				addedByName: listEntries.addedByName,
 				addedAt: listEntries.addedAt,
-				expiresAt: listEntries.expiresAt
+				expiresAt: listEntries.expiresAt,
+				banCase: banCases.record
 			})
 			.from(listEntries)
+			.leftJoin(banCases, eq(banCases.entryId, listEntries.id))
 			.where(
 				and(
 					inArray(listEntries.listId, [...new Set(sourceOf.values())]),
@@ -1285,6 +1517,7 @@ export async function serverListsState(
 			b.addedAt = iso(e.addedAt);
 			b.reason = e.reason;
 			if (staff) b.addedByName = e.addedByName;
+			if (staff) b.banCase = (e.banCase as import('$lib/ban-policy').BanCaseView | null) ?? null;
 		}
 	}
 	for (const d of desired.reserved) {

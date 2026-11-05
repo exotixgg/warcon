@@ -250,6 +250,19 @@ export const orgBanReasons = pgTable('org_ban_reasons', {
 });
 
 /**
+ * An organisation's optional structured moderation policy. It lives off `organizations` because
+ * the worker reads an organisation row on every observation while policy data is used only by ban
+ * editors and the list write path.
+ */
+export const orgBanPolicies = pgTable('org_ban_policies', {
+	orgId: text('org_id')
+		.primaryKey()
+		.references(() => organizations.id, { onDelete: 'cascade' }),
+	config: jsonb('config').notNull(),
+	updatedAt: ts('updated_at').notNull().defaultNow()
+});
+
+/**
  * An org's saved messages ($lib/saved-messages): ready-made chat lines for its staff, written by
  * its owners. No row means none. A row of its own, like the quick reasons, so the worker's roster
  * read and every org access check, which select the whole organisations row, never carry them.
@@ -1202,6 +1215,19 @@ export const listEntries = pgTable(
 			.where(sql`${t.removedAt} is null and ${t.expiresAt} is not null`)
 	]
 );
+
+/**
+ * Private, immutable-at-issue moderation data for one managed ban. The public list entry keeps
+ * only the reason and expiry the game needs. Notes and the selected policy are never mirrored to a
+ * game server, webhooks or ordinary player views.
+ */
+export const banCases = pgTable('ban_cases', {
+	entryId: text('entry_id')
+		.primaryKey()
+		.references(() => listEntries.id, { onDelete: 'cascade' }),
+	record: jsonb('record').notNull(),
+	updatedAt: ts('updated_at').notNull().defaultNow()
+});
 
 /** Which lists apply to which server: every org list to every org server, a server's own to itself. */
 export const serverLists = pgTable(

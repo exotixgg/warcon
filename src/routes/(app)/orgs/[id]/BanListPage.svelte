@@ -13,6 +13,7 @@
 	import EditBanDialog from '$lib/components/EditBanDialog.svelte';
 	import BanMessagePanel from './BanMessagePanel.svelte';
 	import BanReasonsPanel from './BanReasonsPanel.svelte';
+	import BanPolicyPanel from './BanPolicyPanel.svelte';
 	import ImportCandidates from './ImportCandidates.svelte';
 	import SortHeader from '$lib/components/SortHeader.svelte';
 	import { TableSort, matches } from '$lib/table.svelte';
@@ -141,6 +142,7 @@
 
 {#if lists.banMessage !== null}<BanMessagePanel {org} banMessage={lists.banMessage} {owner} />{/if}
 {#if lists.banReasons !== null}<BanReasonsPanel {org} reasons={lists.banReasons} {owner} />{/if}
+<BanPolicyPanel {org} policy={lists.banPolicy} {owner} />
 
 <div class="mb-3 flex flex-wrap items-center gap-2">
 	<input
@@ -238,6 +240,7 @@
 		placed={`Banned across ${org.name}${editing.addedByName ? ` by ${editing.addedByName}` : ''} on ${fmtTime(editing.addedAt)}.`}
 		reason={editing.reason}
 		expiresAt={editing.expiresAt}
+		banCase={editing.banCase ?? null}
 		onclose={() => (editing = null)}
 		ondone={() => invalidateAll()}
 	/>
@@ -248,7 +251,9 @@
 		orgId={org.id}
 		orgName={org.name}
 		canOrg
+		originServers={lists.servers}
 		banMessage={lists.banMessage}
+		banPolicy={lists.banPolicy}
 		reasons={lists.banReasons ?? []}
 		onclose={() => (banning = false)}
 		ondone={() => invalidateAll()}

@@ -174,6 +174,8 @@ const ACTION_TITLES: Record<string, string> = {
 	'list.add': 'Org list · added',
 	'list.remove': 'Org list · removed',
 	'list.update': 'Org list · changed',
+	'list.ban_announcement': 'Ban · announcement',
+	'list.ban_policy': 'Ban · policy changed',
 	'list.import': 'Org list · imported from a server',
 	'list.expire': 'Org list · expired',
 	'list.group.create': 'Reserved-slot group · made',

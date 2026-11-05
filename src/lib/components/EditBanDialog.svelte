@@ -6,6 +6,7 @@
 	import { toast } from '$lib/toast.svelte';
 	import { toDatetimeLocal } from '$lib/format';
 	import { EXPIRY_OPTIONS, expiryIso } from '$lib/lists';
+	import { categoryFor, durationText, type BanCaseView } from '$lib/ban-policy';
 	import Modal from './Modal.svelte';
 
 	let {
@@ -14,6 +15,7 @@
 		placed,
 		reason: reasonNow,
 		expiresAt,
+		banCase = null,
 		onclose,
 		ondone
 	}: {
@@ -24,6 +26,8 @@
 		placed: string;
 		reason: string;
 		expiresAt: string | null;
+		/** Private policy metadata, supplied only to a ban-list editor. */
+		banCase?: BanCaseView | null;
 		onclose: () => void;
 		ondone: () => unknown;
 	} = $props();
@@ -32,6 +36,10 @@
 	let reason = $state(untrack(() => reasonNow));
 	let expiry = $state(untrack(() => (expiresAt ? 'custom' : '0')));
 	let custom = $state(untrack(() => toDatetimeLocal(expiresAt)));
+	let days = $state(untrack(() => banCase?.days ?? 0));
+	let ticketId = $state(untrack(() => banCase?.ticketId ?? ''));
+	let notes = $state(untrack(() => banCase?.notes ?? ''));
+	let policyCategory = $derived(banCase ? categoryFor(banCase.categoryId) : undefined);
 	// The expiry goes out only when it was touched: the form holds it to the minute, and a ban
 	// already past it would be refused as not in the future.
 	const expiryWas = untrack(() => [expiry, custom].join());
@@ -42,7 +50,19 @@
 		try {
 			await api('PATCH', path, {
 				reason: reason.trim(),
-				...([expiry, custom].join() === expiryWas ? {} : { expiresAt: expiryIso(expiry, custom) })
+				...(banCase
+					? {
+							moderation: {
+								categoryId: banCase.categoryId,
+								days,
+								ticketId: ticketId.trim(),
+								notes: notes.trim(),
+								originServerId: banCase.originServerId
+							}
+						}
+					: [expiry, custom].join() === expiryWas
+						? {}
+						: { expiresAt: expiryIso(expiry, custom) })
 			});
 			toast(`Ban on ${who} changed.`, 'ok');
 			await ondone();
@@ -64,6 +84,12 @@
 		}}
 	>
 		<p class="note mt-0!">{placed} Who placed it and when stay as they are.</p>
+		{#if banCase}
+			<div class="rounded-ctl border border-black bg-ink-950 px-3.5 py-3 text-[12.5px]">
+				<div class="mb-2 caps text-mist-600">Private case record</div>
+				<div><b>{banCase.category}</b> · original duration {durationText(banCase.days)}</div>
+			</div>
+		{/if}
 		<label class="block"
 			><span class="field-label">Reason</span><input
 				class="input"
@@ -72,25 +98,61 @@
 				bind:value={reason}
 			/></label
 		>
-		<div class="flex flex-wrap gap-3">
-			<label class="block sm:w-48"
-				><span class="field-label">Expires</span><select class="input" bind:value={expiry}>
-					{#each EXPIRY_OPTIONS as [value, label] (value)}
-						<option {value}>{label}</option>
-					{/each}
-				</select></label
-			>
-			{#if expiry === 'custom'}
-				<label class="block sm:flex-1"
-					><span class="field-label">Until (local time)</span><input
+		{#if banCase && policyCategory}
+			<div class="grid gap-3 sm:grid-cols-2">
+				<label class="block"
+					><span class="field-label">Duration</span><select
 						class="input"
-						type="datetime-local"
-						bind:value={custom}
-						required
+						bind:value={days}
+						disabled={policyCategory.durations.length === 1}
+						>{#each policyCategory.durations as value (value)}<option {value}
+								>{durationText(value)}</option
+							>{/each}</select
+					></label
+				>
+				<label class="block"
+					><span class="field-label"
+						>Ticket ID <span class="text-mist-600 normal-case">optional</span></span
+					><input
+						class="input font-mono"
+						type="text"
+						inputmode="numeric"
+						maxlength="5"
+						placeholder="01234"
+						bind:value={ticketId}
 					/></label
 				>
-			{/if}
-		</div>
+			</div>
+			<label class="block"
+				><span class="field-label"
+					>Internal notes <span class="text-mist-600 normal-case">private</span></span
+				><textarea class="min-h-22 input" maxlength="10000" bind:value={notes}></textarea></label
+			>
+			<p class="note mt-0!">
+				Keeping the same duration preserves this ban's current expiry. Choosing another approved
+				duration starts that duration from now.
+			</p>
+		{:else if !banCase}
+			<div class="flex flex-wrap gap-3">
+				<label class="block sm:w-48"
+					><span class="field-label">Expires</span><select class="input" bind:value={expiry}>
+						{#each EXPIRY_OPTIONS as [value, label] (value)}
+							<option {value}>{label}</option>
+						{/each}
+					</select></label
+				>
+				{#if expiry === 'custom'}
+					<label class="block sm:flex-1"
+						><span class="field-label">Until (local time)</span><input
+							class="input"
+							type="datetime-local"
+							bind:value={custom}
+							required
+						/></label
+					>
+				{/if}
+			</div>
+		{/if}
 		<div class="flex justify-end gap-2 pt-2">
 			<button type="button" class="btn" data-close onclick={onclose}>Cancel</button>
 			<button type="submit" class="btn btn-primary" disabled={busy}>Save</button>

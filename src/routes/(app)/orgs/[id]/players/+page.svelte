@@ -355,7 +355,9 @@
 			steamId={banning.steamId}
 			name={banning.name}
 			canOrg={canBan}
+			originServers={data.lists.servers}
 			reasons={data.lists.banReasons ?? []}
+			banPolicy={data.lists.banPolicy}
 			onclose={() => (banning = null)}
 			ondone={() => invalidateAll()}
 		/>

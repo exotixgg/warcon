@@ -11,6 +11,7 @@
 	import type { SortLike } from '$lib/table.svelte';
 	import type { SeenPlayer, SeenSort } from '$lib/server/seen';
 	import type { BanReason } from '$lib/ban-reasons';
+	import type { BanPolicyView } from '$lib/ban-policy';
 	import { feedNamesLine } from '$lib/feed-names';
 
 	let {
@@ -18,7 +19,8 @@
 		canBan,
 		canWatch,
 		canOrg,
-		reasons
+		reasons,
+		banPolicy = null
 	}: {
 		server: { id: string; name: string; orgId: string; orgName: string };
 		/** holds Bans here: the row's Ban places it on this server's list or the org's */
@@ -29,6 +31,7 @@
 		canOrg: boolean;
 		/** the org's quick reasons for the Ban dialog */
 		reasons: BanReason[];
+		banPolicy?: BanPolicyView | null;
 	} = $props();
 
 	const PAGE = 50;
@@ -263,6 +266,7 @@
 			server={{ id: server.id, name: server.name }}
 			{canOrg}
 			{reasons}
+			{banPolicy}
 			onclose={() => (banning = null)}
 			ondone={() => load()}
 		/>
