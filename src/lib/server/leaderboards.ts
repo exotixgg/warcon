@@ -13,7 +13,7 @@
 // match_result(), in the migration).
 import { sql } from 'drizzle-orm';
 import type { Env } from './env';
-import { servers } from './db/schema';
+import { archivedServers, kills, servers } from './db/schema';
 import { boardReads } from './metrics';
 import type { RiskPerformance } from './risk';
 import type { PlayerStats } from './message-vars';
@@ -382,14 +382,21 @@ interface BaseRow extends Record<string, unknown> {
 	total: string;
 }
 
-/** Whether any of these servers has a kill feed (without one the feed's columns stay at zero). */
+/**
+ * Live servers advertise a feed with a token. Archived servers have no token, so use their
+ * stored events to determine whether the board should show feed columns.
+ */
 async function anyFeed(env: Env, ids: string[]): Promise<boolean> {
 	if (!ids.length) return false;
-	const [row] = await env.db
-		.select({ n: sql<number>`COUNT(*)` })
+	const live = env.db
+		.select({ found: sql<boolean>`true` })
 		.from(servers)
 		.where(sql`${servers.id} IN ${ids} AND ${servers.feedTokenHash} IS NOT NULL`);
-	return num(row?.n) > 0;
+	const archived = env.db.select({ found: sql<boolean>`true` }).from(archivedServers)
+		.where(sql`${archivedServers.id} IN ${ids}
+			AND EXISTS (SELECT 1 FROM ${kills} WHERE ${kills.serverId} = ${archivedServers.id})`);
+	const rows = await live.unionAll(archived).limit(1);
+	return rows.length > 0;
 }
 
 /** The most rows an export writes: the top ten thousand of the board as it is set. */

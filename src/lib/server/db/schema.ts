@@ -433,6 +433,21 @@ export const servers = pgTable('servers', {
 	updatedAt: ts('updated_at').notNull().defaultNow()
 });
 
+// Read-only leaderboard sources. The original server ID still keys the history tables.
+export const archivedServers = pgTable(
+	'archived_servers',
+	{
+		id: text('id').primaryKey(),
+		orgId: text('org_id')
+			.notNull()
+			.references(() => organizations.id, { onDelete: 'cascade' }),
+		name: text('name').notNull(),
+		retiredOn: date('retired_on').notNull(),
+		publicLeaderboards: boolean('public_leaderboards').notNull().default(false)
+	},
+	(t) => [index('archived_servers_org_idx').on(t.orgId)]
+);
+
 export const serverGrants = pgTable(
 	'server_grants',
 	{
