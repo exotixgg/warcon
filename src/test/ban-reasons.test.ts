@@ -7,6 +7,7 @@ import { and, desc, eq } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
 import { getServer, type SessionUser } from '$lib/server/access';
 import { DEFAULT_BAN_POLICY } from '$lib/ban-policy';
+import type { DossierView } from '$lib/types';
 import {
 	auditLog,
 	orgBanReasons,
@@ -140,8 +141,7 @@ describe.skipIf(!hasTestDb)("an org's quick reasons", () => {
 	const reasonsIn = (answer: { body: unknown }) =>
 		(answer.body as { banReasons?: BanReason[] | null }).banReasons;
 	const dossierDialog = (answer: { body: unknown }) =>
-		(answer.body as { dossier: { banDialog: { reasons: BanReason[]; message: string } | null } })
-			.dossier.banDialog;
+		(answer.body as { dossier: DossierView }).dossier.banDialog;
 	const dossierReasons = (answer: { body: unknown }) => dossierDialog(answer)?.reasons ?? null;
 
 	beforeAll(async () => {
