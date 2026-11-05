@@ -1,7 +1,10 @@
 # Structured ban policy
 
 An optional organisation policy extends WARCON's existing ban lists, shared Ban/Edit Ban
-dialogs, list synchronization and delivery outbox. Owners configure it on **Ban List**.
+dialogs, list synchronization and delivery outbox. Owners configure it in the collapsed
+**Moderation settings** panel at the bottom of **Ban List**. Player messages and announcement
+pools stay together there. Legacy Quick Reasons and Ban Message settings appear inside that
+panel only while the structured policy is disabled.
 It starts disabled: deploying this feature does not enable announcements or change existing bans.
 
 | Category | Durations | Default announcement |

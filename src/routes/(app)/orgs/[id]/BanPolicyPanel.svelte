@@ -2,7 +2,7 @@
 	// Fixed moderation categories live beside the legacy ban settings, but do not replace them until
 	// an owner explicitly switches this policy on.
 	import { invalidateAll } from '$app/navigation';
-	import { untrack } from 'svelte';
+	import { untrack, type Snippet } from 'svelte';
 	import { api, errorMessage } from '$lib/api';
 	import { toast } from '$lib/toast.svelte';
 	import {
@@ -17,8 +17,10 @@
 	let {
 		org,
 		policy,
-		owner
-	}: { org: { id: string }; policy: BanPolicyView | null; owner: boolean } = $props();
+		owner,
+		children
+	}: { org: { id: string }; policy: BanPolicyView | null; owner: boolean; children?: Snippet } =
+		$props();
 	let open = $state(false);
 	let busy = $state(false);
 	let draft = $state<BanPolicy>(
@@ -77,7 +79,7 @@
 		aria-expanded={open}
 		onclick={() => (open = !open)}
 	>
-		<span class="caps whitespace-nowrap text-mist-400">Ban policy</span>
+		<span class="caps whitespace-nowrap text-mist-400">Moderation settings</span>
 		<span class="min-w-0 flex-1 truncate text-[12.5px] text-mist-600"
 			>{open
 				? ''
@@ -209,5 +211,6 @@
 					</div>{/if}
 			</form>
 		{/if}
+		{#if children}<div class="mt-4">{@render children()}</div>{/if}
 	{/if}
 </div>

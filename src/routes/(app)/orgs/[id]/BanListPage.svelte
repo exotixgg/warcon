@@ -140,10 +140,6 @@
 	</div>
 {/if}
 
-{#if lists.banMessage !== null}<BanMessagePanel {org} banMessage={lists.banMessage} {owner} />{/if}
-{#if lists.banReasons !== null}<BanReasonsPanel {org} reasons={lists.banReasons} {owner} />{/if}
-<BanPolicyPanel {org} policy={lists.banPolicy} {owner} />
-
 <div class="mb-3 flex flex-wrap items-center gap-2">
 	<input
 		class="input w-full sm:w-80"
@@ -232,6 +228,23 @@
 	next sync, <Badge tone="err">failed</Badge> (hover for why), <Badge>local</Badge> already on that server
 	but added outside the panel, so the panel never removes it.
 </p>
+
+<div class="mt-6">
+	<BanPolicyPanel {org} policy={lists.banPolicy} {owner}>
+		{#if !lists.banPolicy?.enabled}
+			{#if lists.banMessage !== null}<BanMessagePanel
+					{org}
+					banMessage={lists.banMessage}
+					{owner}
+				/>{/if}
+			{#if lists.banReasons !== null}<BanReasonsPanel
+					{org}
+					reasons={lists.banReasons}
+					{owner}
+				/>{/if}
+		{/if}
+	</BanPolicyPanel>
+</div>
 
 {#if editing}
 	<EditBanDialog
