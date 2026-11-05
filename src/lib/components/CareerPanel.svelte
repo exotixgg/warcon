@@ -34,7 +34,7 @@
 		serverName: string;
 		orgName: string;
 		multiServer?: boolean;
-		matchHref?: (m: CareerMatch) => string;
+		matchHref?: (m: CareerMatch) => string | undefined;
 		seasonHref?: (s: Season) => string;
 		children?: Snippet;
 	} = $props();
@@ -220,8 +220,9 @@
 						<td class="whitespace-nowrap">{fmtTime(m.startedAt)}</td>
 						{#if multiServer}<td>{m.serverName}</td>{/if}
 						<td>
-							{#if matchHref}<a
-									href={matchHref(m)}
+							{@const href = matchHref?.(m)}
+							{#if href}<a
+									{href}
 									data-sveltekit-preload-data="tap"
 									class="hover:text-accent hover:underline">{m.map ? mapName(m.map) : 'Match'}</a
 								>{:else}{m.map ? mapName(m.map) : '—'}{/if}

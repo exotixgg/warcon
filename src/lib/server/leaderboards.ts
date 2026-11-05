@@ -13,7 +13,7 @@
 // match_result(), in the migration).
 import { sql } from 'drizzle-orm';
 import type { Env } from './env';
-import { servers } from './db/schema';
+import { archivedServers, kills, servers } from './db/schema';
 import { boardReads } from './metrics';
 import type { RiskPerformance } from './risk';
 import type { PlayerStats } from './message-vars';
@@ -389,7 +389,14 @@ async function anyFeed(env: Env, ids: string[]): Promise<boolean> {
 		.select({ n: sql<number>`COUNT(*)` })
 		.from(servers)
 		.where(sql`${servers.id} IN ${ids} AND ${servers.feedTokenHash} IS NOT NULL`);
-	return num(row?.n) > 0;
+	if (num(row?.n) > 0) return true;
+	const [history] = await env.db.execute<{ found: boolean }>(sql`
+		SELECT EXISTS (
+			SELECT 1 FROM ${archivedServers} a
+			WHERE a.id IN ${ids}
+			  AND EXISTS (SELECT 1 FROM ${kills} k WHERE k.server_id = a.id)
+		) AS found`);
+	return !!history?.found;
 }
 
 /** The most rows an export writes: the top ten thousand of the board as it is set. */

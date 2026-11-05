@@ -5,7 +5,8 @@
 // ?scope=server|org&range=current|s:<season>|7d|30d|90d|all&sort=<metric>&dir=asc|desc&page=1&minMinutes=60
 import { getEnv } from '$lib/server/env';
 import { apiJson, param, route } from '$lib/server/http';
-import { accessibleServers, requireServerCap } from '$lib/server/access';
+import { requireServerCap } from '$lib/server/access';
+import { orgLeaderboardServers } from '$lib/server/leaderboard-servers';
 import { loadBoard } from '$lib/server/leaderboards';
 import { parseBoardQuery } from '$lib/leaderboard';
 
@@ -18,9 +19,11 @@ export const GET = route(async (event) => {
 		'server.view'
 	);
 	const q = parseBoardQuery(event.url.searchParams);
-	const ids =
-		q.scope === 'org'
-			? (await accessibleServers(env, user, server.orgId)).map((s) => s.id)
-			: [server.id];
-	return apiJson({ ok: true, ...(await loadBoard(env, ids, q, server.orgId)) });
+	const orgServers = q.scope === 'org' ? await orgLeaderboardServers(env, user, server.orgId) : [];
+	const ids = q.scope === 'org' ? orgServers.map((s) => s.id) : [server.id];
+	return apiJson({
+		ok: true,
+		...(await loadBoard(env, ids, q, server.orgId)),
+		archivedServerNames: orgServers.filter((s) => s.archived).map((s) => s.name)
+	});
 });

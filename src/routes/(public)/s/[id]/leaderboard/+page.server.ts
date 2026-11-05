@@ -3,12 +3,8 @@
 // columns the organisation's owners chose, and a sort by one of them ranks by kills instead.
 import type { PageServerLoad } from './$types';
 import { getEnv } from '$lib/server/env';
-import {
-	publicHeading,
-	publicLoad,
-	publicOrgServers,
-	requirePublicServer
-} from '$lib/server/public';
+import { publicHeading, publicLoad, requirePublicServer } from '$lib/server/public';
+import { publicLeaderboardServers } from '$lib/server/leaderboard-servers';
 import { loadBoard } from '$lib/server/leaderboards';
 import { orgSeasons } from '$lib/server/seasons';
 import { parseBoardQuery, publicQuery, PUBLIC_MAX_PAGE } from '$lib/leaderboard';
@@ -19,10 +15,15 @@ export const load: PageServerLoad = (event) =>
 		const ps = await requirePublicServer(env, event.params.id, 'leaderboards');
 		const { hidden } = await orgSeasons(env, ps.org.id);
 		const q = publicQuery(parseBoardQuery(event.url.searchParams, PUBLIC_MAX_PAGE), hidden);
-		const orgServers = await publicOrgServers(env, ps.org, 'leaderboards');
+		const orgServers = await publicLeaderboardServers(env, ps.org);
 		const ids = q.scope === 'org' ? orgServers.map((s) => s.id) : [ps.server.id];
 		return {
-			board: { ...(await loadBoard(env, ids, q, ps.org.id)), maxPage: PUBLIC_MAX_PAGE },
+			board: {
+				...(await loadBoard(env, ids, q, ps.org.id)),
+				maxPage: PUBLIC_MAX_PAGE,
+				archivedServerNames:
+					q.scope === 'org' ? orgServers.filter((s) => s.archived).map((s) => s.name) : []
+			},
 			hidden,
 			orgScope: orgServers.length > 1,
 			heading: publicHeading(ps)

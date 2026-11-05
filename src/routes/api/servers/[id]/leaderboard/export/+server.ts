@@ -4,7 +4,8 @@
 // ?scope=server|org&range=current|s:<season>|7d|30d|90d|all&sort=<metric>&dir=asc|desc&minMinutes=60
 import { getEnv } from '$lib/server/env';
 import { param, route } from '$lib/server/http';
-import { accessibleServers, getOrg, requireServerCap } from '$lib/server/access';
+import { getOrg, requireServerCap } from '$lib/server/access';
+import { orgLeaderboardServers } from '$lib/server/leaderboard-servers';
 import { assertRate } from '$lib/server/ratelimit';
 import { exportBoard } from '$lib/server/leaderboards';
 import { boardWindow } from '$lib/server/seasons';
@@ -62,7 +63,7 @@ export const GET = route(async (event) => {
 	const q = parseBoardQuery(event.url.searchParams);
 	const org = q.scope === 'org' ? await getOrg(env, server.orgId) : null;
 	const ids = org
-		? (await accessibleServers(env, user, server.orgId)).map((s) => s.id)
+		? (await orgLeaderboardServers(env, user, server.orgId)).map((s) => s.id)
 		: [server.id];
 	const win = await boardWindow(env, server.orgId, q.range);
 	const rows = await exportBoard(env, ids, q, win);
