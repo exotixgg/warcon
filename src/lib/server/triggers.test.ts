@@ -144,6 +144,9 @@ describe('validateConfig', () => {
 		expect(validateConfig('ping_kick', {})).toEqual({
 			maxPingMs: 200,
 			durationSeconds: 60,
+			minPlayers: 0,
+			warningSeconds: [],
+			warnMessage: 'High ping: {ping}ms (limit {limit}ms). Kick in {remaining}s if it stays high.',
 			spareReserved: false,
 			reason: 'Ping too high for too long.'
 		});
@@ -160,6 +163,26 @@ describe('validateConfig', () => {
 		});
 		expect(validateConfig('ping_kick', { spareReserved: false })).toMatchObject({
 			spareReserved: false
+		});
+	});
+	test('ping warning stages are bounded, sorted and require a message', () => {
+		for (const warningSeconds of [[0], [60], [-1], [1.5], ['15'], Array(11).fill(1)])
+			expect(() => validateConfig('ping_kick', { durationSeconds: 60, warningSeconds })).toThrow(
+				'warning times'
+			);
+		expect(() => validateConfig('ping_kick', { warningSeconds: [15], warnMessage: '' })).toThrow(
+			'empty'
+		);
+		expect(
+			validateConfig('ping_kick', {
+				minPlayers: 80,
+				warningSeconds: [45, 15, 30, 15],
+				warnMessage: '"Warning {warning}\\nKick in {remaining}s"'
+			})
+		).toMatchObject({
+			minPlayers: 80,
+			warningSeconds: [15, 30, 45],
+			warnMessage: 'Warning {warning}\nKick in {remaining}s'
 		});
 	});
 	test('seed_reward needs a seed time that fits its window, and fills in the rest', () => {
@@ -399,6 +422,15 @@ describe('broadcastWanted', () => {
 });
 
 describe('welcomeTargets', () => {
+	test('JSON pool entries retain embedded line breaks without becoming separate messages', () => {
+		const messages = '"First\\nSecond"\nAnother message';
+		expect(validateConfig('broadcast', { messages, everyMinutes: 5 })).toMatchObject({
+			messages: ['First\nSecond', 'Another message']
+		});
+		expect(validateConfig('death_whisper', { messages })).toMatchObject({
+			messages: ['First\nSecond', 'Another message']
+		});
+	});
 	const a = { steamId: 'a' };
 	const b = { steamId: 'b' };
 	const c = { steamId: 'c' };

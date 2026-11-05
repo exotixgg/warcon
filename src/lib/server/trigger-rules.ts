@@ -21,6 +21,8 @@ import type { LiveNameConfig } from '$lib/live-name';
 import { causeTags } from './cause-tags';
 import { MAX_RESTART_LEAD_MINUTES, restartWindow, type RestartSchedule } from '$lib/uptime';
 import { MAX_CHAT } from '$lib/chat';
+import { MESSAGE_RULES } from '$lib/placeholders';
+import { normalizeAutomationMessage } from '$lib/automation-message';
 import { isVehicleCrash, TEAM_KILL_NOT_COUNTED, VEHICLE_CRASH } from '$lib/causes';
 import { mapName } from '$lib/format';
 import { UNKNOWN } from './message-vars';
@@ -123,6 +125,9 @@ export interface RiskKickConfig {
 export interface PingKickConfig {
 	maxPingMs: number;
 	durationSeconds: number;
+	minPlayers?: number;
+	warningSeconds?: number[];
+	warnMessage?: string;
 	/** never kick a player with a reserved slot; rules saved before it existed have none and spare
 	 *  nobody */
 	spareReserved?: boolean;
@@ -131,8 +136,24 @@ export interface PingKickConfig {
 
 export interface PingKickState {
 	lastAt: number;
-	players: Record<string, { since: number; fired: boolean }>;
+	players: Record<string, { since: number; fired: boolean; warned?: number }>;
 }
+
+export const PING_WARNING_MESSAGE =
+	'High ping: {ping}ms (limit {limit}ms). Kick in {remaining}s if it stays high.';
+
+export const pingSettingsKey = (config: unknown): string => {
+	const c = config as PingKickConfig;
+	return JSON.stringify([
+		c.maxPingMs,
+		c.durationSeconds,
+		c.minPlayers ?? 0,
+		c.warningSeconds ?? [],
+		c.warnMessage ?? '',
+		!!c.spareReserved,
+		c.reason
+	]);
+};
 
 /** Advance one fresh player-list sample. Missing/normal pings end a streak. */
 export function pingKickStep(
@@ -141,7 +162,7 @@ export function pingKickStep(
 	players: { steamId: string; ping: number | null }[],
 	now: number,
 	maxGapMs: number
-): { state: PingKickState; kicks: string[] } {
+): { state: PingKickState; kicks: string[]; warnings: { steamId: string; seconds: number }[] } {
 	const old: PingKickState['players'] =
 		previous &&
 		Number.isFinite(previous.lastAt) &&
@@ -152,6 +173,7 @@ export function pingKickStep(
 			: {};
 	const next: PingKickState = { lastAt: now, players: {} };
 	const kicks: string[] = [];
+	const warnings: { steamId: string; seconds: number }[] = [];
 	for (const p of players) {
 		if (p.ping === null || !Number.isFinite(p.ping) || p.ping <= cfg.maxPingMs) continue;
 		const streak = old[p.steamId] ? { ...old[p.steamId] } : { since: now, fired: false };
@@ -159,9 +181,18 @@ export function pingKickStep(
 			streak.fired = true;
 			kicks.push(p.steamId);
 		}
+		if (!streak.fired && cfg.warnMessage) {
+			const due = (cfg.warningSeconds ?? []).filter(
+				(seconds) => seconds > (streak.warned ?? 0) && now - streak.since >= seconds * 1000
+			);
+			if (due.length) {
+				streak.warned = Math.max(...due);
+				warnings.push({ steamId: p.steamId, seconds: streak.warned });
+			}
+		}
 		next.players[p.steamId] = streak;
 	}
-	return { state: next, kicks };
+	return { state: next, kicks, warnings };
 }
 /**
  * Tells players about the server's next restart ($lib/uptime's restartScheduleOf: daily at a
@@ -270,7 +301,14 @@ export function riskKickScore(c: Record<string, unknown> | RiskKickConfig): numb
 
 /** Checks and normalises a kind's settings; throws a 400 with a reason people can act on. */
 export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
-	const c = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+	const c = { ...(raw && typeof raw === 'object' ? raw : {}) } as Record<string, unknown>;
+	for (const field of MESSAGE_RULES[kind]?.fields ?? []) {
+		if (c[field] === undefined || c[field] === null) continue;
+		if (field === 'messages') {
+			const list = Array.isArray(c[field]) ? c[field] : String(c[field]).split('\n');
+			c[field] = (list as unknown[]).map(normalizeAutomationMessage);
+		} else c[field] = normalizeAutomationMessage(c[field]);
+	}
 	switch (kind) {
 		case 'welcome': {
 			const message = str(c.message, MAX_CHAT);
@@ -351,9 +389,28 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 			const durationSeconds = int(c.durationSeconds, 60, 0, 3600);
 			if (!maxPingMs) throw new ApiError(400, 'Set a ping limit from 1 to 2000 ms.');
 			if (!durationSeconds) throw new ApiError(400, 'Set a duration from 1 to 3600 seconds.');
+			const input = c.warningSeconds ?? [];
+			if (
+				!Array.isArray(input) ||
+				input.length > 10 ||
+				input.some(
+					(v) => typeof v !== 'number' || !Number.isInteger(v) || v < 1 || v >= durationSeconds
+				)
+			)
+				throw new ApiError(
+					400,
+					'Use up to 10 warning times in whole seconds, each before the kick duration.'
+				);
+			const warningSeconds = [...new Set(input as number[])].sort((a, b) => a - b);
+			const warnMessage = str(c.warnMessage ?? PING_WARNING_MESSAGE, MAX_CHAT);
+			if (warningSeconds.length && !warnMessage)
+				throw new ApiError(400, 'The ping warning message is empty.');
 			return {
 				maxPingMs,
 				durationSeconds,
+				minPlayers: int(c.minPlayers, 0, 0, 1000),
+				warningSeconds,
+				warnMessage,
 				spareReserved: !!c.spareReserved,
 				reason: str(c.reason, MAX_REASON) || 'Ping too high for too long.'
 			};

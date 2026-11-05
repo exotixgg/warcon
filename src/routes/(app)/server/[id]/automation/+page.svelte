@@ -3,6 +3,7 @@
 	import { invalidate, invalidateAll } from '$app/navigation';
 	import { api, errorMessage } from '$lib/api';
 	import { MAX_CHAT } from '$lib/chat';
+	import { automationMessageEditorValue, automationPoolEditorValue } from '$lib/automation-message';
 	import { fmtAgo, fmtSpan, fmtTime, lightingLabel, mapLabel } from '$lib/format';
 	import { can } from '$lib/capabilities';
 	import {
@@ -53,6 +54,8 @@
 		return `The game restarts daily at ${s.time} UTC (${from}), once the round then in progress ends.`;
 	});
 	let path = $derived(`/api/servers/${encodeURIComponent(id)}/triggers`);
+	// The server validates the decoded message at MAX_CHAT. This only gives JSON-escaped input room.
+	const RAW_MESSAGE_INPUT_MAX = 4096;
 
 	/** A risk_kick rule's score threshold, 0 when off; rules saved with a level read as 20 or 50. */
 	const kickAtScoreOf = (c: Record<string, unknown>): number =>
@@ -517,6 +520,7 @@
 		maxBanAgeDays: number;
 		maxPingMs: number;
 		durationSeconds: number;
+		pingWarningSeconds: string;
 		minAccountDays: number;
 		privateProfiles: boolean;
 		bannedElsewhere: boolean;
@@ -691,7 +695,8 @@
 	function open(kind: TriggerKind, t?: TriggerView, copy = false) {
 		fromPicker = false;
 		const c = (t?.config ?? {}) as Record<string, unknown>;
-		const s = (k: string, d: string) => (typeof c[k] === 'string' ? (c[k] as string) : d);
+		const s = (k: string, d: string) =>
+			typeof c[k] === 'string' ? automationMessageEditorValue(c[k]) : d;
 		const n = (k: string, d: number) => (typeof c[k] === 'number' ? (c[k] as number) : d);
 		const b = (k: string, d: boolean) => (typeof c[k] === 'boolean' ? (c[k] as boolean) : d);
 		// a new Kill distance rule kicks, or bans for an author who may ban but not kick, or warns for
@@ -720,22 +725,24 @@
 			enabled: t?.enabled ?? true,
 			message: s(
 				'message',
-				kind === 'faction_change'
-					? 'You are now fighting for {faction}, {name}.'
-					: kind === 'restart_notice'
-						? 'Scheduled restart: the server restarts when this round ends. Rejoin in a minute or two.'
-						: kind === 'seed_reward'
-							? 'Thanks for seeding {server}, {name}: you have a reserved slot until {until}.'
-							: kind === 'two_teams'
-								? 'You have been placed on {team}.'
-								: kind === 'afk_protection'
-									? 'Seeding: everyone was respawned so the idle kick spares you. {players} of {goal} on.'
-									: 'Welcome to {server}, {name}! Read the rules with /rules.'
+				kind === 'welcome'
+					? '{welcome_card}'
+					: kind === 'faction_change'
+						? 'You are now fighting for {faction}, {name}.'
+						: kind === 'restart_notice'
+							? 'Scheduled restart: the server restarts when this round ends. Rejoin in a minute or two.'
+							: kind === 'seed_reward'
+								? 'Thanks for seeding {server}, {name}: you have a reserved slot until {until}.'
+								: kind === 'two_teams'
+									? 'You have been placed on {team}.'
+									: kind === 'afk_protection'
+										? 'Seeding: everyone was respawned so the idle kick spares you. {players} of {goal} on.'
+										: 'Welcome to {server}, {name}! Read the rules with /rules.'
 			),
 			onlyFirstVisit: b('onlyFirstVisit', false),
-			afterFaction: b('afterFaction', false),
+			afterFaction: b('afterFaction', kind === 'welcome' && !t),
 			messages: Array.isArray(c.messages)
-				? (c.messages as string[]).join('\n')
+				? automationPoolEditorValue(c.messages as string[])
 				: kind === 'death_whisper'
 					? 'While you wait, {name}: join our Discord for events and support.\n{killer} got you with the {weapon}. Tell us how the server plays on our Discord.'
 					: 'Join our Discord for events and support.\nNo team-killing. Admins are watching.',
@@ -743,7 +750,10 @@
 				'everyMinutes',
 				kind === 'afk_protection' ? 3 : kind === 'weather_cycle' ? 30 : 15
 			),
-			minPlayers: n('minPlayers', kind === 'bounty' || kind === 'afk_watch' ? 20 : 1),
+			minPlayers: n(
+				'minPlayers',
+				kind === 'ping_kick' ? 0 : kind === 'bounty' || kind === 'afk_watch' ? 20 : 1
+			),
 			maxPlayers: typeof c.maxPlayers === 'number' ? c.maxPlayers : null,
 			afterMinutes: n('afterMinutes', 20),
 			cooldownMinutes: n('cooldownMinutes', 30),
@@ -752,6 +762,11 @@
 			maxBanAgeDays: n('maxBanAgeDays', 0),
 			maxPingMs: n('maxPingMs', 200),
 			durationSeconds: n('durationSeconds', 60),
+			pingWarningSeconds: Array.isArray(c.warningSeconds)
+				? (c.warningSeconds as number[]).join(', ')
+				: kind === 'ping_kick' && !t
+					? '15, 30, 45'
+					: '',
 			minAccountDays: n('minAccountDays', 0),
 			privateProfiles: b('privateProfiles', false),
 			bannedElsewhere: b('bannedElsewhere', true),
@@ -790,7 +805,9 @@
 				'warnMessage',
 				kind === 'afk_watch'
 					? '{name}, you look AFK: no kill, death or cash earned for {idle} min. Play on, or you are kicked at {limit} min.'
-					: 'Careful, {name}: that was a team kill ({count} this match).'
+					: kind === 'ping_kick'
+						? 'High ping: {ping}ms (limit {limit}ms). Kick in {remaining}s if it stays high.'
+						: 'Careful, {name}: that was a team kill ({count} this match).'
 			),
 			kickAt: n('kickAt', 4),
 			kickReason: s('kickReason', 'Team killing ({count} this match).'),
@@ -965,6 +982,12 @@
 				return {
 					maxPingMs: Number(f.maxPingMs),
 					durationSeconds: Number(f.durationSeconds),
+					minPlayers: Number(f.minPlayers),
+					warningSeconds: f.pingWarningSeconds
+						.split(/[\s,]+/)
+						.filter(Boolean)
+						.map(Number),
+					warnMessage: f.warnMessage,
 					spareReserved: f.spareReserved,
 					reason: f.reason
 				};
@@ -1231,8 +1254,17 @@
 				]
 					.filter(Boolean)
 					.join(' · ');
-			case 'ping_kick':
-				return `ping over ${c.maxPingMs} ms for ${c.durationSeconds} s${c.spareReserved ? ' · spares reserved slots' : ''}`;
+			case 'ping_kick': {
+				const warnings = Array.isArray(c.warningSeconds) ? (c.warningSeconds as number[]) : [];
+				return [
+					`ping over ${c.maxPingMs} ms for ${c.durationSeconds} s`,
+					Number(c.minPlayers) ? `at least ${c.minPlayers} on` : '',
+					warnings.length ? `warns at ${warnings.join(', ')} s` : '',
+					c.spareReserved ? 'spares reserved slots' : ''
+				]
+					.filter(Boolean)
+					.join(' · ');
+			}
 			case 'afk_watch': {
 				const exempt = ((c.exempt as string[] | undefined) ?? []).length;
 				const spares = [
@@ -1710,7 +1742,7 @@
 			{#each grouped(r.items) as it, i (i)}
 				<li>
 					<span class="text-mist-600">{fmtTime(it.at)}</span>
-					{it.text}
+					<span class="whitespace-pre-wrap">{it.text}</span>
 					{#if it.n > 1}<span class="text-mist-600">×{it.n}</span>{/if}
 				</li>
 			{/each}
@@ -1778,7 +1810,19 @@
 				{#if f.kind === 'welcome'}
 					<fieldset class="space-y-2">
 						<legend class="field-label">Whisper</legend>
-						<input class="input" type="text" bind:value={f.message} maxlength={MAX_CHAT} required />
+						<textarea
+							class="min-h-30 input font-mono text-[12.5px]"
+							bind:value={f.message}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
+							required></textarea>
+						<div class="flex flex-wrap items-center gap-2">
+							<button
+								type="button"
+								class="btn btn-sm"
+								onclick={() => (f.message = '{welcome_card}')}>Use EXOTIX card</button
+							>
+							<span class="note mt-0!">A JSON string may use <code>\n</code> for line breaks.</span>
+						</div>
 						{@render placeholders('welcome', [f.message])}
 					</fieldset>
 					<fieldset class="space-y-1.5 text-[13px]">
@@ -1796,7 +1840,13 @@
 				{:else if f.kind === 'faction_change'}
 					<fieldset class="space-y-2">
 						<legend class="field-label">Whisper</legend>
-						<input class="input" type="text" bind:value={f.message} maxlength={MAX_CHAT} required />
+						<input
+							class="input"
+							type="text"
+							bind:value={f.message}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
+							required
+						/>
 						{@render placeholders('faction_change', [f.message])}
 					</fieldset>
 					<p class="note">
@@ -1807,6 +1857,9 @@
 					<fieldset class="space-y-2">
 						<legend class="field-label">Whispers, one per line, one picked at random</legend>
 						<textarea class="min-h-[100px] input" bind:value={f.messages} required></textarea>
+						<p class="note">
+							One physical line is one choice. Use a JSON string with <code>\n</code> inside a choice.
+						</p>
 						{@render placeholders('death_whisper', [f.messages])}
 					</fieldset>
 					<fieldset class="space-y-1.5 text-[13px]">
@@ -1867,6 +1920,9 @@
 					<fieldset class="space-y-2">
 						<legend class="field-label">Messages, one per line, sent in turn</legend>
 						<textarea class="min-h-[100px] input" bind:value={f.messages} required></textarea>
+						<p class="note">
+							One physical line is one message. Use a JSON string with <code>\n</code> inside a message.
+						</p>
 						{@render placeholders('broadcast', [f.messages])}
 					</fieldset>
 					<fieldset class="space-y-2">
@@ -1906,7 +1962,8 @@
 					</fieldset>
 					<p class="note">
 						Blank for no ceiling; a fill-the-server message can stop once it has. Broadcasts are
-						limited to {MAX_CHAT} characters.
+						limited to {MAX_CHAT} rendered characters. Every message field also accepts a JSON string
+						when you need escaped <code>\n</code> line breaks.
 					</p>
 				{:else if f.kind === 'empty_reset'}
 					<fieldset class="space-y-2">
@@ -2226,7 +2283,7 @@
 							class="input"
 							type="text"
 							bind:value={f.leadMessage}
-							maxlength={MAX_CHAT}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
 							aria-label="Heads-up message"
 							disabled={!Number(f.leadMinutes)}
 						/>
@@ -2237,7 +2294,7 @@
 							class="input"
 							type="text"
 							bind:value={f.message}
-							maxlength={MAX_CHAT}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
 							aria-label="Message once the window is open"
 							required
 						/>
@@ -2279,7 +2336,7 @@
 							class="input"
 							type="text"
 							bind:value={f.endMessage}
-							maxlength={MAX_CHAT}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
 							aria-label="Message when a match ends"
 							placeholder="Leave empty to say nothing"
 						/>
@@ -2290,7 +2347,7 @@
 							class="input"
 							type="text"
 							bind:value={f.startMessage}
-							maxlength={MAX_CHAT}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
 							aria-label="Message as the next match starts"
 							placeholder="Leave empty to say nothing"
 						/>
@@ -2631,8 +2688,48 @@
 							seconds
 						</div>
 					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">Only while players are on</legend>
+						<div class="flex flex-wrap items-center gap-2 text-[13px]">
+							At least
+							<input
+								class="input w-24 text-right"
+								type="number"
+								min="0"
+								max="1000"
+								bind:value={f.minPlayers}
+								aria-label="At least, players on"
+							/>
+							players <span class="text-mist-600">(0 has no minimum)</span>
+						</div>
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">Warn before kicking</legend>
+						<div class="flex flex-wrap items-center gap-2 text-[13px]">
+							At seconds
+							<input
+								class="input w-48 text-right font-mono"
+								type="text"
+								bind:value={f.pingWarningSeconds}
+								placeholder="15, 30, 45"
+								aria-label="Warning times, seconds"
+							/>
+							<span class="text-mist-600">comma-separated; blank turns warnings off</span>
+						</div>
+						<textarea
+							class="min-h-24 input font-mono text-[12.5px]"
+							bind:value={f.warnMessage}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
+							aria-label="High ping warning"
+							disabled={!f.pingWarningSeconds.trim()}></textarea>
+						<p class="note">
+							Each time must be a positive whole second before the kick duration. A JSON string may
+							use
+							<code>\n</code> for line breaks.
+						</p>
+					</fieldset>
 					<fieldset class="space-y-1.5 text-[13px]">
-						<legend class="field-label">Never kick</legend>
+						<legend class="field-label">Never warn or kick</legend>
 						<label class="flex items-center gap-2"
 							><input type="checkbox" bind:checked={f.spareReserved} /> players with a reserved slot</label
 						>
@@ -2640,7 +2737,7 @@
 					<fieldset class="space-y-2">
 						<legend class="field-label">Kick reason, shown to the player</legend>
 						<input class="input" type="text" bind:value={f.reason} maxlength="200" />
-						{@render placeholders('ping_kick', [f.reason])}
+						{@render placeholders('ping_kick', [f.warnMessage, f.reason])}
 					</fieldset>
 					<p class="note">
 						The timer starts on the first high-ping sample. It resets when ping drops to the limit
@@ -2700,7 +2797,7 @@
 							class="input"
 							type="text"
 							bind:value={f.warnMessage}
-							maxlength={MAX_CHAT}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
 							aria-label="Warning"
 							disabled={!Number(f.warnMinutes)}
 						/>
@@ -2836,7 +2933,12 @@
 					</fieldset>
 					<fieldset class="space-y-2">
 						<legend class="field-label">Whisper once a player is placed (optional)</legend>
-						<input class="input" type="text" bind:value={f.message} maxlength={MAX_CHAT} />
+						<input
+							class="input"
+							type="text"
+							bind:value={f.message}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
+						/>
 						{@render placeholders('two_teams', [f.message])}
 						<p class="text-[12px] text-mist-600">
 							Sent once per player; they are told again only after two hours away. Empty sends
@@ -2878,7 +2980,7 @@
 							class="input"
 							type="text"
 							bind:value={f.warnMessage}
-							maxlength={MAX_CHAT}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
 							aria-label="Whisper"
 							disabled={!Number(f.warnAt)}
 						/>
@@ -3203,11 +3305,21 @@
 					</fieldset>
 					<fieldset class="space-y-2">
 						<legend class="field-label">Broadcast after each round, blank for none</legend>
-						<input class="input" type="text" bind:value={f.message} maxlength={MAX_CHAT} />
+						<input
+							class="input"
+							type="text"
+							bind:value={f.message}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
+						/>
 					</fieldset>
 					<fieldset class="space-y-2">
 						<legend class="field-label">Broadcast when the match goes live, blank for none</legend>
-						<input class="input" type="text" bind:value={f.doneMessage} maxlength={MAX_CHAT} />
+						<input
+							class="input"
+							type="text"
+							bind:value={f.doneMessage}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
+						/>
 					</fieldset>
 					{@render placeholders('afk_protection', [f.message, f.doneMessage])}
 					<p class="note">
@@ -3303,7 +3415,12 @@
 					</fieldset>
 					<fieldset class="space-y-2">
 						<legend class="field-label">Whisper on the grant, blank for none</legend>
-						<input class="input" type="text" bind:value={f.message} maxlength={MAX_CHAT} />
+						<input
+							class="input"
+							type="text"
+							bind:value={f.message}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
+						/>
 						{@render placeholders('seed_reward', [f.message])}
 					</fieldset>
 					<p class="note">
@@ -3410,7 +3527,7 @@
 							class="input"
 							type="text"
 							bind:value={f.setMessage}
-							maxlength={MAX_CHAT}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
 							aria-label="Announce the bounty"
 							required
 						/>
@@ -3421,7 +3538,7 @@
 							class="input"
 							type="text"
 							bind:value={f.claimMessage}
-							maxlength={MAX_CHAT}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
 							aria-label="Announce the claim"
 						/>
 					</fieldset>
@@ -3431,7 +3548,7 @@
 							class="input"
 							type="text"
 							bind:value={f.whisper}
-							maxlength={MAX_CHAT}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
 							aria-label="Whisper the claimer"
 						/>
 					</fieldset>

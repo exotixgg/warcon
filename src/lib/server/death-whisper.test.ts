@@ -71,11 +71,11 @@ describe('settings', () => {
 		expect(validateDeathWhisper({ messages: 'a\n\n  b  \nc' }).messages).toEqual(['a', 'b', 'c']);
 	});
 
-	test('each message on one line, cut to what the game takes, never on half an emoji, once', () => {
+	test('preserves lines inside an entry, cuts safely, and deduplicates entries', () => {
 		const c = validateDeathWhisper({
 			messages: ['first\nline', 'x'.repeat(255) + '🎯', 'same', 'same', `tab\there`]
 		});
-		expect(c.messages).toEqual(['first line', 'x'.repeat(255), 'same', 'tab here']);
+		expect(c.messages).toEqual(['first\nline', 'x'.repeat(255), 'same', 'tab here']);
 	});
 
 	test('refused: no message, more than 20, no cooldown; numbers clamped', () => {

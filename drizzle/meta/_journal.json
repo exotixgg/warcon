@@ -379,6 +379,13 @@
       "when": 1793849690518,
       "tag": "0053_archived_servers",
       "breakpoints": true
+    },
+    {
+      "idx": 54,
+      "version": "7",
+      "when": 1793932800000,
+      "tag": "0054_ban_policy",
+      "breakpoints": true
     }
   ]
 }
