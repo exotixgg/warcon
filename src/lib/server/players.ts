@@ -15,6 +15,7 @@ import {
 } from './access';
 import { orgListMembership, playerBans } from './lists';
 import { banReasonsFor } from './ban-reasons';
+import { banPolicyOf } from './ban-policy';
 import {
 	kills,
 	listEntries,
@@ -429,11 +430,12 @@ export async function dossier(
 	// The ban dialog's quick reasons and the message the org wraps its bans in are for those who
 	// may ban here or on the org's list, as on the Bans tab.
 	const banStaff = canBan || access.caps.has('bans.manage');
-	const [membership, reasons, bans, seedReward] = await Promise.all([
+	const [membership, reasons, banPolicy, bans, seedReward] = await Promise.all([
 		org && canReserve
 			? orgListMembership(env, org, steamId, ['reserve'])
 			: { ban: null, reserve: null },
 		banStaff ? banReasonsFor(env, server.orgId) : null,
+		banStaff ? banPolicyOf(env.db, server.orgId) : null,
 		playerBans(env, server.orgId, visible, steamId, canBan),
 		seedProgress(env, server, access, steamId)
 	]);
@@ -458,7 +460,15 @@ export async function dossier(
 			updatedAt: iso(mark?.updatedAt)
 		},
 		bans,
-		banDialog: reasons ? { reasons, message: org?.banMessage ?? DEFAULT_BAN_MESSAGE } : null,
+		banDialog:
+			reasons && banPolicy
+				? {
+						reasons,
+						message: org?.banMessage ?? DEFAULT_BAN_MESSAGE,
+						banPolicy,
+						servers: visible.map((server) => ({ id: server.id, name: server.name }))
+					}
+				: null,
 		combat,
 		summary: {
 			sessions: num(summary?.sessions),
