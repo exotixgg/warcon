@@ -201,6 +201,21 @@ describe('placeholders every rule fills', () => {
 });
 
 describe('stats in a message', () => {
+	test('a welcome card waits for the first faction pick, not a later switch', async () => {
+		const row = rule('welcome', { message: '{welcome_card}', afterFaction: true });
+		expect(await texts(row, tick({ joined: [OWL] }))).toEqual([]);
+		expect(warn).not.toHaveBeenCalled();
+		expect(await texts(row, tick({ factioned: [{ player: OWL, from: null }] }))).toEqual([
+			'Welcome to Panel name.\nSeason stats are temporarily unavailable.'
+		]);
+		expect(await texts(row, tick({ factioned: [{ player: OWL, from: 'Lonestar' }] }))).toEqual([]);
+	});
+	test('JSON strings preserve line breaks through validation and delivery', async () => {
+		const row = rule('welcome', { message: JSON.stringify('Hello {name}\nWelcome aboard') });
+		expect(await texts(row, tick({ joined: [OWL] }))).toEqual([
+			'Hello [ABC] Night Owl\nWelcome aboard'
+		]);
+	});
 	test('stats that cannot be read show as …, the whisper goes all the same, and the log names no player', async () => {
 		const row = rule('welcome', { message: 'Welcome {player}: {kills} kills, K/D {KDR}' });
 		expect(await texts(row, tick({ joined: [OWL] }))).toEqual([
