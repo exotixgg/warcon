@@ -4,6 +4,9 @@ WARCON application code follows official `warcon-app/warcon`. The EXOTIX overlay
 contains deployment wiring and operating instructions. Add custom application
 features separately after the upstream baseline has been verified.
 
+See [Archived server leaderboards](docs/archived-server-leaderboards.md) for the
+EXOTIX archive extension and the retirement registration procedure.
+
 ## Branches and environments
 
 | Branch       | Purpose                                                         |

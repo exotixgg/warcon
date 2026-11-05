@@ -297,6 +297,16 @@
 		>
 	</div>
 {/if}
+{#if query.scope === 'org' && board?.archivedServerNames?.length}
+	<details class="note">
+		<summary>Includes {board.archivedServerNames.length} retired servers</summary>
+		<ul class="mt-1 list-disc pl-5">
+			{#each board.archivedServerNames as name}
+				<li>{name}</li>
+			{/each}
+		</ul>
+	</details>
+{/if}
 {#if board && season}
 	<p class="note">
 		{#if final}{season.name} ended when {next?.name ?? 'the next season'} started; its board counts the

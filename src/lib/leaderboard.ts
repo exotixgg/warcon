@@ -129,6 +129,7 @@ export interface BoardWhen {
 }
 
 export interface BoardView {
+	archivedServerNames?: string[];
 	query: BoardQuery;
 	when: BoardWhen;
 	/** the organisation's seasons that have started, for the picker, newest first */

@@ -2,7 +2,8 @@
 // by map and faction, the last ten matches. Same auth as the dossier.
 import { getEnv } from '$lib/server/env';
 import { apiJson, param, route } from '$lib/server/http';
-import { accessibleServers, requireServerCap } from '$lib/server/access';
+import { requireServerCap } from '$lib/server/access';
+import { orgLeaderboardServers } from '$lib/server/leaderboard-servers';
 import { requireSteamId } from '$lib/server/steam';
 import { loadCareer } from '$lib/server/leaderboards';
 
@@ -15,9 +16,7 @@ export const GET = route(async (event) => {
 		'server.view'
 	);
 	const steamId = requireSteamId(param(event, 'steamId'));
-	const visible = (await accessibleServers(env, user, server.orgId)).filter(
-		(s) => s.orgId === server.orgId
-	);
+	const visible = await orgLeaderboardServers(env, user, server.orgId);
 	const career = await loadCareer(env, {
 		serverId: server.id,
 		orgId: server.orgId,
