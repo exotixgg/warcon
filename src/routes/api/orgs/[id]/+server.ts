@@ -2,6 +2,7 @@ import { getEnv } from '$lib/server/env';
 import { apiJson, param, readJson, route } from '$lib/server/http';
 import { requireOrgRole, requireOwner } from '$lib/server/access';
 import { setBanReasons } from '$lib/server/ban-reasons';
+import { setBanPolicy } from '$lib/server/ban-policy';
 import { setSavedMessages } from '$lib/server/saved-messages';
 import {
 	deleteOrg,
@@ -13,7 +14,7 @@ import {
 
 /**
  * {name} or {discordInviteUrl} or {boardOpens} or {boardHidden} or {membersReserved} or
- * {banMessage} or {banReasons} or {savedMessages} for org owners; {serverLimit, suspended, reason,
+ * {banMessage} or {banReasons} or {banPolicy} or {savedMessages} for org owners; {serverLimit, suspended, reason,
  * allowPublicStatus, allowPublicLeaderboards} for the site owner only.
  */
 export const PATCH = route(async (event) => {
@@ -37,6 +38,9 @@ export const PATCH = route(async (event) => {
 	} else if (body.banReasons !== undefined) {
 		const banReasons = await setBanReasons(env, event.request, user, org, body.banReasons);
 		return apiJson({ ok: true, banReasons });
+	} else if (body.banPolicy !== undefined) {
+		const banPolicy = await setBanPolicy(env, event.request, user, org, body.banPolicy);
+		return apiJson({ ok: true, banPolicy });
 	} else if (body.savedMessages !== undefined) {
 		const savedMessages = await setSavedMessages(env, event.request, user, org, body.savedMessages);
 		return apiJson({ ok: true, savedMessages });

@@ -8,7 +8,10 @@ export const GET = route(async (event) => {
 	const kind = parseKind(param(event, 'kind'));
 	const { org } = await requireListsRole(env, event.locals, param(event, 'id'), kind);
 	const includeRemoved = event.url.searchParams.get('includeRemoved') === '1';
-	return apiJson({ ok: true, entries: await entriesView(env, org, kind, { includeRemoved }) });
+	return apiJson({
+		ok: true,
+		entries: await entriesView(env, org, kind, { includeRemoved, includeBanCases: kind === 'ban' })
+	});
 });
 
 export const POST = route(async (event) => {

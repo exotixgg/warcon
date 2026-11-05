@@ -51,6 +51,11 @@ import {
 } from './afk-protection';
 import { AFK_WATCH_FLAG, type AfkCounters } from './afk-watch';
 import { DEATH_WHISPER_MAX_AGE_MS } from './death-whisper';
+import {
+	BAN_ANNOUNCEMENT,
+	BAN_ANNOUNCEMENT_MAX_AGE_MS,
+	banAnnouncementStillHolds
+} from './ban-announcements';
 import { TRAIL_FAILURES_ONLY } from '$lib/rule-kinds';
 import { MAX_CHAT } from '$lib/chat';
 import type { OutboxView } from '$lib/types';
@@ -312,6 +317,10 @@ function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | nu
 	if (!m) return 'Server no longer polled.';
 	const age = Date.now() - new Date(row.createdAt).getTime();
 	if (age > settings().outboxMaxAgeMs) return `Stale (${Math.round(age / 1000)}s old).`;
+	if (row.triggerKind === BAN_ANNOUNCEMENT) {
+		if (age > BAN_ANNOUNCEMENT_MAX_AGE_MS) return `Stale (${Math.round(age / 1000)}s old).`;
+		if (!m.players.length && !(m.status?.playerCount ?? 0)) return 'No players to announce to.';
+	}
 	if (
 		row.steamId &&
 		m.playersAt &&
@@ -444,6 +453,14 @@ function holdsFor(
  * table could not be read: the row waits, and the error goes to the log, never to the row.
  */
 async function stillHolds(env: Env, row: OutboxRow): Promise<boolean | null> {
+	if (row.triggerKind === BAN_ANNOUNCEMENT) {
+		try {
+			return await banAnnouncementStillHolds(env.db, row);
+		} catch (err) {
+			console.error('[warcon] ban announcement check', forLog(err));
+			return null;
+		}
+	}
 	if (!SETTINGS_KEYS[row.triggerKind]) return true;
 	if (!row.triggerId) return false;
 	let rule: { enabled: boolean; config: unknown; state: unknown } | undefined;
@@ -1043,7 +1060,24 @@ async function finish(env: Env, row: OutboxRow, state: Outcome, outcome: string)
 	const server =
 		memoryOf(row.serverId)?.server ??
 		(PANEL_ACTIONS.has(row.action) ? await getServer(env, row.serverId) : null);
-	if (server && state !== 'skipped')
+	if (server && state !== 'skipped' && row.triggerKind === BAN_ANNOUNCEMENT)
+		await writeAudit(env, null, {
+			actorName: 'Ban policy',
+			server: { id: server.id, name: server.name },
+			orgId: server.orgId,
+			category: 'org',
+			action: 'list.ban_announcement',
+			target: row.target,
+			outcome: state === 'delivered' ? 'ok' : 'error',
+			message: outcome,
+			detail: {
+				kind: 'ban',
+				outboxId: row.id,
+				state,
+				...((row.detail as Record<string, unknown>) ?? {})
+			}
+		}).catch((err) => console.error('[warcon] ban announcement audit', forLog(err)));
+	else if (server && state !== 'skipped')
 		await recordDelivery(
 			env,
 			row,

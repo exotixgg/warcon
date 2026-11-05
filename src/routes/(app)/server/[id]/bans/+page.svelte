@@ -16,6 +16,7 @@
 	import { steamProfiles, type SteamProfile } from '$lib/steam-profiles';
 	import { describeSync } from '$lib/lists';
 	import type { Ban, ListSyncServer, ListSyncSummary, ServerListsState } from '$lib/types';
+	import type { BanCaseView } from '$lib/ban-policy';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
@@ -46,6 +47,7 @@
 		by: string;
 		reason: string;
 		expiresAt: string | null;
+		banCase: BanCaseView | null;
 	}
 	const utc = (iso: string) => iso.slice(0, 16).replace('T', ' ');
 	let rows = $derived.by(() => {
@@ -59,7 +61,8 @@
 				bannedAt: (managed && src.addedAt ? utc(src.addedAt) : '') || utc(b?.bannedAtUtc ?? ''),
 				by: (managed && src.addedByName) || b?.bannedBy || '',
 				reason: (managed && src.reason) || b?.reason || '',
-				expiresAt: managed ? src.expiresAt : null
+				expiresAt: managed ? src.expiresAt : null,
+				banCase: managed ? (src.banCase ?? null) : null
 			};
 		};
 		return [
@@ -387,6 +390,7 @@
 		placed={`Banned ${selectedRow.source === 'here' ? `on ${data.server.name}` : `across ${data.server.orgName}`}${selectedRow.by ? ` by ${selectedRow.by}` : ''}${selectedRow.bannedAt ? ` on ${selectedRow.bannedAt} UTC` : ''}.`}
 		reason={selectedRow.reason}
 		expiresAt={selectedRow.expiresAt}
+		banCase={selectedRow.banCase}
 		onclose={() => (editing = false)}
 		ondone={refreshBans}
 	/>
@@ -399,6 +403,7 @@
 		server={{ id, name: data.server.name }}
 		canOrg={listState?.canEditOrgBans ?? false}
 		banMessage={listState?.banMessage}
+		banPolicy={listState?.banPolicy}
 		reasons={listState?.banReasons ?? []}
 		onclose={() => (banning = false)}
 		ondone={refreshAll}

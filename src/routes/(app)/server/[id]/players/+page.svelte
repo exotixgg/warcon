@@ -144,6 +144,7 @@
 			canWatch={notes}
 			canOrg={listState?.canEditOrgBans ?? false}
 			reasons={listState?.banReasons ?? []}
+			banPolicy={listState?.banPolicy}
 		/>
 	{/if}
 	<!-- Mounted all along, like Teams: its ticks, sort and dialogs survive a look at the other views. -->

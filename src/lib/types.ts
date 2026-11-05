@@ -3,6 +3,7 @@ import type { StatusStyle } from './status-styles';
 import type { OrgRole } from '$lib/server/access';
 import type { BuiltinRole, Capability } from '$lib/capabilities';
 import type { BanReason } from '$lib/ban-reasons';
+import type { BanCaseView, BanPolicyView } from '$lib/ban-policy';
 import type { ManualRestart } from '$lib/uptime';
 
 export type { OrgRole, Capability, BuiltinRole };
@@ -474,7 +475,13 @@ export interface DossierView {
 	};
 	/** the org's quick reasons and ban message for the ban dialog; null unless the viewer may ban
 	 *  here (Bans) or on the org's list */
-	banDialog: { reasons: BanReason[]; message: string } | null;
+	banDialog: {
+		reasons: BanReason[];
+		message: string;
+		banPolicy: BanPolicyView;
+		/** Valid, authorised origin servers for an organisation-wide moderation case. */
+		servers: { id: string; name: string }[];
+	} | null;
 	summary: {
 		sessions: number;
 		minutes: number;
@@ -711,6 +718,8 @@ export interface ListEntryView {
 	/** derived from org membership (members-reserved), not an entry someone added */
 	member: boolean;
 	servers: ListServerStateView[];
+	/** Private moderation record. Returned only to staff who can edit the ban list. */
+	banCase?: BanCaseView | null;
 }
 
 export interface ListSyncServer {
@@ -756,6 +765,8 @@ export interface OrgListsView {
 	banMessage: string | null;
 	/** the buttons under Reason in the ban dialog, see $lib/ban-reasons; null as for banMessage */
 	banReasons: BanReason[] | null;
+	/** The structured moderation policy, for ban-list editors only. */
+	banPolicy: BanPolicyView | null;
 	servers: {
 		id: string;
 		name: string;
@@ -812,6 +823,8 @@ export interface BanState {
 	addedAt: string | null;
 	/** when the panel lifts the ban; null for a permanent one (or one not managed) */
 	expiresAt: string | null;
+	/** Private moderation record, only for staff who may manage bans here. */
+	banCase?: BanCaseView | null;
 }
 
 /** One reserved slot as the server's Reserved slots page shows it. */
@@ -845,6 +858,8 @@ export interface ServerListsState {
 	banMessage: string | null;
 	/** the org's quick reasons for the ban dialog, to the same people as banMessage; else null */
 	banReasons: BanReason[] | null;
+	/** The structured moderation policy, for staff who may manage bans on this server. */
+	banPolicy: BanPolicyView | null;
 	bans: Record<string, BanState>;
 	reserved: Record<string, ReservedSlotState>;
 	sync: {
