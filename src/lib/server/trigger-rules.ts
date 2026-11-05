@@ -21,6 +21,8 @@ import type { LiveNameConfig } from '$lib/live-name';
 import { causeTags } from './cause-tags';
 import { MAX_RESTART_LEAD_MINUTES, restartWindow, type RestartSchedule } from '$lib/uptime';
 import { MAX_CHAT } from '$lib/chat';
+import { MESSAGE_RULES } from '$lib/placeholders';
+import { normalizeAutomationMessage } from '$lib/automation-message';
 import { isVehicleCrash, TEAM_KILL_NOT_COUNTED, VEHICLE_CRASH } from '$lib/causes';
 import { mapName } from '$lib/format';
 import { UNKNOWN } from './message-vars';
@@ -270,7 +272,14 @@ export function riskKickScore(c: Record<string, unknown> | RiskKickConfig): numb
 
 /** Checks and normalises a kind's settings; throws a 400 with a reason people can act on. */
 export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
-	const c = (raw && typeof raw === 'object' ? raw : {}) as Record<string, unknown>;
+	const c = { ...(raw && typeof raw === 'object' ? raw : {}) } as Record<string, unknown>;
+	for (const field of MESSAGE_RULES[kind]?.fields ?? []) {
+		if (c[field] === undefined || c[field] === null) continue;
+		if (field === 'messages') {
+			const list = Array.isArray(c[field]) ? c[field] : String(c[field]).split('\n');
+			c[field] = (list as unknown[]).map(normalizeAutomationMessage);
+		} else c[field] = normalizeAutomationMessage(c[field]);
+	}
 	switch (kind) {
 		case 'welcome': {
 			const message = str(c.message, MAX_CHAT);

@@ -399,6 +399,15 @@ describe('broadcastWanted', () => {
 });
 
 describe('welcomeTargets', () => {
+	test('JSON pool entries retain embedded line breaks without becoming separate messages', () => {
+		const messages = '"First\\nSecond"\nAnother message';
+		expect(validateConfig('broadcast', { messages, everyMinutes: 5 })).toMatchObject({
+			messages: ['First\nSecond', 'Another message']
+		});
+		expect(validateConfig('death_whisper', { messages })).toMatchObject({
+			messages: ['First\nSecond', 'Another message']
+		});
+	});
 	const a = { steamId: 'a' };
 	const b = { steamId: 'b' };
 	const c = { steamId: 'c' };
