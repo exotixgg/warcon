@@ -216,11 +216,11 @@
 			</thead>
 			<tbody>
 				{#each career.last as m (m.matchId)}
+					{@const href = matchHref?.(m)}
 					<tr>
 						<td class="whitespace-nowrap">{fmtTime(m.startedAt)}</td>
 						{#if multiServer}<td>{m.serverName}</td>{/if}
 						<td>
-							{@const href = matchHref?.(m)}
 							{#if href}<a
 									{href}
 									data-sveltekit-preload-data="tap"
