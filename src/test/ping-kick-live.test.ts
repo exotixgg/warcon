@@ -89,6 +89,34 @@ describe.skipIf(!hasTestDb)('the High ping kick on a live look', () => {
 		invalidateTriggers(serverId);
 		return id;
 	};
+	const warningRule = async (serverId: string) => {
+		const id = newId();
+		const now = Date.now();
+		await env.db.insert(triggers).values({
+			id,
+			serverId,
+			orgId: w.org.id,
+			kind: 'ping_kick',
+			name: 'High ping warning',
+			enabled: true,
+			config: validateConfig('ping_kick', {
+				maxPingMs: 200,
+				durationSeconds: 60,
+				spareReserved: true,
+				warningSeconds: [1],
+				warnMessage: 'Ping {ping}ms; kick in {remaining}s.'
+			}),
+			state: {
+				lastAt: now,
+				players: {
+					[RESERVED]: { since: now - 2000, fired: false },
+					[VISITOR]: { since: now - 2000, fired: false }
+				}
+			}
+		});
+		invalidateTriggers(serverId);
+		return id;
+	};
 	/** A fresh worker's memory of the server: nothing read from it yet, the reserved list included. */
 	const watch = async (serverId: string) => {
 		const [server] = await env.db.select().from(servers).where(eq(servers.id, serverId));
@@ -143,5 +171,30 @@ describe.skipIf(!hasTestDb)('the High ping kick on a live look', () => {
 		await look(RESERVED, VISITOR);
 		expect(await kicksOf(RESERVED)).toHaveLength(1);
 		expect(await kicksOf(VISITOR)).toHaveLength(1);
+	});
+
+	test('a reserved-list-gated warning is queued once for the regular player only', async () => {
+		forgetMemory(w.server.id);
+		const id = await warningRule(w.server.id);
+		const { look } = await watch(w.server.id);
+		const warnings = async () =>
+			(await env.db.select().from(outbox).where(eq(outbox.triggerId, id))).filter(
+				(row) => row.action === 'whisper'
+			);
+
+		// Like kicks, a warning cannot be spent before the reserved slots have been read.
+		await look(RESERVED, VISITOR);
+		expect(await warnings()).toHaveLength(0);
+
+		await look(RESERVED, VISITOR);
+		const [warning] = await warnings();
+		expect(warning.steamId).toBe(VISITOR);
+		expect(warning.params).toMatchObject({
+			steamId: VISITOR,
+			message: expect.stringContaining('Ping 400ms; kick in')
+		});
+
+		await look(RESERVED, VISITOR);
+		expect(await warnings()).toHaveLength(1);
 	});
 });
