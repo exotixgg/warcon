@@ -34,7 +34,10 @@
 			serverName={data.heading.name}
 			orgName={data.heading.orgName}
 			multiServer={data.multiServer}
-			matchHref={(m) => `/s/${encodeURIComponent(m.serverId)}/matches/${m.matchId}`}
+			matchHref={(m) =>
+				data.archivedServerIds.includes(m.serverId)
+					? undefined
+					: `/s/${encodeURIComponent(m.serverId)}/matches/${m.matchId}`}
 			seasonHref={(s) => `${base}/leaderboard?range=s:${encodeURIComponent(s.key)}`}
 		>
 			{#if data.combat}
