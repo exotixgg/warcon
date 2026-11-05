@@ -520,6 +520,7 @@
 		maxBanAgeDays: number;
 		maxPingMs: number;
 		durationSeconds: number;
+		pingWarningSeconds: string;
 		minAccountDays: number;
 		privateProfiles: boolean;
 		bannedElsewhere: boolean;
@@ -749,7 +750,10 @@
 				'everyMinutes',
 				kind === 'afk_protection' ? 3 : kind === 'weather_cycle' ? 30 : 15
 			),
-			minPlayers: n('minPlayers', kind === 'bounty' || kind === 'afk_watch' ? 20 : 1),
+			minPlayers: n(
+				'minPlayers',
+				kind === 'ping_kick' ? 0 : kind === 'bounty' || kind === 'afk_watch' ? 20 : 1
+			),
 			maxPlayers: typeof c.maxPlayers === 'number' ? c.maxPlayers : null,
 			afterMinutes: n('afterMinutes', 20),
 			cooldownMinutes: n('cooldownMinutes', 30),
@@ -758,6 +762,11 @@
 			maxBanAgeDays: n('maxBanAgeDays', 0),
 			maxPingMs: n('maxPingMs', 200),
 			durationSeconds: n('durationSeconds', 60),
+			pingWarningSeconds: Array.isArray(c.warningSeconds)
+				? (c.warningSeconds as number[]).join(', ')
+				: kind === 'ping_kick' && !t
+					? '15, 30, 45'
+					: '',
 			minAccountDays: n('minAccountDays', 0),
 			privateProfiles: b('privateProfiles', false),
 			bannedElsewhere: b('bannedElsewhere', true),
@@ -796,7 +805,9 @@
 				'warnMessage',
 				kind === 'afk_watch'
 					? '{name}, you look AFK: no kill, death or cash earned for {idle} min. Play on, or you are kicked at {limit} min.'
-					: 'Careful, {name}: that was a team kill ({count} this match).'
+					: kind === 'ping_kick'
+						? 'High ping: {ping}ms (limit {limit}ms). Kick in {remaining}s if it stays high.'
+						: 'Careful, {name}: that was a team kill ({count} this match).'
 			),
 			kickAt: n('kickAt', 4),
 			kickReason: s('kickReason', 'Team killing ({count} this match).'),
@@ -971,6 +982,12 @@
 				return {
 					maxPingMs: Number(f.maxPingMs),
 					durationSeconds: Number(f.durationSeconds),
+					minPlayers: Number(f.minPlayers),
+					warningSeconds: f.pingWarningSeconds
+						.split(/[\s,]+/)
+						.filter(Boolean)
+						.map(Number),
+					warnMessage: f.warnMessage,
 					spareReserved: f.spareReserved,
 					reason: f.reason
 				};
@@ -1237,8 +1254,17 @@
 				]
 					.filter(Boolean)
 					.join(' · ');
-			case 'ping_kick':
-				return `ping over ${c.maxPingMs} ms for ${c.durationSeconds} s${c.spareReserved ? ' · spares reserved slots' : ''}`;
+			case 'ping_kick': {
+				const warnings = Array.isArray(c.warningSeconds) ? (c.warningSeconds as number[]) : [];
+				return [
+					`ping over ${c.maxPingMs} ms for ${c.durationSeconds} s`,
+					Number(c.minPlayers) ? `at least ${c.minPlayers} on` : '',
+					warnings.length ? `warns at ${warnings.join(', ')} s` : '',
+					c.spareReserved ? 'spares reserved slots' : ''
+				]
+					.filter(Boolean)
+					.join(' · ');
+			}
 			case 'afk_watch': {
 				const exempt = ((c.exempt as string[] | undefined) ?? []).length;
 				const spares = [
@@ -2662,8 +2688,48 @@
 							seconds
 						</div>
 					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">Only while players are on</legend>
+						<div class="flex flex-wrap items-center gap-2 text-[13px]">
+							At least
+							<input
+								class="input w-24 text-right"
+								type="number"
+								min="0"
+								max="1000"
+								bind:value={f.minPlayers}
+								aria-label="At least, players on"
+							/>
+							players <span class="text-mist-600">(0 has no minimum)</span>
+						</div>
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label">Warn before kicking</legend>
+						<div class="flex flex-wrap items-center gap-2 text-[13px]">
+							At seconds
+							<input
+								class="input w-48 text-right font-mono"
+								type="text"
+								bind:value={f.pingWarningSeconds}
+								placeholder="15, 30, 45"
+								aria-label="Warning times, seconds"
+							/>
+							<span class="text-mist-600">comma-separated; blank turns warnings off</span>
+						</div>
+						<textarea
+							class="min-h-24 input font-mono text-[12.5px]"
+							bind:value={f.warnMessage}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
+							aria-label="High ping warning"
+							disabled={!f.pingWarningSeconds.trim()}></textarea>
+						<p class="note">
+							Each time must be a positive whole second before the kick duration. A JSON string may
+							use
+							<code>\n</code> for line breaks.
+						</p>
+					</fieldset>
 					<fieldset class="space-y-1.5 text-[13px]">
-						<legend class="field-label">Never kick</legend>
+						<legend class="field-label">Never warn or kick</legend>
 						<label class="flex items-center gap-2"
 							><input type="checkbox" bind:checked={f.spareReserved} /> players with a reserved slot</label
 						>
@@ -2671,7 +2737,7 @@
 					<fieldset class="space-y-2">
 						<legend class="field-label">Kick reason, shown to the player</legend>
 						<input class="input" type="text" bind:value={f.reason} maxlength="200" />
-						{@render placeholders('ping_kick', [f.reason])}
+						{@render placeholders('ping_kick', [f.warnMessage, f.reason])}
 					</fieldset>
 					<p class="note">
 						The timer starts on the first high-ping sample. It resets when ping drops to the limit
