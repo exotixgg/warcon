@@ -1,7 +1,8 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { getEnv } from '$lib/server/env';
-import { accessibleServers, requireServerCap } from '$lib/server/access';
+import { requireServerCap } from '$lib/server/access';
+import { orgLeaderboardServers } from '$lib/server/leaderboard-servers';
 import { normalizeError } from '$lib/server/http';
 import { dossier } from '$lib/server/players';
 import { loadCareer } from '$lib/server/leaderboards';
@@ -16,9 +17,7 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 	try {
 		const { server, access, user } = await requireServerCap(env, locals, params.id, 'server.view');
 		if (!/^\d{17}$/.test(params.steamId)) error(404, 'Not a SteamID64.');
-		const visible = (await accessibleServers(env, user, server.orgId)).filter(
-			(s) => s.orgId === server.orgId
-		);
+		const visible = await orgLeaderboardServers(env, user, server.orgId);
 		const [d, career] = await Promise.all([
 			dossier(env, user, server, access, params.steamId),
 			loadCareer(env, {
@@ -29,7 +28,12 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 				steamId: params.steamId
 			})
 		]);
-		return { dossier: d, career, multiServer: visible.length > 1 };
+		return {
+			dossier: d,
+			career,
+			multiServer: visible.length > 1,
+			archivedServerIds: visible.filter((s) => s.archived).map((s) => s.id)
+		};
 	} catch (err) {
 		const known = normalizeError(err);
 		if (!known) throw err;
