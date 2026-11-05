@@ -58,7 +58,7 @@ export function shortWelcomeName(value: string, max = 20): string {
 }
 
 export function welcomeServerLabel(name: string): string {
-	return shortWelcomeName(name.replace(/^EXOTIX-/i, 'EXOTIX '), 24) || '-';
+	return shortWelcomeName(name.replace(/^EXOTIX(?:-|\s+)/i, 'EXOTIX.GG '), 24) || '-';
 }
 
 export function welcomeSeasonLabel(name: string): string {
