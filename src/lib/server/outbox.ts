@@ -51,6 +51,7 @@ import {
 } from './afk-protection';
 import { AFK_WATCH_FLAG, type AfkCounters } from './afk-watch';
 import { DEATH_WHISPER_MAX_AGE_MS } from './death-whisper';
+import type { PingKickState } from './trigger-rules';
 import {
 	BAN_ANNOUNCEMENT,
 	BAN_ANNOUNCEMENT_MAX_AGE_MS,
@@ -338,6 +339,33 @@ function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | nu
 	// middle of play.
 	if (row.triggerKind === 'death_whisper' && age > DEATH_WHISPER_MAX_AGE_MS)
 		return `Stale (${Math.round(age / 1000)}s old).`;
+	if (row.triggerKind === 'ping_kick') {
+		const guard = (
+			row.params as {
+				pingGuard?: {
+					minPlayers: number;
+					maxPingMs: number;
+					spareReserved: boolean;
+					maxGapMs: number;
+				};
+			} | null
+		)?.pingGuard;
+		if (!guard) return 'Ping decision predates the current rule.';
+		if (row.action === 'whisper' && age > 5000) return 'Ping warning expired.';
+		if (!m.playersAt || Date.now() - m.playersAt > guard.maxGapMs)
+			return 'No fresh player list for the ping decision.';
+		if (m.players.length < guard.minPlayers) return 'Population fell below the ping rule minimum.';
+		if (guard.spareReserved && (!m.reservedAt || (row.steamId && m.reserved.has(row.steamId))))
+			return 'Player is exempt or reserved slots are not yet known.';
+		const player = m.players.find((p) => p.steamId === row.steamId);
+		if (
+			!player ||
+			player.ping === null ||
+			!Number.isFinite(player.ping) ||
+			player.ping <= guard.maxPingMs
+		)
+			return 'High ping is no longer present.';
+	}
 	// An AFK protection round goes only while what the worker last saw still says the server seeds:
 	// a round in a live match kills everyone mid-fight. It goes soon or not at all.
 	if (row.action === AFK_ROUND) {
@@ -440,6 +468,15 @@ function holdsFor(
 	const key = SETTINGS_KEYS[row.triggerKind];
 	const params = row.params as { rule?: string; on?: number | null } | null;
 	if (key && params?.rule !== key(rule.config)) return false;
+	if (row.triggerKind === 'ping_kick') {
+		const ping = row.params as { since?: number; warningSeconds?: number } | null;
+		const streak = row.steamId
+			? (rule.state as PingKickState | null)?.players?.[row.steamId]
+			: undefined;
+		if (!streak || streak.since !== ping?.since) return false;
+		if (row.action === 'whisper' && (streak.fired || streak.warned !== ping?.warningSeconds))
+			return false;
+	}
 	// A Team balance move carries the switch-on it was decided under: switched off and on again
 	// since, the rule has started over and the move is not its decision.
 	if (row.triggerKind === 'two_teams' && params?.on !== undefined && 'state' in rule)
