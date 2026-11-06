@@ -19,6 +19,7 @@ import { withServer, type Priority } from './dispatcher';
 import { classifyGameError, GameError, WardogsClient } from './rcon';
 import { RESERVED_KEY, reservedFromText, reservedIntoText } from '$lib/reserved-doc';
 import {
+	banCases,
 	listEntries,
 	lists,
 	organizations,
@@ -987,7 +988,8 @@ export async function kickBanned(
 		try {
 			await ACTIONS.kick.run(client, {
 				steamId,
-				reason: renderBanMessage(org.banMessage, { ...entry, entryId: entry.id })
+				reason:
+					entry.playerMessage ?? renderBanMessage(org.banMessage, { ...entry, entryId: entry.id })
 			});
 		} catch (err) {
 			const f = failure(err);
@@ -1015,9 +1017,10 @@ export async function kickBanned(
 /** The entry behind a ban, if it is still live on a list the server subscribes to. */
 async function liveEntry(env: Env, serverId: string, b: PanelBan, now: Date) {
 	const [row] = await env.db
-		.select({ entry: listEntries })
+		.select({ entry: listEntries, playerMessage: banCases.record })
 		.from(serverLists)
 		.innerJoin(listEntries, eq(listEntries.listId, serverLists.listId))
+		.leftJoin(banCases, eq(banCases.entryId, listEntries.id))
 		.where(
 			and(
 				eq(serverLists.serverId, serverId),
@@ -1028,7 +1031,15 @@ async function liveEntry(env: Env, serverId: string, b: PanelBan, now: Date) {
 			)
 		)
 		.limit(1);
-	return row?.entry ?? null;
+	return row
+		? {
+				...row.entry,
+				playerMessage:
+					row.playerMessage && typeof row.playerMessage === 'object'
+						? String((row.playerMessage as { playerMessage?: unknown }).playerMessage ?? '') || null
+						: null
+			}
+		: null;
 }
 
 // ---- fan-out from the API ----------------------------------------------------------------------

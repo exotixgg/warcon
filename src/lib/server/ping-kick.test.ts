@@ -4,7 +4,7 @@
 // before the setting, kick everyone over the limit as before.
 import { describe, expect, test } from 'bun:test';
 import { evaluateTriggers, validateConfig, type Evaluation, type TickContext } from './triggers';
-import type { PingKickState } from './trigger-rules';
+import { pingKickStep, type PingKickState, type PingKickConfig } from './trigger-rules';
 import type { TriggerRow } from './db/schema';
 import type { Env } from './env';
 import type { Player } from '$lib/types';
@@ -38,6 +38,29 @@ const rule = (config: unknown) =>
 		kind: 'ping_kick',
 		config,
 		state: streaks(),
+		lastFiredAt: null
+	}) as unknown as TriggerRow;
+
+const warningRule = (over: Record<string, unknown> = {}, state: PingKickState | null = null) =>
+	({
+		id: 'rule-ping-warning',
+		name: 'High ping kick',
+		kind: 'ping_kick',
+		config: validateConfig('ping_kick', {
+			maxPingMs: 200,
+			durationSeconds: 60,
+			spareReserved: true,
+			warningSeconds: [15, 30, 45],
+			warnMessage: 'Ping {ping} / {limit}; {remaining}s left ({warning}/{warnings})',
+			...over
+		}),
+		state: state ?? {
+			lastAt: NOW,
+			players: {
+				[REGULAR.steamId]: { since: NOW, fired: false },
+				[VISITOR.steamId]: { since: NOW, fired: false }
+			}
+		},
 		lastFiredAt: null
 	}) as unknown as TriggerRow;
 
@@ -77,7 +100,16 @@ const look = (over: Partial<TickContext> = {}, at = NOW) =>
 const unread = { reserved: new Set<string>(), reservedLoaded: false };
 
 const evaluate = (row: TriggerRow, ctx: TickContext) => evaluateTriggers({} as Env, ctx, [row]);
-const kicked = (ev: Evaluation) => ev.intents.map((i) => i.params.steamId as string).sort();
+const kicked = (ev: Evaluation) =>
+	ev.intents
+		.filter((i) => i.action === 'kick')
+		.map((i) => i.params.steamId as string)
+		.sort();
+const warned = (ev: Evaluation) =>
+	ev.intents
+		.filter((i) => i.action === 'whisper')
+		.map((i) => i.params.steamId as string)
+		.sort();
 const streakOf = (row: TriggerRow, p: Player) => (row.state as PingKickState).players[p.steamId];
 const BOTH = [REGULAR.steamId, VISITOR.steamId].sort();
 
@@ -130,5 +162,86 @@ describe('the High ping kick and reserved slots', () => {
 		const ev = await evaluate(row, look(unread));
 		expect(ev.intents).toEqual([]);
 		expect(ev.updates.map((u) => u.lastResult)).toEqual([undefined]);
+	});
+});
+
+describe('High ping warning stages', () => {
+	test('emits only the latest crossed warning, then lets the kick take precedence', () => {
+		const cfg = validateConfig('ping_kick', {
+			maxPingMs: 200,
+			durationSeconds: 60,
+			warningSeconds: [15, 30, 45],
+			warnMessage: 'Ping {ping}'
+		}) as PingKickConfig;
+		let state: PingKickState | null = {
+			lastAt: NOW,
+			players: { [VISITOR.steamId]: { since: NOW, fired: false } }
+		};
+		let step = pingKickStep(cfg, state, [VISITOR], NOW + 20_000, 30_000);
+		expect(step.warnings).toEqual([{ steamId: VISITOR.steamId, seconds: 15 }]);
+		expect(step.kicks).toEqual([]);
+		state = step.state;
+		step = pingKickStep(cfg, state, [VISITOR], NOW + 50_000, 40_000);
+		expect(step.warnings).toEqual([{ steamId: VISITOR.steamId, seconds: 45 }]);
+		state = step.state;
+		step = pingKickStep(cfg, state, [VISITOR], NOW + 60_000, 20_000);
+		expect(step.warnings).toEqual([]);
+		expect(step.kicks).toEqual([VISITOR.steamId]);
+	});
+
+	test('warns the non-VIP once, renders ping placeholders, and never warns the reserved VIP', async () => {
+		const row = warningRule(
+			{},
+			{
+				lastAt: NOW + 18_000,
+				players: {
+					[REGULAR.steamId]: { since: NOW, fired: false },
+					[VISITOR.steamId]: { since: NOW, fired: false }
+				}
+			}
+		);
+		const ev = await evaluate(row, look({}, NOW + 20_000));
+		expect(kicked(ev)).toEqual([]);
+		expect(warned(ev)).toEqual([VISITOR.steamId]);
+		expect(ev.intents[0].params.message).toBe('Ping 290 / 200; 40s left (1/3)');
+		expect(streakOf(row, REGULAR)).toBeUndefined();
+		expect(streakOf(row, VISITOR)).toMatchObject({ since: NOW, fired: false, warned: 15 });
+
+		// A fresh look before the next threshold does not duplicate the first warning.
+		expect(warned(await evaluate(row, look({}, NOW + 25_000)))).toEqual([]);
+	});
+
+	test('drops below the player floor reset warning progress, while reserved players still count', async () => {
+		const row = warningRule({ minPlayers: 2 });
+		const low = await evaluate(row, look({ players: [VISITOR] }, NOW + 20_000));
+		expect(warned(low)).toEqual([]);
+		expect((row.state as PingKickState).players).toEqual({});
+
+		const atFloor = await evaluate(row, look({}, NOW + 40_000));
+		expect(warned(atFloor)).toEqual([]); // new streak begins at this look, not at the old 0s one
+		expect(streakOf(row, VISITOR)).toMatchObject({ since: NOW + 40_000 });
+		expect(streakOf(row, VISITOR)?.warned).toBeUndefined();
+		expect(streakOf(row, REGULAR)).toBeUndefined();
+	});
+
+	test('does not spend a warning before the reserved list has loaded', async () => {
+		const row = warningRule(
+			{},
+			{
+				lastAt: NOW + 18_000,
+				players: {
+					[REGULAR.steamId]: { since: NOW, fired: false },
+					[VISITOR.steamId]: { since: NOW, fired: false }
+				}
+			}
+		);
+		const waiting = await evaluate(row, look(unread, NOW + 20_000));
+		expect(warned(waiting)).toEqual([]);
+		expect(streakOf(row, VISITOR)).toMatchObject({ since: NOW });
+		expect(streakOf(row, VISITOR)?.warned).toBeUndefined();
+
+		const loaded = await evaluate(row, look({}, NOW + 22_000));
+		expect(warned(loaded)).toEqual([VISITOR.steamId]);
+		expect(streakOf(row, VISITOR)).toMatchObject({ warned: 15 });
 	});
 });

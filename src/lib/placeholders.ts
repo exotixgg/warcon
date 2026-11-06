@@ -19,6 +19,34 @@ export const SERVER_PLACEHOLDERS = [
 /** The player a message is to or about. */
 export const PLAYER_PLACEHOLDERS = ['name', 'faction', 'steamid', 'ping'] as const;
 
+/** Current official season across the organisation; only private welcome messages expose these. */
+export const WELCOME_PLACEHOLDERS = [
+	'welcome_card',
+	'server_label',
+	'season_name',
+	'season_rank',
+	'season_kills',
+	'season_deaths',
+	'season_kd',
+	'season_playtime',
+	'season_seeded',
+	'season_cash',
+	'season_rival',
+	'leader_kills_name',
+	'leader_kills_value',
+	'leader_cash_name',
+	'leader_cash_value',
+	'leader_playtime_name',
+	'leader_playtime_value',
+	'leader_seeded_name',
+	'leader_seeded_value'
+] as const;
+
+export const usesWelcomeCard = (text: string): boolean =>
+	[...text.matchAll(/\{([a-z_]+)\}/gi)].some(([, name]) =>
+		(WELCOME_PLACEHOLDERS as readonly string[]).includes(name.toLowerCase())
+	);
+
 /** The player's line on this server's all-time leaderboard: read only for a message that uses one. */
 export const STATS_PLACEHOLDERS = [
 	'kills',
@@ -69,7 +97,7 @@ interface MessageRule {
 
 /** Every rule that sends a message or a kick reason. */
 export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> = {
-	welcome: { fields: ['message'], own: [], player: true },
+	welcome: { fields: ['message'], own: WELCOME_PLACEHOLDERS, player: true },
 	faction_change: { fields: ['message'], own: ['previous'], player: true },
 	// who killed the player, with what, from how far: blank where it does not apply (a fall)
 	death_whisper: { fields: ['messages'], own: ['killer', 'weapon', 'distance'], player: true },
@@ -83,7 +111,11 @@ export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> 
 	},
 	risk_kick: { fields: ['reason'], own: [], player: true },
 	name_filter: { fields: ['reason'], own: ['why'], player: true },
-	ping_kick: { fields: ['reason'], own: [], player: true },
+	ping_kick: {
+		fields: ['reason', 'warnMessage'],
+		own: ['limit', 'duration', 'elapsed', 'remaining', 'warning', 'warnings'],
+		player: true
+	},
 	// how long the player has been idle, and the idle time the rule acts at (both whole minutes)
 	afk_watch: { fields: ['warnMessage', 'reason'], own: ['idle', 'limit'], player: true },
 	team_kill: { fields: ['warnMessage', 'kickReason'], own: ['victim', 'count'], player: true },

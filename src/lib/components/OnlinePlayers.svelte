@@ -591,6 +591,7 @@
 			server={{ id: s.id, name: s.name }}
 			canOrg={s.lists?.canEditOrgBans ?? false}
 			banMessage={s.lists?.banMessage}
+			banPolicy={s.lists?.banPolicy}
 			reasons={s.lists?.banReasons ?? []}
 			onclose={() => (banning = null)}
 			ondone={() => onacted(s.id)}

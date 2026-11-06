@@ -82,6 +82,7 @@ import {
 	restartNoticeStage,
 	riskKickVerdict,
 	pingKickStep,
+	pingSettingsKey,
 	teamKillNotCounted,
 	teamKillStage,
 	TRIGGER_LABELS,
@@ -112,6 +113,8 @@ import {
 	type WelcomeConfig
 } from './trigger-rules';
 import { MAX_CHAT } from '$lib/chat';
+import { usesWelcomeCard, WELCOME_PLACEHOLDERS } from '$lib/placeholders';
+import { welcomeCardVars } from './welcome-card';
 import { notifyBounty, type BountyCard } from './webhook-delivery';
 import { NAME_FLAG, nameFilterTargets, nameVerdict, type NameFilterConfig } from './name-filter';
 import {
@@ -394,6 +397,8 @@ export function ruleNeeds(kind: TriggerKind, config: unknown): [Capability, stri
  * its warning.
  */
 function ruleAlsoNeeds(kind: TriggerKind, config: unknown): [Capability, string] | null {
+	if (kind === 'ping_kick' && (config as PingKickConfig)?.warningSeconds?.length)
+		return ['chat.send', 'whispers players'];
 	if (kind === 'kill_distance' && killDistanceAction(config) === 'kill') return RULE_KILL_NEEDS[1];
 	if (kind === 'afk_watch' && afkWatchWarns(config)) return ['chat.send', 'whispers players'];
 	if (kind === 'bounty' && bountyReward(config) === 'slot')
@@ -594,6 +599,7 @@ export async function deleteTrigger(
  * off or deleted stops it), nor a change of the weather.
  */
 export const SETTINGS_KEYS: Partial<Record<string, (config: unknown) => string>> = {
+	ping_kick: pingSettingsKey,
 	two_teams: (c) => twoTeamsSettingsKey(c as TwoTeamsConfig),
 	kill_distance: (c) => killDistanceSettingsKey(c as KillDistanceConfig),
 	afk_protection: (c) => afkSettingsKey(c as AfkProtectionConfig),
@@ -864,7 +870,7 @@ export async function evaluateTriggers(
 		try {
 			switch (row.kind) {
 				case 'welcome':
-					await evalWelcome(ctx, row, row.config as WelcomeConfig, out, read);
+					await evalWelcome(env, ctx, row, row.config as WelcomeConfig, out, read);
 					break;
 				case 'faction_change':
 					await evalFactionChange(ctx, row, row.config as FactionChangeConfig, out, read);
@@ -940,6 +946,7 @@ export async function evaluateTriggers(
 const key = (row: TriggerRow, ...parts: (string | number)[]) => [row.id, ...parts].join(':');
 
 async function evalWelcome(
+	env: Env,
 	ctx: TickContext,
 	row: TriggerRow,
 	cfg: WelcomeConfig,
@@ -949,12 +956,35 @@ async function evalWelcome(
 	let n = 0;
 	let last = '';
 	const targets = welcomeTargets(cfg, ctx);
+	let cards = new Map<string, Record<string, string | number>>();
+	const cardRequested = usesWelcomeCard(cfg.message);
+	if (cardRequested && targets.length) {
+		try {
+			cards = await welcomeCardVars(
+				env,
+				ctx.server.id,
+				targets.map((p) => p.steamId)
+			);
+		} catch (err) {
+			console.warn(`[warcon] welcome card on ${ctx.server.id}:`, forLog(err));
+		}
+	}
 	const stats = await statsFor(
 		read,
 		targets.map((p) => ({ steamId: p.steamId, text: cfg.message }))
 	);
 	for (const p of targets) {
-		const message = renderTemplate(cfg.message, vars(ctx, p, statsOf(stats, p.steamId)), MAX_CHAT);
+		const fallback = Object.fromEntries(WELCOME_PLACEHOLDERS.map((name) => [name, '…']));
+		fallback.welcome_card = `Welcome to ${ctx.server.name}.\nSeason stats are temporarily unavailable.`;
+		fallback.server_label = ctx.server.name;
+		const message = renderTemplate(
+			cfg.message,
+			{
+				...vars(ctx, p, statsOf(stats, p.steamId)),
+				...(cardRequested ? (cards.get(p.steamId) ?? fallback) : {})
+			},
+			MAX_CHAT
+		);
 		out.intents.push({
 			trigger: row,
 			action: 'whisper',
@@ -1282,11 +1312,26 @@ async function evalPingKick(
 ) {
 	if (!ctx.playersObserved) return;
 	const previous = row.state as PingKickState | null;
+	if (ctx.players.length < (cfg.minPlayers ?? 0)) {
+		const state: PingKickState = { lastAt: ctx.ts.getTime(), players: {} };
+		row.state = state;
+		if (Object.keys(previous?.players ?? {}).length)
+			out.updates.push({
+				id: row.id,
+				state,
+				lastResult: `Paused: fewer than ${cfg.minPlayers} players`
+			});
+		return;
+	}
 	// A rule that spares reserved slots leaves their holders out, as if they were not on, so a
 	// streak they had ends. Until the worker has read the reserved list it cannot tell who they
 	// are and kicks nobody: a kick that falls due meanwhile waits for the read, its streak going on.
 	const waits = !!cfg.spareReserved && !ctx.reservedLoaded;
-	const { state, kicks: due } = pingKickStep(
+	const {
+		state,
+		kicks: due,
+		warnings: warningsDue
+	} = pingKickStep(
 		cfg,
 		previous,
 		cfg.spareReserved ? ctx.players.filter((p) => !ctx.reserved.has(p.steamId)) : ctx.players,
@@ -1294,7 +1339,14 @@ async function evalPingKick(
 		2 * Math.max(ctx.playersIntervalMs, 1000) + 1000
 	);
 	if (waits) for (const steamId of due) state.players[steamId].fired = false;
+	if (waits)
+		for (const { steamId } of warningsDue) {
+			const warned = previous?.players[steamId]?.warned;
+			if (warned === undefined) delete state.players[steamId].warned;
+			else state.players[steamId].warned = warned;
+		}
 	const kicks = waits ? [] : due;
+	const warnings = waits ? [] : warningsDue;
 	// The state is written with any intents, and kept in the cached row for the next poll.
 	row.state = state;
 	if (
@@ -1304,19 +1356,59 @@ async function evalPingKick(
 	)
 		out.updates.push({ id: row.id, state });
 	const kicked = new Set(kicks);
-	const stats = await statsFor(
-		read,
-		kicks.map((steamId) => ({ steamId, text: cfg.reason }))
-	);
+	const stats = await statsFor(read, [
+		...kicks.map((steamId) => ({ steamId, text: cfg.reason })),
+		...warnings.map(({ steamId }) => ({ steamId, text: cfg.warnMessage ?? '' }))
+	]);
+	const guard = (steamId: string) => ({
+		rule: pingSettingsKey(cfg),
+		since: state.players[steamId].since,
+		pingGuard: {
+			minPlayers: cfg.minPlayers ?? 0,
+			maxPingMs: cfg.maxPingMs,
+			spareReserved: !!cfg.spareReserved,
+			maxGapMs: 2 * Math.max(ctx.playersIntervalMs, 1000) + 1000
+		}
+	});
+	const pingVars = (p: Player, seconds?: number) => {
+		const elapsed = Math.floor((ctx.ts.getTime() - state.players[p.steamId].since) / 1000);
+		return {
+			...vars(ctx, p, statsOf(stats, p.steamId)),
+			limit: cfg.maxPingMs,
+			duration: cfg.durationSeconds,
+			elapsed,
+			remaining: Math.max(0, cfg.durationSeconds - elapsed),
+			warning: seconds === undefined ? 0 : (cfg.warningSeconds ?? []).indexOf(seconds) + 1,
+			warnings: cfg.warningSeconds?.length ?? 0
+		};
+	};
+	for (const { steamId, seconds } of warnings) {
+		const p = ctx.players.find((p) => p.steamId === steamId)!;
+		out.intents.push({
+			trigger: row,
+			action: 'whisper',
+			params: {
+				steamId,
+				message: renderTemplate(cfg.warnMessage ?? '', pingVars(p, seconds), MAX_CHAT),
+				...guard(steamId),
+				warningSeconds: seconds
+			},
+			target: steamId,
+			steamId,
+			okMessage: `Warned ${p.name}: high ping`,
+			detail: { name: p.name, pingMs: p.ping, warningSeconds: seconds },
+			dedupeKey: key(row, steamId, state.players[steamId].since, 'warning', seconds)
+		});
+	}
 	for (const p of ctx.players) {
 		if (!kicked.has(p.steamId)) continue;
 		const steamId = p.steamId;
 		const verdict = `ping ${p.ping} ms above ${cfg.maxPingMs} ms for ${cfg.durationSeconds} s`;
-		const reason = renderTemplate(cfg.reason, vars(ctx, p, statsOf(stats, steamId)), MAX_REASON);
+		const reason = renderTemplate(cfg.reason, pingVars(p), MAX_REASON);
 		out.intents.push({
 			trigger: row,
 			action: 'kick',
-			params: { steamId, reason },
+			params: { steamId, reason, ...guard(steamId) },
 			target: steamId,
 			okMessage: `Kicked ${p.name}: ${verdict}`,
 			detail: { name: p.name, pingMs: p.ping, verdict },
@@ -1336,7 +1428,14 @@ async function evalPingKick(
 		};
 	// Said on the rule while a kick waits, so a server whose reserved slots cannot be read is not
 	// silently idle; it rides on the state write the streak makes anyway.
-	else if (waits && due.length)
+	else if (warnings.length)
+		out.updates[out.updates.length - 1] = {
+			id: row.id,
+			state,
+			lastFiredAt: ctx.ts,
+			lastResult: `Warning ${warnings.length} player${warnings.length === 1 ? '' : 's'}: high ping`
+		};
+	else if (waits && (due.length || warningsDue.length))
 		out.updates[out.updates.length - 1] = {
 			id: row.id,
 			state,
@@ -2461,13 +2560,28 @@ export async function dryRun(
 	if (kind === 'welcome') {
 		const c = cfg as WelcomeConfig;
 		const rows = await joins(c.afterFaction);
+		const cardRequested = usesWelcomeCard(c.message);
+		const previewVars = Object.fromEntries(WELCOME_PLACEHOLDERS.map((name) => [name, '…']));
+		previewVars.welcome_card = 'Season welcome card (personalised when delivered)';
+		previewVars.server_label = server.name;
 		for (const j of rows) {
 			if (c.onlyFirstVisit && !j.first) continue;
 			push(
 				new Date(j.joinedAt),
-				`whisper ${j.name}: ${renderTemplate(c.message, dryRunVars(server.name, { name: j.name, steamId: j.steamId }), MAX_CHAT)}`
+				`whisper ${j.name}: ${renderTemplate(
+					c.message,
+					{
+						...dryRunVars(server.name, { name: j.name, steamId: j.steamId }),
+						...(cardRequested ? previewVars : {})
+					},
+					MAX_CHAT
+				)}`
 			);
 		}
+		if (cardRequested)
+			result.notes.push(
+				'Season statistics are filled privately when the welcome is delivered; this replay does not reconstruct or disclose them.'
+			);
 		result.notes.push(
 			c.onlyFirstVisit
 				? 'Only joiners never seen on this server before count.'

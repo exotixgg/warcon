@@ -926,6 +926,8 @@
 		scope="server"
 		reason={reason.trim()}
 		banMessage={d.banDialog?.message ?? null}
+		banPolicy={d.banDialog?.banPolicy ?? null}
+		originServers={d.banDialog?.servers ?? []}
 		reasons={d.banDialog?.reasons ?? []}
 		onclose={() => (banning = false)}
 		ondone={() => {

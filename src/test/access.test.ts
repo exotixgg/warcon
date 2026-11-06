@@ -1283,6 +1283,24 @@ describe.skipIf(!hasTestDb)('access', () => {
 			}
 		});
 
+		test('a High ping rule with warnings requires both Kick and Chat', async () => {
+			const w = await seedWorld(env);
+			for (const caps of [['players.kick'], ['chat.send'], ['players.kick', 'chat.send']]) {
+				await env.db
+					.update(orgRoles)
+					.set({ capabilities: ['server.view', 'automation.manage', ...caps] })
+					.where(eq(orgRoles.id, w.roles.viewer));
+				const response = await api(w, 'viewer', 'POST api/servers/[id]/triggers', {
+					params: { id: w.server.id },
+					body: {
+						kind: 'ping_kick',
+						config: { warningSeconds: [15, 30, 45], warnMessage: 'High ping {ping}' }
+					}
+				});
+				expect(response.status).toBe(caps.length === 2 ? 201 : 403);
+			}
+		});
+
 		test('an AFK watch rule that warns needs Chat as well', async () => {
 			const w = await seedWorld(env);
 			const params = { id: w.server.id };
