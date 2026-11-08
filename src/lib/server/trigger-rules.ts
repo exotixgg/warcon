@@ -2,6 +2,7 @@
 // kick-on-connect verdict. No database, no game server, so it is unit-testable on its own;
 // triggers.ts holds the engine that runs these against live ticks.
 import { ApiError, int, str } from './http';
+import { validateSeedNotices, type SeedNoticeConfig } from './seeding-messages';
 import { accountAgeDays, assessRisk, RISK_HIGH, RISK_MEDIUM, type RiskPerformance } from './risk';
 import { validateNameFilter, type NameFilterConfig } from './name-filter';
 import { validateKillRate, type KillRateConfig } from './kill-rate';
@@ -229,7 +230,7 @@ export type SeedScope = 'server' | 'org';
  * `slotDays`, on this server alone or across the organisation. `message` is whispered on the
  * grant ('' for none). Rules saved before `scope` existed have none and hand out org-wide slots.
  */
-export interface SeedRewardConfig {
+export interface SeedRewardConfig extends SeedNoticeConfig {
 	scope?: SeedScope;
 	lowAt: number;
 	/** count seed time only once the server has filled with the player still on */
@@ -304,7 +305,7 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 	const c = { ...(raw && typeof raw === 'object' ? raw : {}) } as Record<string, unknown>;
 	for (const field of MESSAGE_RULES[kind]?.fields ?? []) {
 		if (c[field] === undefined || c[field] === null) continue;
-		if (field === 'messages') {
+		if (field === 'messages' || field === 'noticeMessages') {
 			const list = Array.isArray(c[field]) ? c[field] : String(c[field]).split('\n');
 			c[field] = (list as unknown[]).map(normalizeAutomationMessage);
 		} else c[field] = normalizeAutomationMessage(c[field]);
@@ -451,6 +452,8 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 			};
 		}
 		case 'seed_reward': {
+			if (c.noticeEnabled && c.untilFull === false)
+				throw new ApiError(400, 'Seeding cards require crediting time when the server fills.');
 			const minutes = int(c.minutes, 0, 0, 90 * 1440);
 			if (!minutes) throw new ApiError(400, 'Set how many minutes of seeding earn the slot.');
 			const windowDays = int(c.windowDays, 7, 1, 90);
@@ -474,7 +477,8 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 				minutes,
 				windowDays,
 				slotDays: int(c.slotDays, 7, 1, 365),
-				message: str(c.message, MAX_CHAT)
+				message: str(c.message, MAX_CHAT),
+				...(c.noticeEnabled === undefined ? {} : validateSeedNotices(c))
 			};
 		}
 		case 'match_broadcast': {

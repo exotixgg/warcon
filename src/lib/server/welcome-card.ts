@@ -94,7 +94,7 @@ function emptyVars(serverLabel = '-'): WelcomeCardVars {
 	};
 }
 
-async function scopeFor(env: Env, serverId: string): Promise<Scope | null> {
+export async function scopeFor(env: Env, serverId: string): Promise<Scope | null> {
 	const rows = await env.db.execute<{ orgId: string; serverName: string; id: string }>(sql`
 		WITH me AS (SELECT id, org_id, name FROM servers WHERE id = ${serverId})
 		SELECT me.org_id AS "orgId", me.name AS "serverName", s.id
