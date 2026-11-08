@@ -575,7 +575,8 @@ export const playerSessions = pgTable(
 		cash: integer('cash').notNull().default(0),
 		/** seconds of this session spent with the player count at or under the server's seeding
 		 *  threshold (0 while no seeding rule is on); what a Seeding reward rule adds up */
-		seedSeconds: integer('seed_seconds').notNull().default(0)
+		seedSeconds: integer('seed_seconds').notNull().default(0),
+		pendingSeedSeconds: integer('pending_seed_seconds').notNull().default(0)
 	},
 	// last_seen has no index on purpose: the heartbeat rewrites it for everyone online every 30 s,
 	// and an indexed column would make each of those rewrites a new entry in every index. A read of
