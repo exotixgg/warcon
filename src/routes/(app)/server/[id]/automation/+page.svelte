@@ -1188,7 +1188,11 @@
 					c.spareReserved && 'reserved slots',
 					exempt && `${exempt} player${exempt === 1 ? '' : 's'}`
 				].filter(Boolean);
-				return `${count} message${count === 1 ? '' : 's'} · each player at most every ${c.cooldownMinutes} min · at least ${c.minPlayers} on${spares.length ? ` · spares ${spares.join(' and ')}` : ''}`;
+				const timing =
+					c.cooldownMinutes === 0
+						? 'every death'
+						: `each player at most every ${c.cooldownMinutes} min`;
+				return `${count} message${count === 1 ? '' : 's'} · ${timing} · at least ${c.minPlayers} on${spares.length ? ` · spares ${spares.join(' and ')}` : ''}`;
 			}
 			case 'broadcast':
 				return `${(c.messages as string[]).length} message${(c.messages as string[]).length === 1 ? '' : 's'} every ${c.everyMinutes} min · ${typeof c.maxPlayers === 'number' ? `${c.minPlayers} to ${c.maxPlayers}` : `at least ${c.minPlayers}`} on`;
@@ -1858,7 +1862,9 @@
 						<legend class="field-label">Whispers, one per line, one picked at random</legend>
 						<textarea class="min-h-[100px] input" bind:value={f.messages} required></textarea>
 						<p class="note">
-							One physical line is one choice. Use a JSON string with <code>\n</code> inside a choice.
+							One physical line is one choice. Use a JSON string with <code>\n</code> inside a
+							choice. Use <code>{'{death_summary}'}</code> for a compact killer, weapon and distance line
+							that leaves out missing details.
 						</p>
 						{@render placeholders('death_whisper', [f.messages])}
 					</fieldset>
@@ -1869,13 +1875,13 @@
 							<input
 								class="input w-20 text-right"
 								type="number"
-								min="1"
+								min="0"
 								max="1440"
 								bind:value={f.cooldownMinutes}
 								aria-label="At most once every, minutes"
 								required
 							/>
-							min to each player
+							min to each player (0 sends on every death)
 						</div>
 						<div class="flex flex-wrap items-center gap-x-2 gap-y-1.5">
 							while at least
