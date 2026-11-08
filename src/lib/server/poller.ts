@@ -172,6 +172,7 @@ export async function stopPoller(): Promise<void> {
 export function observeSoon(serverId: string, opts?: { lists?: boolean }): void {
 	const m = memoryOf(serverId);
 	if (!m) return;
+	m.messageRotation = null;
 	if (opts?.lists) m.listsAt = 0;
 	if (m.inFlight !== null) m.again = true;
 	else {
