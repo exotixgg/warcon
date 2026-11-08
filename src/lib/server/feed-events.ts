@@ -1018,6 +1018,7 @@ function killerVars(env: Env, serverId: string) {
 			server: serverVars({
 				name: m?.server.name ?? '',
 				status: m?.status ?? null,
+				rotation: m?.messageRotation,
 				startedAt: m?.startedAt ?? 0,
 				now: Date.now()
 			}),
