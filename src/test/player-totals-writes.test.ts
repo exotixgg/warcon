@@ -825,7 +825,7 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 				// a negative streak merged the 0038 way where 0038 is in: a session closed first (the
 				// pair's row has no match yet), then a match ended with the player's line at -1
 				const [late] = await db
-					.insert(playerSessions)
+					.insert(legacySessions)
 					.values(s('a', S, 4.5, null, 10))
 					.returning({ id: playerSessions.id });
 				await db.execute(
