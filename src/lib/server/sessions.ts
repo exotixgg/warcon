@@ -90,7 +90,7 @@ export async function loadPresence(
 			cash: r.cash,
 			game: null,
 			seedMs: r.seedSeconds * 1000,
-			pendingSeedMs: 0,
+			pendingSeedMs: r.pendingSeedSeconds * 1000,
 			joinedAt: r.joinedAt.getTime(),
 			lastSeen: r.lastSeen.getTime(),
 			writtenAt: r.lastSeen.getTime(),
@@ -261,7 +261,7 @@ export async function persistPresence(
 		await db.execute(sql`
 			UPDATE player_sessions AS s SET left_at = v.left_at, last_seen = v.left_at,
 			       name = v.name, faction = v.faction, kills = v.kills, deaths = v.deaths, cash = v.cash,
-			       seed_seconds = v.seed_seconds
+			       seed_seconds = v.seed_seconds, pending_seed_seconds = v.pending_seed_seconds
 			  FROM jsonb_to_recordset(${json(
 					diff.left.map((s) => ({
 						id: s.id,
@@ -271,9 +271,10 @@ export async function persistPresence(
 						kills: s.kills,
 						deaths: s.deaths,
 						cash: s.cash,
-						seed_seconds: Math.round(s.seedMs / 1000)
+						seed_seconds: Math.round(s.seedMs / 1000),
+						pending_seed_seconds: 0
 					}))
-				)}) AS v(id bigint, left_at timestamptz, name text, faction text, kills int, deaths int, cash int, seed_seconds int)
+				)}) AS v(id bigint, left_at timestamptz, name text, faction text, kills int, deaths int, cash int, seed_seconds int, pending_seed_seconds int)
 			 WHERE s.id = v.id AND s.left_at IS NULL`);
 		for (const s of diff.left) presence.open.delete(s.steamId);
 	}
@@ -324,7 +325,7 @@ export async function persistPresence(
 		await db.execute(sql`
 			UPDATE player_sessions AS s SET last_seen = v.last_seen,
 			       name = v.name, faction = v.faction, kills = v.kills, deaths = v.deaths, cash = v.cash,
-			       seed_seconds = v.seed_seconds
+			       seed_seconds = v.seed_seconds, pending_seed_seconds = v.pending_seed_seconds
 			  FROM jsonb_to_recordset(${json(
 					diff.stayed.map(({ session: s }) => ({
 						id: s.id,
@@ -334,9 +335,10 @@ export async function persistPresence(
 						kills: s.kills,
 						deaths: s.deaths,
 						cash: s.cash,
-						seed_seconds: Math.round(s.seedMs / 1000)
+						seed_seconds: Math.round(s.seedMs / 1000),
+						pending_seed_seconds: Math.round(s.pendingSeedMs / 1000)
 					}))
-				)}) AS v(id bigint, last_seen timestamptz, name text, faction text, kills int, deaths int, cash int, seed_seconds int)
+				)}) AS v(id bigint, last_seen timestamptz, name text, faction text, kills int, deaths int, cash int, seed_seconds int, pending_seed_seconds int)
 			 WHERE s.id = v.id AND s.left_at IS NULL`);
 		for (const { session: s } of diff.stayed) {
 			s.writtenAt = now;

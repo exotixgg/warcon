@@ -3,6 +3,7 @@
 	import { invalidate, invalidateAll } from '$app/navigation';
 	import { api, errorMessage } from '$lib/api';
 	import { MAX_CHAT } from '$lib/chat';
+	import { SEED_NOTICE_MESSAGES, SEED_COMPLETE_MESSAGE } from '$lib/seeding-messages';
 	import { automationMessageEditorValue, automationPoolEditorValue } from '$lib/automation-message';
 	import { fmtAgo, fmtSpan, fmtTime, lightingLabel, mapLabel } from '$lib/format';
 	import { can } from '$lib/capabilities';
@@ -502,6 +503,12 @@
 	);
 
 	interface Form {
+		noticeEnabled: boolean;
+		noticeDelaySeconds: number;
+		noticeEveryMinutes: number;
+		noticeStartPlayers: number;
+		noticeMessages: string;
+		noticeCompleteMessage: string;
 		id: string | null;
 		kind: TriggerKind;
 		name: string;
@@ -719,6 +726,17 @@
 		const bountyReward: Form['bountyReward'] =
 			c.reward === 'none' || (!t && !canSlotHere && !canSlotOrg) ? 'none' : 'slot';
 		form = {
+			noticeEnabled: b('noticeEnabled', false),
+			noticeDelaySeconds: n('noticeDelaySeconds', 60),
+			noticeEveryMinutes: n('noticeEveryMinutes', 5),
+			noticeStartPlayers: n('noticeStartPlayers', 20),
+			noticeMessages: automationPoolEditorValue(
+				Array.isArray(c.noticeMessages) ? (c.noticeMessages as string[]) : SEED_NOTICE_MESSAGES
+			),
+			noticeCompleteMessage: s(
+				'noticeCompleteMessage',
+				automationMessageEditorValue(SEED_COMPLETE_MESSAGE)
+			),
 			id: copy ? null : (t?.id ?? null),
 			kind,
 			name: t ? (copy ? `${t.name} (copy)` : t.name) : label(kind),
@@ -1067,6 +1085,15 @@
 				};
 			case 'seed_reward':
 				return {
+					noticeEnabled: f.noticeEnabled,
+					noticeDelaySeconds: Number(f.noticeDelaySeconds),
+					noticeEveryMinutes: Number(f.noticeEveryMinutes),
+					noticeStartPlayers: Number(f.noticeStartPlayers),
+					noticeMessages: f.noticeMessages
+						.split('\n')
+						.map((x) => x.trim())
+						.filter(Boolean),
+					noticeCompleteMessage: f.noticeCompleteMessage,
 					lowAt: Number(f.lowAt),
 					untilFull: f.untilFull,
 					fullAt: typeof f.fullAt === 'number' ? f.fullAt : null,
@@ -1859,7 +1886,9 @@
 					</p>
 				{:else if f.kind === 'death_whisper'}
 					<fieldset class="space-y-2">
-						<legend class="field-label">Whispers, one per line, one picked at random</legend>
+						<legend class="field-label"
+							>Whispers · up to 100, one per line, one picked at random</legend
+						>
 						<textarea class="min-h-[100px] input" bind:value={f.messages} required></textarea>
 						<p class="note">
 							One physical line is one choice. Use a JSON string with <code>\n</code> inside a
@@ -3334,6 +3363,75 @@
 						next round.
 					</p>
 				{:else if f.kind === 'seed_reward'}
+					<fieldset class="space-y-3 text-[13px]">
+						<legend class="field-label">Seeding messages</legend>
+						<label class="flex items-center gap-2"
+							><input type="checkbox" bind:checked={f.noticeEnabled} disabled={!canChat} /> Send private
+							seeding cards</label
+						>
+						{#if f.noticeEnabled}
+							<div class="flex flex-wrap items-center gap-2">
+								First card <input
+									class="input w-20"
+									type="number"
+									min="10"
+									max="600"
+									bind:value={f.noticeDelaySeconds}
+									aria-label="Seeding message delay, seconds"
+									required
+								/> seconds after first faction pick / welcome.
+							</div>
+							<div class="flex flex-wrap items-center gap-2">
+								Repeat every <input
+									class="input w-20"
+									type="number"
+									min="1"
+									max="120"
+									bind:value={f.noticeEveryMinutes}
+									aria-label="Seeding reminder interval, minutes"
+									required
+								/>
+								minutes while waiting for
+								<input
+									class="input w-20"
+									type="number"
+									min="1"
+									max="1000"
+									bind:value={f.noticeStartPlayers}
+									aria-label="Players needed to start the round"
+									required
+								/> players.
+							</div>
+							<label class="block space-y-1"
+								><span class="field-label">Message pool · up to 20, one per line</span><textarea
+									class="min-h-40 input font-mono text-xs"
+									bind:value={f.noticeMessages}
+									rows="6"></textarea></label
+							>
+							<p class="note">
+								The first message is sent once after faction pick. Later messages rotate in order
+								only while waiting for players; no repeated cards during play. JSON strings support
+								line breaks. Rates and reward information are editable text, not a calculated
+								balance.
+							</p>
+							<label class="block space-y-1"
+								><span class="field-label">Time credited card · blank for none</span><textarea
+									class="input font-mono text-xs"
+									bind:value={f.noticeCompleteMessage}
+									rows="3"
+									maxlength={RAW_MESSAGE_INPUT_MAX}></textarea></label
+							>
+							{@render placeholders('seed_reward', [
+								...f.noticeMessages.split('\n'),
+								f.noticeCompleteMessage
+							])}
+							<p class="note">
+								Session includes pending time. Season and All are credited totals across the
+								organisation. Pending time is credited at the filled target below, while the player
+								stays connected.
+							</p>
+						{/if}
+					</fieldset>
 					<fieldset class="space-y-1.5 text-[13px]">
 						<legend class="field-label">Counts as seeding</legend>
 						<div class="flex flex-wrap items-center gap-2">

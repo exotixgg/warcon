@@ -113,6 +113,8 @@ import {
 	type WelcomeConfig
 } from './trigger-rules';
 import { MAX_CHAT } from '$lib/chat';
+import { evalSeedNotices } from './seeding-notices';
+import type { SeedSession } from './seeding-messages';
 import { usesWelcomeCard, WELCOME_PLACEHOLDERS } from '$lib/placeholders';
 import { welcomeCardVars } from './welcome-card';
 import { notifyBounty, type BountyCard } from './webhook-delivery';
@@ -397,6 +399,8 @@ export function ruleNeeds(kind: TriggerKind, config: unknown): [Capability, stri
  * its warning.
  */
 function ruleAlsoNeeds(kind: TriggerKind, config: unknown): [Capability, string] | null {
+	if (kind === 'seed_reward' && (config as SeedRewardConfig)?.noticeEnabled)
+		return ['chat.send', 'whispers players'];
 	if (kind === 'ping_kick' && (config as PingKickConfig)?.warningSeconds?.length)
 		return ['chat.send', 'whispers players'];
 	if (kind === 'kill_distance' && killDistanceAction(config) === 'kill') return RULE_KILL_NEEDS[1];
@@ -658,6 +662,8 @@ export interface TickContext {
 	reservedLoaded: boolean;
 	/** seed time so far of the open sessions, by SteamID (empty while no seeding rule is on) */
 	seedMs: Map<string, number>;
+	seedSessions?: SeedSession[];
+	matchPhase?: string;
 	/** pre-fetched for risk rules: the panel's own signals and Steam profiles of riskCheck */
 	signals: Map<string, LocalSignals>;
 	profiles: Map<string, SteamProfileRow>;
@@ -901,6 +907,7 @@ export async function evaluateTriggers(
 					// Acted on as kills arrive (feed-events.ts), not per observation.
 					break;
 				case 'seed_reward':
+					await evalSeedNotices(env, ctx, row, row.config as SeedRewardConfig, out);
 					await evalSeedReward(env, ctx, row, row.config as SeedRewardConfig, out, read);
 					break;
 				case 'match_broadcast':
@@ -3434,6 +3441,10 @@ export async function dryRun(
 	}
 	if (kind === 'seed_reward') {
 		const c = cfg as SeedRewardConfig;
+		if (c.noticeEnabled)
+			result.notes.push(
+				'Seeding cards are not replayed: their timing uses live faction picks, welcome delivery and match phases.'
+			);
 		// A sample is written at least every sampleMs while the worker is up; a longer gap is
 		// time nobody was watching, and the live rule would not have credited it either.
 		const stretches = lowStretches(
