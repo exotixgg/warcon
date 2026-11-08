@@ -1,3 +1,4 @@
+import { legacySessions } from './legacy-sessions';
 // The totals' triggers (migrations 0038 and 0039) under the writes the random histories do not
 // reach, each checked against the all-time reads and the ranged ones (the day rows, from every
 // midnight of the history and a millisecond either side): one statement that closes a session and
@@ -758,7 +759,7 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 					seedSeconds: from * 10
 				});
 				await db
-					.insert(playerSessions)
+					.insert(legacySessions)
 					.values([
 						s('a', P, 0, 1.5, 500),
 						s('a', P, 2, 3.25, 700),
