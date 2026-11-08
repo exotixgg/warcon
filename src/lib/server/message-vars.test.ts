@@ -249,7 +249,13 @@ describe('the catalogue and the rules’ settings', () => {
 		team_kill: { warnAt: 1, warnMessage: 'a', kickAt: 2, kickReason: 'b' },
 		two_teams: { closedFaction: 'Lonestar', message: 'a' },
 		kill_distance: { causes: ['Id.Item.Defibrillator.Standard'], action: 'kick', reason: 'a' },
-		seed_reward: { minutes: 30, message: 'a' },
+		seed_reward: {
+			minutes: 30,
+			message: 'a',
+			noticeEnabled: true,
+			noticeMessages: ['b'],
+			noticeCompleteMessage: 'c'
+		},
 		afk_protection: { message: 'a', doneMessage: 'b' },
 		name_change: { action: 'kick', reason: 'a' }
 	};

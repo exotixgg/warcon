@@ -132,7 +132,22 @@ export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> 
 		player: true,
 		kept: true
 	},
-	seed_reward: { fields: ['message'], own: ['minutes', 'until', 'days'], player: true },
+	seed_reward: {
+		fields: ['message', 'noticeMessages', 'noticeCompleteMessage'],
+		own: [
+			'minutes',
+			'until',
+			'days',
+			'seed_session',
+			'seed_pending',
+			'seed_season',
+			'seed_all',
+			'seed_credited_now',
+			'seed_target',
+			'round_start_players'
+		],
+		player: true
+	},
 	afk_protection: { fields: ['message', 'doneMessage'], own: ['goal'], player: false },
 	// the name the player had before the change
 	name_change: { fields: ['reason'], own: ['previous'], player: true },

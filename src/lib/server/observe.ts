@@ -79,7 +79,7 @@ import { cashByFaction } from '$lib/cash';
 import { keepName } from './live-name-write';
 import type { NameMemory } from './live-name';
 import { takeFeedEnd, withFeedEnd, type ClosedMatch, type FeedEnd } from './match-feed';
-import { matchStateOf } from '$lib/match-state';
+import { matchStateOf, currentState } from '$lib/match-state';
 import type { Features, LiveView, MatchStateView, Player, Status } from '$lib/types';
 
 export type Tier = LiveView['tier'];
@@ -663,10 +663,12 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	// still on; leaving first forfeits it, so sitting on an empty server that never fills earns
 	// nothing. In between, pending waits. A server that reports no limit never fills on its own.
 	const seed = seedRule(rows);
+	const seedCredits = new Map<string, number>();
 	if (players && seed) {
 		const fullAt = seed.fullAt ?? (m.status?.maxPlayers || Infinity);
 		if (players.length >= fullAt)
 			for (const { session } of diff.stayed) {
+				if (session.pendingSeedMs > 0) seedCredits.set(session.steamId, session.pendingSeedMs);
 				session.seedMs += session.pendingSeedMs;
 				session.pendingSeedMs = 0;
 			}
@@ -677,7 +679,8 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	}
 
 	const s = settings();
-	const heartbeatDue = started - m.presence.heartbeatAt >= s.sessionHeartbeatMs;
+	const heartbeatDue =
+		seedCredits.size > 0 || started - m.presence.heartbeatAt >= s.sessionHeartbeatMs;
 	const liveKey = liveKeyOf(m);
 	const liveDue = liveKey !== m.liveKey || started - m.liveWrittenAt >= LIVE_HEARTBEAT_MS;
 	const sampleKey = sampleKeyOf(m);
@@ -719,6 +722,26 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 							seed === null
 								? new Map()
 								: new Map([...m.presence.open.values()].map((s) => [s.steamId, s.seedMs])),
+						seedSessions: [...m.presence.open.values()]
+							.filter((session) => !diff.left.some((s) => s.id === session.id))
+							.map((session) => {
+								const p = m.players.find((p) => p.steamId === session.steamId);
+								return {
+									id: session.id,
+									steamId: session.steamId,
+									joinedAt: session.joinedAt,
+									hasFaction: !!p?.faction && !!teams?.includes(p.faction),
+									seedMs: session.seedMs,
+									pendingSeedMs: session.pendingSeedMs,
+									creditedNowMs: seedCredits.get(session.steamId) ?? 0
+								};
+							}),
+						matchPhase:
+							currentState({
+								ok: !!m.status,
+								startedAt: m.startedAt ? new Date(m.startedAt).toISOString() : null,
+								matchState: m.matchState
+							})?.state ?? '',
 						signals: risk.signals,
 						profiles: risk.profiles,
 						performance: risk.performance,
