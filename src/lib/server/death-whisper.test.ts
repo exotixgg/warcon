@@ -78,19 +78,19 @@ describe('settings', () => {
 		expect(c.messages).toEqual(['first\nline', 'x'.repeat(255), 'same', 'tab here']);
 	});
 
-	test('refused: no message or more than 20; cooldown can be disabled and numbers are clamped', () => {
+	test('refused: no message or more than 100; cooldown can be disabled and numbers are clamped', () => {
 		expect(refused({ messages: [] })).toBe('Add at least one message to whisper.');
 		expect(refused({ messages: ['', '  '] })).toBe('Add at least one message to whisper.');
-		expect(refused({ messages: Array.from({ length: 21 }, (_, i) => `m${i}`) })).toBe(
-			'A rule holds at most 20 messages.'
+		expect(refused({ messages: Array.from({ length: 101 }, (_, i) => `m${i}`) })).toBe(
+			'A rule holds at most 100 messages.'
 		);
 		expect(validateDeathWhisper({ messages: ['a'], cooldownMinutes: 0 }).cooldownMinutes).toBe(0);
 		expect(validateDeathWhisper({ messages: ['a'], cooldownMinutes: -5 }).cooldownMinutes).toBe(0);
 		const c = validateDeathWhisper({ messages: ['a'], cooldownMinutes: 9999, minPlayers: 5000 });
 		expect([c.cooldownMinutes, c.minPlayers]).toEqual([1440, 1000]);
 		expect(
-			validateDeathWhisper({ messages: Array.from({ length: 20 }, (_, i) => `m${i}`) }).messages
-		).toHaveLength(20);
+			validateDeathWhisper({ messages: Array.from({ length: 100 }, (_, i) => `m${i}`) }).messages
+		).toHaveLength(100);
 	});
 
 	test('its list: SteamID64 strings only, up to 100', () => {

@@ -15,7 +15,7 @@ import { MAX_CHAT } from '$lib/chat';
 import { canonical } from '$lib/placeholders';
 import type { MessageVars } from './message-vars';
 
-export const DEATH_WHISPER_MAX_MESSAGES = 20;
+export const DEATH_WHISPER_MAX_MESSAGES = 100;
 export const DEATH_WHISPER_DEFAULT_COOLDOWN = 30;
 export const DEATH_WHISPER_MAX_COOLDOWN = 24 * 60;
 /** Players a rule leaves alone, as many as the Name filter's. */
