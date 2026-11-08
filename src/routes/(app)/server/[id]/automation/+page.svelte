@@ -1886,7 +1886,9 @@
 					</p>
 				{:else if f.kind === 'death_whisper'}
 					<fieldset class="space-y-2">
-						<legend class="field-label">Whispers, one per line, one picked at random</legend>
+						<legend class="field-label"
+							>Whispers · up to 100, one per line, one picked at random</legend
+						>
 						<textarea class="min-h-[100px] input" bind:value={f.messages} required></textarea>
 						<p class="note">
 							One physical line is one choice. Use a JSON string with <code>\n</code> inside a

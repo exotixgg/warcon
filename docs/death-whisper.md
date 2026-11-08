@@ -19,8 +19,17 @@ line, for example:
 "{death_summary}\n\nCOMMUNITY\nJoin discord.gg/exotix."
 ```
 
-EXOTIX's initial 20 entries are configured in the rule, not hardcoded in the
-application. They cover seeding (4), VIP (3), favourites (3), Discord (3), teammates
-(2), reports (2), the website (2), and feedback (1). The initial configuration has
-no cooldown, no population minimum, and no reserved-slot or individual exemptions.
-All 20 entries fit the 256-character transport budget with the bounded header.
+A rule accepts up to **100 distinct messages**. Larger pools are rejected rather
+than silently truncated. The random rotation and per-player cooldown work the
+same way regardless of pool size.
+
+EXOTIX's messages are configured in the rule, not hardcoded in the application.
+The expanded pool keeps the existing proportions: seeding 20%, VIP 15%, favourites
+10%, other servers 5%, Discord 15%, teammates 10%, reports 10%, website 10% and
+feedback 5%. Playful lines and occasional Exi remarks introduce the same practical
+calls to action. VIP III promotions include custom join announcements; implementing
+that separate automation is outside this pool-capacity change.
+
+The deployed pool's delivery policy is configured separately: a 10-minute
+cooldown and exclusion of active reserved-slot holders. A card's body must fit
+in the 178 characters left after the bounded header and blank line.
