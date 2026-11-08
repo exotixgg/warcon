@@ -78,23 +78,19 @@ describe('settings', () => {
 		expect(c.messages).toEqual(['first\nline', 'x'.repeat(255), 'same', 'tab here']);
 	});
 
-	test('refused: no message, more than 20, no cooldown; numbers clamped', () => {
+	test('refused: no message or more than 100; cooldown can be disabled and numbers are clamped', () => {
 		expect(refused({ messages: [] })).toBe('Add at least one message to whisper.');
 		expect(refused({ messages: ['', '  '] })).toBe('Add at least one message to whisper.');
-		expect(refused({ messages: Array.from({ length: 21 }, (_, i) => `m${i}`) })).toBe(
-			'A rule holds at most 20 messages.'
+		expect(refused({ messages: Array.from({ length: 101 }, (_, i) => `m${i}`) })).toBe(
+			'A rule holds at most 100 messages.'
 		);
-		expect(refused({ messages: ['a'], cooldownMinutes: 0 })).toBe(
-			'cooldownMinutes must be 1-1440.'
-		);
-		expect(refused({ messages: ['a'], cooldownMinutes: -5 })).toBe(
-			'cooldownMinutes must be 1-1440.'
-		);
+		expect(validateDeathWhisper({ messages: ['a'], cooldownMinutes: 0 }).cooldownMinutes).toBe(0);
+		expect(validateDeathWhisper({ messages: ['a'], cooldownMinutes: -5 }).cooldownMinutes).toBe(0);
 		const c = validateDeathWhisper({ messages: ['a'], cooldownMinutes: 9999, minPlayers: 5000 });
 		expect([c.cooldownMinutes, c.minPlayers]).toEqual([1440, 1000]);
 		expect(
-			validateDeathWhisper({ messages: Array.from({ length: 20 }, (_, i) => `m${i}`) }).messages
-		).toHaveLength(20);
+			validateDeathWhisper({ messages: Array.from({ length: 100 }, (_, i) => `m${i}`) }).messages
+		).toHaveLength(100);
 	});
 
 	test('its list: SteamID64 strings only, up to 100', () => {
@@ -121,7 +117,12 @@ describe('settings', () => {
 		// a whisper goes within seconds: nothing queued is dropped on an edit, no read at delivery
 		expect(SETTINGS_KEYS.death_whisper).toBeUndefined();
 		// its own placeholders, and the player's, their stats here and across the org, the server's
-		expect(MESSAGE_RULES.death_whisper?.own).toEqual(['killer', 'weapon', 'distance']);
+		expect(MESSAGE_RULES.death_whisper?.own).toEqual([
+			'killer',
+			'weapon',
+			'distance',
+			'death_summary'
+		]);
 		expect(placeholdersFor('death_whisper').map((g) => g.key)).toEqual([
 			'own',
 			'player',
@@ -304,7 +305,12 @@ describe('its own placeholders', () => {
 		});
 
 	test('who killed the player, with what, from how far', () => {
-		expect(kill()).toEqual({ killer: 'Ghost', weapon: 'AK74', distance: 153 });
+		expect(kill()).toEqual({
+			killer: 'Ghost',
+			weapon: 'AK74',
+			distance: 153,
+			death_summary: 'Killed by Ghost | AK74 | 153m'
+		});
 		expect(kill({ killer: { steamId: B, name: '' } }).killer).toBe(B);
 	});
 

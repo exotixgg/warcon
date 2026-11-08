@@ -32,6 +32,8 @@ export const WELCOME_PLACEHOLDERS = [
 	'season_seeded',
 	'season_cash',
 	'season_rival',
+	'season_rival_kills',
+	'season_rival_deaths',
 	'leader_kills_name',
 	'leader_kills_value',
 	'leader_cash_name',
@@ -100,7 +102,11 @@ export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> 
 	welcome: { fields: ['message'], own: WELCOME_PLACEHOLDERS, player: true },
 	faction_change: { fields: ['message'], own: ['previous'], player: true },
 	// who killed the player, with what, from how far: blank where it does not apply (a fall)
-	death_whisper: { fields: ['messages'], own: ['killer', 'weapon', 'distance'], player: true },
+	death_whisper: {
+		fields: ['messages'],
+		own: ['killer', 'weapon', 'distance', 'death_summary'],
+		player: true
+	},
 	broadcast: { fields: ['messages'], own: [], player: false },
 	restart_notice: { fields: ['leadMessage', 'message'], own: ['minutes'], player: false },
 	// the result of the match that ended, and from its players' lines the best of them
@@ -126,7 +132,22 @@ export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> 
 		player: true,
 		kept: true
 	},
-	seed_reward: { fields: ['message'], own: ['minutes', 'until', 'days'], player: true },
+	seed_reward: {
+		fields: ['message', 'noticeMessages', 'noticeCompleteMessage'],
+		own: [
+			'minutes',
+			'until',
+			'days',
+			'seed_session',
+			'seed_pending',
+			'seed_season',
+			'seed_all',
+			'seed_credited_now',
+			'seed_target',
+			'round_start_players'
+		],
+		player: true
+	},
 	afk_protection: { fields: ['message', 'doneMessage'], own: ['goal'], player: false },
 	// the name the player had before the change
 	name_change: { fields: ['reason'], own: ['previous'], player: true },

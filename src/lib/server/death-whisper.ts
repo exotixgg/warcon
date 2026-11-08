@@ -15,7 +15,7 @@ import { MAX_CHAT } from '$lib/chat';
 import { canonical } from '$lib/placeholders';
 import type { MessageVars } from './message-vars';
 
-export const DEATH_WHISPER_MAX_MESSAGES = 20;
+export const DEATH_WHISPER_MAX_MESSAGES = 100;
 export const DEATH_WHISPER_DEFAULT_COOLDOWN = 30;
 export const DEATH_WHISPER_MAX_COOLDOWN = 24 * 60;
 /** Players a rule leaves alone, as many as the Name filter's. */
@@ -34,7 +34,7 @@ export const DEATH_WHISPER_KEEP_MS = 60 * 60_000;
 export interface DeathWhisperConfig {
 	/** what it whispers, one picked at random each time */
 	messages: string[];
-	/** the rule whispers a player at most once in this long */
+	/** the rule whispers a player at most once in this long; zero allows every death */
 	cooldownMinutes: number;
 	/** acts only while at least this many are on */
 	minPlayers: number;
@@ -71,8 +71,6 @@ export function validateDeathWhisper(c: Record<string, unknown>): DeathWhisperCo
 		0,
 		DEATH_WHISPER_MAX_COOLDOWN
 	);
-	if (!cooldownMinutes)
-		throw new ApiError(400, `cooldownMinutes must be 1-${DEATH_WHISPER_MAX_COOLDOWN}.`);
 	return {
 		messages,
 		cooldownMinutes,
@@ -243,6 +241,20 @@ export interface DeathKill {
 	suicide: boolean;
 }
 
+/** Keep card headers on one line without splitting a displayed character. */
+function shortDeathLabel(value: string, max: number): string {
+	const text = value.replace(/\s+/g, ' ').trim();
+	if (text.length <= max) return text;
+	let result = '';
+	for (const { segment } of new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(
+		text
+	)) {
+		if (result.length + segment.length + 1 > max) break;
+		result += segment;
+	}
+	return `${result}…`;
+}
+
 /**
  * The rule's own placeholders for one death: who killed the player, with what, and from how far.
  * Each is blank where it does not apply: nobody killed them (the environment, a fall) or they
@@ -254,10 +266,20 @@ export function deathVars(k: DeathKill): MessageVars {
 		k.killer && !k.suicide && k.killer.steamId !== k.victim.steamId
 			? k.killer.name || k.killer.steamId
 			: '';
+	const weapon = causeLabel(k.cause);
+	const distance = k.distanceM === null ? '' : Math.round(k.distanceM);
+	const summary = [
+		killer ? `Killed by ${shortDeathLabel(killer, 24)}` : 'You died',
+		weapon ? shortDeathLabel(weapon, 24) : '',
+		distance === '' ? '' : `${shortDeathLabel(String(distance), 11)}m`
+	]
+		.filter(Boolean)
+		.join(' | ');
 	return {
 		killer,
-		weapon: causeLabel(k.cause),
-		distance: k.distanceM === null ? '' : Math.round(k.distanceM)
+		weapon,
+		distance,
+		death_summary: summary
 	};
 }
 

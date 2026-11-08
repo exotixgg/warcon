@@ -59,6 +59,8 @@ import {
 } from './ban-announcements';
 import { TRAIL_FAILURES_ONLY } from '$lib/rule-kinds';
 import { MAX_CHAT } from '$lib/chat';
+import { waitingForPlayers, playing, seedNoticeSettingsKey } from './seeding-messages';
+import { currentState } from '$lib/match-state';
 import type { OutboxView } from '$lib/types';
 
 /** Actions delivered without a game request: they need no roster, only the server's row. */
@@ -339,6 +341,46 @@ function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | nu
 	// middle of play.
 	if (row.triggerKind === 'death_whisper' && age > DEATH_WHISPER_MAX_AGE_MS)
 		return `Stale (${Math.round(age / 1000)}s old).`;
+	if (row.triggerKind === 'seed_reward' && row.action === 'whisper') {
+		const guard = (
+			row.params as {
+				seedNotice?: {
+					stage: string;
+					sessionId: number;
+					lowAt: number;
+					fullAt: number;
+					startPlayers: number;
+				};
+			}
+		)?.seedNotice;
+		if (guard) {
+			if (age > 30_000) return 'Seeding message expired.';
+			const session = row.steamId ? m.presence.open.get(row.steamId) : null;
+			if (
+				!session ||
+				session.id !== guard.sessionId ||
+				!m.players.some((p) => p.steamId === row.steamId)
+			)
+				return 'Seeding session ended.';
+			const phase =
+				currentState({
+					ok: !!m.status,
+					startedAt: m.startedAt ? new Date(m.startedAt).toISOString() : null,
+					matchState: m.matchState
+				})?.state ?? '';
+			if (!waitingForPlayers(phase) && !playing(phase)) return 'Round phase changed.';
+			if (
+				guard.stage !== 'complete' &&
+				(m.players.length > guard.lowAt || m.players.length >= guard.fullAt)
+			)
+				return 'Seeding target already reached.';
+			if (
+				guard.stage === 'update' &&
+				(!waitingForPlayers(phase) || m.players.length >= guard.startPlayers)
+			)
+				return 'Round already started.';
+		}
+	}
 	if (row.triggerKind === 'ping_kick') {
 		const guard = (
 			row.params as {
@@ -465,6 +507,12 @@ function holdsFor(
 	rule: { enabled: boolean; config: unknown; state?: unknown } | undefined
 ): boolean {
 	if (!rule?.enabled) return false;
+	const notice = (row.params as { seedNotice?: { settings: string } } | null)?.seedNotice;
+	if (row.triggerKind === 'seed_reward' && notice)
+		return (
+			notice.settings === seedNoticeSettingsKey(rule.config) &&
+			!!(rule.config as { noticeEnabled?: boolean }).noticeEnabled
+		);
 	const key = SETTINGS_KEYS[row.triggerKind];
 	const params = row.params as { rule?: string; on?: number | null } | null;
 	if (key && params?.rule !== key(rule.config)) return false;
@@ -498,7 +546,14 @@ async function stillHolds(env: Env, row: OutboxRow): Promise<boolean | null> {
 			return null;
 		}
 	}
-	if (!SETTINGS_KEYS[row.triggerKind]) return true;
+	if (
+		!SETTINGS_KEYS[row.triggerKind] &&
+		!(
+			row.triggerKind === 'seed_reward' &&
+			(row.params as { seedNotice?: unknown } | null)?.seedNotice
+		)
+	)
+		return true;
 	if (!row.triggerId) return false;
 	let rule: { enabled: boolean; config: unknown; state: unknown } | undefined;
 	try {
