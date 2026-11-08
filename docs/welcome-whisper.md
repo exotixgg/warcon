@@ -10,7 +10,10 @@ across the organisation, including archived server history. Rank follows the
 leaderboard's kills ranking and minimum playtime. The card includes personal
 kills/deaths, K/D, playtime/seeding time, a rival, and the kills, cash, playtime and
 seeding leaders. Rival means the opponent who killed this player most in the
-season; team kills and suicides are excluded.
+season; team kills and suicides are excluded. The rival line includes `12K/18D`:
+the receiving player's kills against that rival and deaths to them, across the
+organisation in the current season. Custom messages can use
+`{season_rival_kills}` and `{season_rival_deaths}` alongside `{season_rival}`.
 
 The editor lists individual `season_*` and `leader_*` placeholders for custom
 wording. Existing `{kills}` and `{org_kills}` retain their all-time meanings.

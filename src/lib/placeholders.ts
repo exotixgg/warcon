@@ -32,6 +32,8 @@ export const WELCOME_PLACEHOLDERS = [
 	'season_seeded',
 	'season_cash',
 	'season_rival',
+	'season_rival_kills',
+	'season_rival_deaths',
 	'leader_kills_name',
 	'leader_kills_value',
 	'leader_cash_name',
