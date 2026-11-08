@@ -80,6 +80,8 @@ function emptyVars(serverLabel = '-'): WelcomeCardVars {
 		season_seeded: '0m',
 		season_cash: '0',
 		season_rival: '-',
+		season_rival_kills: 0,
+		season_rival_deaths: 0,
 		leader_kills_name: '-',
 		leader_kills_value: '0',
 		leader_cash_name: '-',
@@ -203,7 +205,7 @@ export async function welcomeCardVars(
 			SELECT m.steam_id AS "steamId", m.minutes, m.seed_minutes AS "seedMinutes", m.cash, m.kills, m.deaths,
 			       (SELECT COUNT(*) FROM base b WHERE b.minutes >= ${DEFAULT_FLOOR_MINUTES} AND b.kills > m.kills) AS above
 			  FROM mine m`),
-		env.db.execute<{ steamId: string; name: string }>(sql`
+		env.db.execute<{ steamId: string; name: string; kills: string; deaths: string }>(sql`
 			WITH grouped AS (
 				SELECT victim_steam_id, killer_steam_id, COUNT(*) AS deaths, MAX(ts) AS latest,
 				       (array_agg(COALESCE(killer_name, killer_steam_id) ORDER BY ts DESC))[1] AS name
@@ -214,16 +216,24 @@ export async function welcomeCardVars(
 				 GROUP BY victim_steam_id, killer_steam_id
 			), ranked AS (
 				SELECT *, row_number() OVER (PARTITION BY victim_steam_id ORDER BY deaths DESC, latest DESC, killer_steam_id ASC) AS place FROM grouped
-			) SELECT victim_steam_id AS "steamId", name FROM ranked WHERE place = 1`)
+			) SELECT r.victim_steam_id AS "steamId", r.name, r.deaths,
+			         (SELECT COUNT(*) FROM kills k
+			           WHERE k.server_id IN ${scope.ids} AND k.killer_steam_id = r.victim_steam_id
+			             AND k.victim_steam_id = r.killer_steam_id
+			             AND NOT k.suicide AND NOT k.team_kill AND k.ts >= ${from}) AS kills
+			    FROM ranked r WHERE r.place = 1`)
 	]);
 
-	const rivalsBySteam = new Map(rivals.map((r) => [r.steamId, shortWelcomeName(r.name)]));
+	const rivalsBySteam = new Map(rivals.map((r) => [r.steamId, r]));
 	const statsBySteam = new Map(stats.map((s) => [s.steamId, s]));
 	for (const steamId of unique) {
 		const row = statsBySteam.get(steamId);
 		const vars = emptyVars(label);
 		vars.season_name = welcomeSeasonLabel(season.name);
-		vars.season_rival = rivalsBySteam.get(steamId) || '-';
+		const rival = rivalsBySteam.get(steamId);
+		vars.season_rival = rival ? shortWelcomeName(rival.name) : '-';
+		vars.season_rival_kills = number(rival?.kills);
+		vars.season_rival_deaths = number(rival?.deaths);
 		vars.leader_kills_name = leaders.kills.name;
 		vars.leader_kills_value = leaders.kills.value;
 		vars.leader_cash_name = leaders.cash.name;
@@ -256,11 +266,15 @@ export function buildWelcomeCard(vars: WelcomeCardVars): string {
 		const name = (key: string) => shortWelcomeName(String(vars[key] ?? '-'), maxName);
 		const value = (key: string, max: number, fallback: string) =>
 			shortWelcomeName(String(vars[key] ?? fallback), max);
+		const rivalRecord =
+			vars.season_rival && vars.season_rival !== '-'
+				? ` ${value('season_rival_kills', 9, '0')}K/${value('season_rival_deaths', 9, '0')}D`
+				: '';
 		const lines = [
 			value('server_label', 24, '-'),
 			`${value('season_name', 24, '-').toUpperCase()} | Rank #${value('season_rank', 8, '-')}`,
 			`${value('season_kills', 9, '0')}K/${value('season_deaths', 9, '0')}D | ${value('season_kd', 8, '0.00')} K/D | ${value('season_playtime', 8, '0m')}/${value('season_seeded', 8, '0m')}`,
-			...(includeRival ? [`Rival: ${name('season_rival')}`] : []),
+			...(includeRival ? [`Rival: ${name('season_rival')}${rivalRecord}`] : []),
 			'',
 			'LEADERS',
 			`${name('leader_kills_name')} — ${value('leader_kills_value', 9, '0')} kills`,
