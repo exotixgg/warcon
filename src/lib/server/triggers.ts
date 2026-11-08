@@ -35,6 +35,7 @@
 // run replays the last 24 hours from the samples and sessions tables so a rule can be checked
 // before it touches anyone.
 import { randomUUID } from 'node:crypto';
+import type { MessageRotation } from './message-rotation';
 import {
 	and,
 	asc,
@@ -636,6 +637,7 @@ async function dropQueued(env: Env, triggerId: string, why: string): Promise<voi
 export interface TickContext {
 	server: ServerRow;
 	status: Status;
+	messageRotation?: MessageRotation | null;
 	players: Player[];
 	/** true only when this observation fetched a fresh player list */
 	playersObserved: boolean;
@@ -729,6 +731,7 @@ const vars = (
 		serverVars({
 			name: ctx.server.name,
 			status: ctx.status,
+			rotation: ctx.messageRotation,
 			startedAt: ctx.startedAt,
 			now: ctx.ts.getTime()
 		}),
