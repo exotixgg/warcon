@@ -9,6 +9,9 @@ import type { TriggerKind } from './types';
 export const SERVER_PLACEHOLDERS = [
 	'server',
 	'map',
+	'weather',
+	'next_map',
+	'next_weather',
 	'players',
 	'max',
 	'scores',
@@ -78,6 +81,7 @@ export const ORG_STATS_PLACEHOLDERS = [
 
 /** Other names people type for a placeholder. */
 export const PLACEHOLDER_ALIASES: Readonly<Record<string, string>> = {
+	current_weather: 'weather',
 	player: 'name',
 	kdr: 'kd',
 	org_kdr: 'org_kd'

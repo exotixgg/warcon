@@ -80,7 +80,14 @@ import { keepName } from './live-name-write';
 import type { NameMemory } from './live-name';
 import { takeFeedEnd, withFeedEnd, type ClosedMatch, type FeedEnd } from './match-feed';
 import { matchStateOf, currentState } from '$lib/match-state';
-import type { Features, LiveView, MatchStateView, Player, Status } from '$lib/types';
+import type { Features, LiveView, MatchStateView, Player, Status, Rotation } from '$lib/types';
+
+import {
+	usesMessageRotation,
+	messageRotationDue,
+	messageRotationSnapshot,
+	type MessageRotation
+} from './message-rotation';
 
 export type Tier = LiveView['tier'];
 
@@ -112,6 +119,8 @@ export interface ServerMemory {
 	observedAt: number;
 	status: Status | null;
 	statusAt: number;
+	/** Read only when an enabled message uses next-map/weather placeholders. */
+	messageRotation?: MessageRotation | null;
 	players: Player[];
 	playersAt: number;
 	presence: Presence;
@@ -411,6 +420,7 @@ export function forgetRemembered(): void {
 	for (const m of registry.values()) {
 		m.presence = newPresence();
 		m.lastMatch = null;
+		m.messageRotation = null;
 		m.feedEnd = null;
 		m.closed = null;
 		// the feed's last state, read again from what the web wrote meanwhile
@@ -621,6 +631,18 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 			]
 		: [];
 	const rows = m.status ? await enabledTriggers(env, server.id) : [];
+	if (m.status && usesMessageRotation(rows)) {
+		if (hadFailed || m.again || messageRotationDue(m.messageRotation, m.status, started)) {
+			// A failed optional read must not interrupt observation or retain an old next entry.
+			m.messageRotation = messageRotationSnapshot(m.status, null, started);
+			try {
+				const rotation = (await ACTIONS.rotation.run(client, {})) as Rotation;
+				m.messageRotation = messageRotationSnapshot(m.status, rotation, started);
+			} catch (err) {
+				holdFor(m, err);
+			}
+		}
+	} else m.messageRotation = null;
 	// A risk kick judges whoever is on the server, not only a join: joiners at once, a player back
 	// after missing a look at once (a kicked player reconnecting inside the leave grace is the
 	// same session, not a join), and everyone on again every RISK_RECHECK_MS in one batch, which
@@ -707,6 +729,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 					{
 						server,
 						status: m.status,
+						messageRotation: m.messageRotation,
 						players: m.players,
 						playersObserved: players !== null,
 						playersIntervalMs: m.playersIntervalMs,
@@ -886,6 +909,7 @@ async function observationFailed(
 	period: number,
 	err: unknown
 ): Promise<void> {
+	m.messageRotation = null;
 	if (err instanceof GameError && err.code === 'rate_limited') {
 		// Not an outage: the listener asked the panel to slow down. Hold the next look for as long
 		// as it said, keep the tier and the failure count, show the message, and write only the

@@ -67,6 +67,9 @@ describe('serverVars', () => {
 		expect(server).toEqual({
 			server: 'Example Clan #1',
 			map: 'Zestafona',
+			weather: UNKNOWN,
+			next_map: UNKNOWN,
+			next_weather: UNKNOWN,
 			players: 41,
 			max: 100,
 			scores: 'Valkyra 45 · Lonestar 30',
@@ -78,6 +81,9 @@ describe('serverVars', () => {
 		expect(serverVars({ name: 'Panel name', status: null, startedAt: 0, now: 1 })).toEqual({
 			server: 'Panel name',
 			map: '',
+			weather: UNKNOWN,
+			next_map: UNKNOWN,
+			next_weather: UNKNOWN,
 			players: 0,
 			max: 0,
 			scores: '',

@@ -3,7 +3,7 @@
 // every server of its organisation, as the leaderboards count them. Pure: the stats arrive already
 // read (playerStats in leaderboards.ts), the rest from what the worker holds. Every rule's messages
 // are filled from here, live and in the dry run, so a placeholder means the same thing in each.
-import { fmtMinutes, mapName } from '$lib/format';
+import { fmtMinutes, mapName, prettify } from '$lib/format';
 import { kdRatio, winRate } from '$lib/leaderboard';
 import { scoreCapOf } from '$lib/match';
 import {
@@ -14,6 +14,7 @@ import {
 } from '$lib/placeholders';
 import { fmtUptime } from '$lib/uptime';
 import type { Status } from '$lib/types';
+import { nextMessageEntry, type MessageRotation } from './message-rotation';
 
 export type MessageVars = Record<string, string | number>;
 
@@ -62,7 +63,17 @@ export interface MessagePlayer {
 
 /** As much of the server's status as its placeholders read. */
 type ServerLook = Partial<
-	Pick<Status, 'serverName' | 'map' | 'playerCount' | 'maxPlayers' | 'scoreCap'> & {
+	Pick<
+		Status,
+		| 'serverName'
+		| 'map'
+		| 'playerCount'
+		| 'maxPlayers'
+		| 'scoreCap'
+		| 'lighting'
+		| 'rotationNow'
+		| 'rotationNext'
+	> & {
 		scores: { name: string; score: number }[];
 	}
 >;
@@ -73,11 +84,26 @@ export function serverVars(look: {
 	status: ServerLook | null;
 	startedAt: number;
 	now: number;
+	rotation?: MessageRotation | null;
 }): MessageVars {
 	const s = look.status;
+	const next = nextMessageEntry(
+		s
+			? { map: s.map ?? '', rotationNow: s.rotationNow ?? -1, rotationNext: s.rotationNext ?? -1 }
+			: null,
+		look.rotation,
+		look.now
+	);
+	const weather = (id: string | undefined) => {
+		const value = typeof id === 'string' ? id.trim() : '';
+		return value && value.toLowerCase() !== 'none' ? prettify(value) : UNKNOWN;
+	};
 	return {
 		server: s?.serverName || look.name,
 		map: s?.map ? mapName(s.map) : '',
+		weather: weather(s?.lighting),
+		next_map: next ? mapName(next.map) : UNKNOWN,
+		next_weather: weather(next?.lighting),
 		players: s?.playerCount ?? 0,
 		max: s?.maxPlayers ?? 0,
 		scores: (s?.scores ?? []).map((f) => `${f.name} ${f.score}`).join(' · '),
@@ -153,6 +179,9 @@ export function dryRunVars(
 	const server: MessageVars = {
 		server: serverName,
 		map: UNKNOWN,
+		weather: UNKNOWN,
+		next_map: UNKNOWN,
+		next_weather: UNKNOWN,
 		players: UNKNOWN,
 		max: UNKNOWN,
 		scores: UNKNOWN,
