@@ -27,7 +27,7 @@ EXOTIX's messages are configured in the rule, not hardcoded in the application.
 The expanded pool keeps the existing proportions: seeding 20%, VIP 15%, favourites
 10%, other servers 5%, Discord 15%, teammates 10%, reports 10%, website 10% and
 feedback 5%. Playful lines and occasional Exi remarks introduce the same practical
-calls to action; they do not advertise unavailable features.
+calls to action. Future GOLD join announcements are explicitly labelled as planned.
 
 The deployed pool's delivery policy is configured separately: a 10-minute
 cooldown and exclusion of active reserved-slot holders. A card's body must fit
