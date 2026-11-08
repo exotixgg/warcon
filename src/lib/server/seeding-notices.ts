@@ -79,6 +79,7 @@ export async function evalSeedNotices(
 		const server = serverVars({
 			name: ctx.server.name,
 			status: ctx.status,
+			rotation: ctx.messageRotation,
 			startedAt: ctx.startedAt,
 			now
 		});
