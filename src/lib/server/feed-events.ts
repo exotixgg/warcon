@@ -28,6 +28,9 @@ import {
 	deathBlanks,
 	deathVars,
 	deathWhisperStep,
+	deathWhisperText,
+	deathWhisperSettingsKey,
+	reportableTeamKill,
 	pruneWhispered,
 	type DeathWhisperConfig,
 	type DeathWhisperPick,
@@ -837,10 +840,12 @@ async function whisperedBefore(env: Env, row: TriggerRow, now: number): Promise<
 	const cfg = row.config as DeathWhisperConfig;
 	const since = new Date(now - cfg.cooldownMinutes * 60_000 - DEATH_WHISPER_KEEP_MS);
 	const rows = await env.db
-		.selectDistinctOn([outbox.steamId], {
+		.select({
 			steamId: outbox.steamId,
 			at: outbox.createdAt,
-			index: sql<string | null>`${outbox.detail} ->> 'index'`
+			index: sql<string | null>`${outbox.detail} ->> 'index'`,
+			pool: sql<string | null>`${outbox.detail} ->> 'pool'`,
+			eventId: sql<string | null>`${outbox.detail} ->> 'eventId'`
 		})
 		.from(outbox)
 		.where(
@@ -850,15 +855,18 @@ async function whisperedBefore(env: Env, row: TriggerRow, now: number): Promise<
 				gte(outbox.createdAt, since)
 			)
 		)
-		.orderBy(outbox.steamId, sql`${outbox.createdAt} DESC`);
+		.orderBy(outbox.steamId, sql`${outbox.createdAt} DESC`, sql`${outbox.id} DESC`);
 	const tracks: WhisperedTracks = new Map();
 	for (const r of rows) {
 		if (!r.steamId) continue;
 		const index = Number(r.index);
-		tracks.set(r.steamId, {
-			at: r.at.getTime(),
-			index: r.index !== null && Number.isInteger(index) ? index : -1
-		});
+		const known = tracks.get(r.steamId);
+		const track = known ?? { at: r.at.getTime(), index: -1, eventId: r.eventId ?? undefined };
+		const choice = r.index !== null && Number.isInteger(index) ? index : -1;
+		if (r.pool === 'teamKillMessages') {
+			if (track.reportIndex === undefined) track.reportIndex = choice;
+		} else if (!known || track.index === -1) track.index = choice;
+		tracks.set(r.steamId, track);
 	}
 	return tracks;
 }
@@ -925,6 +933,7 @@ async function actOnDeathWhisper(
 		.map((k) => ({
 			steamId: k.victim.steamId,
 			eventId: k.eventId,
+			teamKill: reportableTeamKill(k),
 			blank: deathBlanks(deathVars(k))
 		}));
 	const decided: { row: TriggerRow; cfg: DeathWhisperConfig; picks: DeathWhisperPick[] }[] = [];
@@ -954,13 +963,13 @@ async function actOnDeathWhisper(
 		for (const { row, cfg, picks } of decided) {
 			// a whisper to the player alone: their stats, here and across the organisation
 			const stats = await vars.stats(
-				picks.map((p) => ({ steamId: p.steamId, text: cfg.messages[p.index] }))
+				picks.map((p) => ({ steamId: p.steamId, text: deathWhisperText(cfg, p) }))
 			);
 			for (const p of picks) {
 				const k = byEvent.get(p.eventId)!;
 				const name = k.victim.name || p.steamId;
 				const message = renderTemplate(
-					cfg.messages[p.index],
+					deathWhisperText(cfg, p),
 					vars.about(k.victim, stats, {
 						...deathVars(k),
 						...(k.map ? { map: mapName(k.map) } : {})
@@ -970,12 +979,17 @@ async function actOnDeathWhisper(
 				out.intents.push({
 					trigger: row,
 					action: 'whisper',
-					params: { steamId: p.steamId, message },
+					params: {
+						steamId: p.steamId,
+						message,
+						rule: deathWhisperSettingsKey(cfg),
+						death: { pool: p.pool, ts: k.ts, eventTime: k.eventTime }
+					},
 					target: p.steamId,
 					okMessage: `Whispered ${name}.`,
 					// which message, so the memory filled after a restart knows it; never the text, which
 					// stays in the row's params as every rule whisper's does
-					detail: { name, index: p.index, eventId: p.eventId },
+					detail: { name, index: p.index, pool: p.pool, eventId: p.eventId },
 					steamId: p.steamId,
 					dedupeKey: [row.id, p.steamId, p.eventId].join(':')
 				});

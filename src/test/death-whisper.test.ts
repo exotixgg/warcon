@@ -5,7 +5,7 @@
 // spares (nobody until the list is read); nobody while too few are on. A whisper that cannot go
 // within 30 seconds is dropped. One that goes leaves no audit row and no Discord card; one that
 // fails leaves both. The dry run replays the day's deaths the same way.
-import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
 import { and, eq, inArray, sql } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
 import {
@@ -24,6 +24,7 @@ import { ingestBatch } from '$lib/server/feed';
 import { forgetMemory, memoryFor, observeServer, type ServerMemory } from '$lib/server/observe';
 import { startDelivery, stopDelivery } from '$lib/server/outbox';
 import { WardogsClient } from '$lib/server/rcon';
+import { PRIORITY, withServer } from '$lib/server/dispatcher';
 import { dryRun, invalidateTriggers, validateConfig } from '$lib/server/triggers';
 import { encryptSecret } from '$lib/server/crypto';
 import { newId } from '$lib/server/http';
@@ -124,6 +125,9 @@ describe.skipIf(!hasTestDb)('Death whisper rule, live', () => {
 	});
 	/** the servers whose memory the file made: every file shares the worker and the database */
 	const watched = new Set<string>();
+	beforeEach(async () => {
+		expect(await acquireOrRenew(env, 'death whisper test')).toBe(true);
+	});
 	afterAll(async () => {
 		await stopDelivery();
 		// Whispers a test queued and never delivered would go out from the next file's delivery loop,
@@ -217,15 +221,15 @@ describe.skipIf(!hasTestDb)('Death whisper rule, live', () => {
 			messages: ['{killer} got you with the {weapon} from {distance} m, {name}. Join our Discord.'],
 			exempt: [C]
 		});
-		// B killed by A, C on the rule's list, D by the environment, B again in the same batch
-		await post(w.server.id, [ev(A, B), ev(A, C), ev(null, D), ev(D, B)]);
+		// B killed twice (latest killer D), C on the rule's list, D by the environment
+		await post(w.server.id, [ev(A, B), ev(D, B), ev(A, C), ev(null, D)]);
 		const rows = await rowsOf(id);
 		expect(rows.map((r) => [r.action, r.target, r.steamId])).toEqual([
 			['whisper', B, B],
 			['whisper', D, D]
 		]);
 		expect(rows.map((r) => (r.params as { message: string }).message)).toEqual([
-			'p961 got you with the AK74 from 153 m, p962. Join our Discord.',
+			'p964 got you with the AK74 from 153 m, p962. Join our Discord.',
 			' got you with the AK74 from 153 m, p964. Join our Discord.'
 		]);
 		expect(rows[0].okMessage).toBe('Whispered p962.');
@@ -234,7 +238,7 @@ describe.skipIf(!hasTestDb)('Death whisper rule, live', () => {
 		expect(JSON.stringify(rows[0].detail)).not.toContain('Discord');
 		expect((await ruleRow(id)).lastResult).toBe('Whispering 2 players');
 		// B again, and A for the first time: only A
-		await post(w.server.id, [ev(C, B), ev(B, A)]);
+		await post(w.server.id, [ev(D, B), ev(B, A)]);
 		expect((await rowsOf(id)).map((r) => r.target)).toEqual([B, D, A]);
 
 		// delivered: to the game, as the panel's own words, with no audit row and no Discord card
@@ -280,6 +284,258 @@ describe.skipIf(!hasTestDb)('Death whisper rule, live', () => {
 		expect(titles).toContain('Trigger · death whisper');
 	});
 
+	test('latest victim event selects the report or ordinary pool with its own killer/header; duplicates do nothing', async () => {
+		const w = await seedWorld(env);
+		const m = await memoryOf(w);
+		await look(m, A, B, C, D);
+		const id = await rule(w, {
+			messages: ['{death_summary}\n\nNORMAL {name}'],
+			teamKillMessages: ['{death_summary}\n\nREPORT {name}: discord.gg/exotix'],
+			cooldownMinutes: 0
+		});
+		const events = [ev(A, B), ev(C, B), ev(A, D), ev(B, D)];
+		await post(w.server.id, events);
+		await post(w.server.id, events);
+		const rows = await rowsOf(id);
+		expect(rows.map((r) => [r.steamId, (r.params as { message: string }).message])).toEqual([
+			[B, 'Team-killed by p963 | AK74 | 153m\n\nREPORT p962: discord.gg/exotix'],
+			[D, 'Killed by p962 | AK74 | 153m\n\nNORMAL p964']
+		]);
+		expect(rows.map((r) => (r.detail as { eventId: string }).eventId)).toEqual([
+			events[1].eventId,
+			events[3].eventId
+		]);
+		expect((await deliver(...rows.map((r) => r.id))).map((r) => r.state)).toEqual([
+			'delivered',
+			'delivered'
+		]);
+	});
+
+	test('legacy empty report pool skips team kills, preserving ordinary and unattributed deaths', async () => {
+		const w = await seedWorld(env);
+		const m = await memoryOf(w);
+		await look(m, A, B, C, D);
+		const id = await rule(w, { messages: ['ordinary {name}'] });
+		await post(w.server.id, [ev(C, B), ev(A, C), ev(null, D)]);
+		expect((await rowsOf(id)).map((r) => r.steamId)).toEqual([C, D]);
+		await post(w.server.id, [ev(A, B)]);
+		expect((await rowsOf(id)).map((r) => r.steamId)).toEqual([C, D, B]);
+	});
+
+	test('report and ordinary choices share the cooldown and keep independent anti-repeat after restart', async () => {
+		const w = await seedWorld(env);
+		const m = await memoryOf(w);
+		await look(m, A, B, C);
+		const id = await rule(w, {
+			messages: ['normal 0', 'normal 1'],
+			teamKillMessages: ['report 0', 'report 1'],
+			cooldownMinutes: 10
+		});
+		const random = spyOn(Math, 'random').mockReturnValue(0);
+		const age = async () => {
+			await env.db
+				.update(outbox)
+				.set({ createdAt: sql`now() - interval '11 minutes'` })
+				.where(eq(outbox.triggerId, id));
+			forgetDeathWhispers();
+		};
+		try {
+			await post(w.server.id, [ev(C, B)]);
+			forgetDeathWhispers();
+			await post(w.server.id, [ev(A, B)]);
+			expect(await rowsOf(id)).toHaveLength(1);
+			await age();
+			await post(w.server.id, [ev(A, B)]);
+			forgetDeathWhispers();
+			await post(w.server.id, [ev(C, B)]);
+			expect(await rowsOf(id)).toHaveLength(2);
+			await age();
+			await post(w.server.id, [ev(C, B)]);
+			expect((await rowsOf(id)).map((r) => (r.params as { message: string }).message)).toEqual([
+				'report 0',
+				'normal 0',
+				'report 1'
+			]);
+		} finally {
+			random.mockRestore();
+		}
+	});
+
+	test('a later team kill cancels a queued ordinary card without bypassing the shared cooldown', async () => {
+		for (const teamKillMessages of [[], ['report']]) {
+			const w = await seedWorld(env);
+			const m = await memoryOf(w);
+			await look(m, A, B, C);
+			const id = await rule(w, { messages: ['VIP ad'], teamKillMessages, cooldownMinutes: 10 });
+			await post(w.server.id, [ev(A, B)]);
+			const [queued] = await rowsOf(id);
+			await post(w.server.id, [ev(C, B)]);
+			forgetDeathWhispers();
+			expect(await rowsOf(id)).toHaveLength(1);
+			const [done] = await deliver(queued.id);
+			expect([done.state, done.outcome]).toEqual([
+				'skipped',
+				'A later team kill superseded this death whisper.'
+			]);
+			expect(whispers.filter(([s]) => s === w.server.id)).toEqual([]);
+		}
+	});
+
+	for (const edit of ['disable', 'delete', 'normal', 'report', 'exempt']) {
+		test(`rule ${edit} guards already queued report whispers at delivery`, async () => {
+			const w = await seedWorld(env);
+			const m = await memoryOf(w);
+			await look(m, A, B, C);
+			const config = { messages: ['normal'], teamKillMessages: ['report'], cooldownMinutes: 10 };
+			const id = await rule(w, config);
+			await post(w.server.id, [ev(C, B)]);
+			const [queued] = await rowsOf(id);
+			if (edit === 'delete') await env.db.delete(triggers).where(eq(triggers.id, id));
+			else
+				await env.db
+					.update(triggers)
+					.set(
+						edit === 'disable'
+							? { enabled: false }
+							: {
+									config: validateConfig('death_whisper', {
+										...config,
+										...(edit === 'normal'
+											? { messages: ['new ad'] }
+											: edit === 'report'
+												? { teamKillMessages: [] }
+												: { exempt: [B] })
+									})
+								}
+					)
+					.where(eq(triggers.id, id));
+			const [done] = await deliver(queued.id);
+			expect([done.state, done.outcome]).toEqual([
+				'skipped',
+				'The rule was changed before this was sent.'
+			]);
+			expect(whispers.filter(([s]) => s === w.server.id)).toEqual([]);
+		});
+	}
+
+	test('report victims still honor reserved-slot and explicit exemptions', async () => {
+		const w = await seedWorld(env);
+		const m = await memoryOf(w);
+		await look(m, A, B, C, D);
+		m.reserved = new Set([B]);
+		m.reservedAt = Date.now();
+		const id = await rule(w, {
+			messages: ['ad'],
+			teamKillMessages: ['report'],
+			spareReserved: true,
+			exempt: [C]
+		});
+		await post(w.server.id, [ev(C, B), ev(B, C), ev(A, D)]);
+		expect((await rowsOf(id)).map((r) => r.steamId)).toEqual([D]);
+	});
+
+	for (const change of ['teamkill', 'disable']) {
+		test(`a claimed ordinary whisper rechecks ${change} after waiting in the server lane`, async () => {
+			const w = await seedWorld(env);
+			const m = await memoryOf(w);
+			await look(m, A, B, C);
+			const id = await rule(w, {
+				messages: ['VIP ad'],
+				teamKillMessages: ['report'],
+				cooldownMinutes: 10
+			});
+			await post(w.server.id, [ev(A, B)]);
+			const [queued] = await rowsOf(id);
+			let release!: () => void;
+			let entered!: () => void;
+			const ready = new Promise<void>((resolve) => {
+				entered = resolve;
+			});
+			const gate = new Promise<void>((resolve) => {
+				release = resolve;
+			});
+			const lane = withServer(w.server.id, PRIORITY.command, async () => {
+				entered();
+				await gate;
+			});
+			await ready;
+			try {
+				startDelivery(env);
+				for (let i = 0; i < 100 && (await rowOf(queued.id)).state !== 'sending'; i++)
+					await Bun.sleep(20);
+				expect((await rowOf(queued.id)).state).toBe('sending');
+				if (change === 'teamkill') await post(w.server.id, [ev(C, B)]);
+				else await env.db.update(triggers).set({ enabled: false }).where(eq(triggers.id, id));
+				release();
+				await lane;
+				const [done] = await deliver(queued.id);
+				expect(done.state).toBe('skipped');
+				expect(done.outcome).toBe(
+					change === 'teamkill'
+						? 'A later team kill superseded this death whisper.'
+						: 'The rule was changed before this was sent.'
+				);
+				expect(whispers.filter(([s]) => s === w.server.id)).toEqual([]);
+			} finally {
+				release();
+				await lane;
+				await stopDelivery();
+			}
+		});
+	}
+
+	test('malformed context drops a guarded card without retrying or sending it', async () => {
+		const w = await seedWorld(env);
+		const m = await memoryOf(w);
+		await look(m, A, B);
+		const id = await rule(w, { messages: ['VIP ad'] });
+		await post(w.server.id, [ev(A, B)]);
+		const [queued] = await rowsOf(id);
+		await env.db
+			.update(outbox)
+			.set({
+				params: {
+					...(queued.params as object),
+					death: { pool: 'messages', ts: 'invalid', eventTime: 1 }
+				}
+			})
+			.where(eq(outbox.id, queued.id));
+		const [done] = await deliver(queued.id);
+		expect([done.state, done.outcome]).toEqual([
+			'skipped',
+			'Death whisper context is missing or invalid.'
+		]);
+		expect(whispers.filter(([s]) => s === w.server.id)).toEqual([]);
+	});
+
+	test('renaming a rule preserves its queued report card', async () => {
+		const w = await seedWorld(env);
+		const m = await memoryOf(w);
+		await look(m, A, B, C);
+		const id = await rule(w, { messages: ['VIP ad'], teamKillMessages: ['report'] });
+		await post(w.server.id, [ev(C, B)]);
+		await env.db.update(triggers).set({ name: 'Renamed' }).where(eq(triggers.id, id));
+		expect((await deliver(...(await rowsOf(id)).map((r) => r.id)))[0].state).toBe('delivered');
+	});
+
+	test('legacy pending cards without a settings guard are skipped after upgrade', async () => {
+		const w = await seedWorld(env);
+		const m = await memoryOf(w);
+		await look(m, A, B);
+		const id = await rule(w, { messages: ['VIP ad'] });
+		await post(w.server.id, [ev(A, B)]);
+		const [queued] = await rowsOf(id);
+		await env.db
+			.update(outbox)
+			.set({ params: { steamId: B, message: 'VIP ad' } })
+			.where(eq(outbox.id, queued.id));
+		const [done] = await deliver(queued.id);
+		expect([done.state, done.outcome]).toEqual([
+			'skipped',
+			'The rule was changed before this was sent.'
+		]);
+	});
+
 	test('a whisper that cannot go within 30 seconds is dropped, unaudited', async () => {
 		const w = await seedWorld(env);
 		const m = await memoryOf(w);
@@ -318,7 +574,7 @@ describe.skipIf(!hasTestDb)('Death whisper rule, live', () => {
 				.set({ createdAt: sql`now() - interval '11 minutes'` })
 				.where(eq(outbox.id, first.id));
 			forgetDeathWhispers();
-			await post(w.server.id, [ev(A, B), ev(B, C)]);
+			await post(w.server.id, [ev(A, B), ev(A, C)]);
 			const rows = await rowsOf(id);
 			expect(rows.map((r) => [r.target, (r.params as { message: string }).message])).toEqual([
 				[B, 'one'],
@@ -372,12 +628,12 @@ describe.skipIf(!hasTestDb)('Death whisper rule, live', () => {
 		await look(m, A, B, C);
 		const id = await rule(w, { messages: ['Hello {name}'], spareReserved: true });
 		m.reservedAt = 0;
-		await post(w.server.id, [ev(A, B), ev(B, C)]);
+		await post(w.server.id, [ev(A, B), ev(A, C)]);
 		expect(await rowsOf(id)).toEqual([]);
 		expect((await ruleRow(id)).lastResult).toBe('Waiting for the reserved slots to be read');
 		m.reserved = new Set([B]);
 		m.reservedAt = Date.now();
-		await post(w.server.id, [ev(A, B), ev(B, C)]);
+		await post(w.server.id, [ev(A, B), ev(A, C)]);
 		expect((await rowsOf(id)).map((r) => r.target)).toEqual([C]);
 	});
 
@@ -404,7 +660,7 @@ describe.skipIf(!hasTestDb)('Death whisper rule, live', () => {
 		expect((await rowsOf(discord)).map((r) => r.target)).toEqual([B]);
 		await env.db.update(triggers).set({ enabled: false }).where(eq(triggers.id, tips));
 		invalidateTriggers(w.server.id);
-		await post(w.server.id, [ev(B, C)]);
+		await post(w.server.id, [ev(A, C)]);
 		expect((await rowsOf(tips)).map((r) => r.target)).toEqual([B]);
 		expect((await rowsOf(discord)).map((r) => r.target)).toEqual([B, C]);
 		const [other] = await env.db
@@ -483,6 +739,30 @@ describe.skipIf(!hasTestDb)('Death whisper rule, live', () => {
 		);
 		expect(r.notes).toContain(
 			'This server has no kill feed set up (Config tab), so the rule cannot see any deaths.'
+		);
+	});
+
+	test('dry run uses the same latest-event report selection and empty-pool skip', async () => {
+		const w = await seedWorld(env);
+		const m = await memoryOf(w);
+		await look(m, A, B, C, D);
+		await post(w.server.id, [ev(A, B), ev(C, B), ev(A, D), ev(A, C)]);
+		const server = { ...w.server, name: 'one' } as Parameters<typeof dryRun>[1];
+		const config = {
+			messages: ['normal {killer}'],
+			teamKillMessages: ['report {death_summary}'],
+			minPlayers: 0
+		};
+		const r = await dryRun(env, server, 'death_whisper', config);
+		expect(r.items.map((i) => i.text)).toEqual([
+			`whisper p962 (${B}): report Team-killed by p963 | AK74 | 153m`,
+			`whisper p964 (${D}): report Team-killed by p961 | AK74 | 153m`,
+			`whisper p963 (${C}): normal p961`
+		]);
+		const empty = await dryRun(env, server, 'death_whisper', { ...config, teamKillMessages: [] });
+		expect(empty.items.map((i) => i.text)).toEqual([`whisper p963 (${C}): normal p961`]);
+		expect(empty.notes).toContain(
+			'Passed over: 2 team kills without report messages, 1 superseded by a later death in the same batch.'
 		);
 	});
 });

@@ -4,6 +4,7 @@
 // The looks still decide where a match ends (matchBoundary); the result goes to the match they
 // close. It usually arrives first, during the post-match screen, and waits for that look; one
 // that arrives just after it corrects the match that look closed.
+import { captureMatchCard } from './match-card';
 import { and, eq, isNotNull } from 'drizzle-orm';
 import type { Env } from './env';
 import type { ServerMemory } from './observe';
@@ -123,6 +124,7 @@ export async function onMatchFeed(
 	if (!feed.end) return;
 	const closed = m.closed;
 	if (!closed || now - closed.at > LATE_END_MS) {
+		captureMatchCard(m, feed.end, now);
 		m.feedEnd = { end: feed.end, at: now };
 		return;
 	}
