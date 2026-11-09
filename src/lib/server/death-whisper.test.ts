@@ -8,6 +8,9 @@ import {
 	deathBlanks,
 	deathVars,
 	deathWhisperStep,
+	deathWhisperText,
+	deathWhisperSettingsKey,
+	reportableTeamKill,
 	fittingMessages,
 	pickMessage,
 	pruneWhispered,
@@ -19,6 +22,8 @@ import {
 import { SETTINGS_KEYS, ruleNeeds, validateConfig } from './triggers';
 import { MESSAGE_RULES, placeholdersFor } from '$lib/placeholders';
 import { FAILURES_ONLY, FEED_KINDS, ONE_PER_SERVER, TRAIL_FAILURES_ONLY } from '$lib/rule-kinds';
+import { automationPoolEditorValue } from '$lib/automation-message';
+import { renderTemplate } from './triggers';
 
 const MIN = 60_000;
 const NOW = Date.UTC(2026, 10, 3, 20, 0, 0);
@@ -62,6 +67,7 @@ describe('settings', () => {
 	test('a list of messages, a 30-minute cooldown, someone on, nobody spared, by default', () => {
 		expect(validateDeathWhisper({ messages: ['Join our Discord.'] })).toEqual({
 			messages: ['Join our Discord.'],
+			teamKillMessages: [],
 			cooldownMinutes: 30,
 			minPlayers: 1,
 			spareReserved: false,
@@ -82,7 +88,7 @@ describe('settings', () => {
 		expect(refused({ messages: [] })).toBe('Add at least one message to whisper.');
 		expect(refused({ messages: ['', '  '] })).toBe('Add at least one message to whisper.');
 		expect(refused({ messages: Array.from({ length: 101 }, (_, i) => `m${i}`) })).toBe(
-			'A rule holds at most 100 messages.'
+			'A pool holds at most 100 messages.'
 		);
 		expect(validateDeathWhisper({ messages: ['a'], cooldownMinutes: 0 }).cooldownMinutes).toBe(0);
 		expect(validateDeathWhisper({ messages: ['a'], cooldownMinutes: -5 }).cooldownMinutes).toBe(0);
@@ -114,8 +120,11 @@ describe('settings', () => {
 		expect(FAILURES_ONLY).toContain('death_whisper');
 		expect(TRAIL_FAILURES_ONLY).toEqual(['death_whisper']);
 		expect(ONE_PER_SERVER).not.toContain('death_whisper');
-		// a whisper goes within seconds: nothing queued is dropped on an edit, no read at delivery
-		expect(SETTINGS_KEYS.death_whisper).toBeUndefined();
+		// Pending whispers are guarded against a disabled/edited rule, including legacy configs.
+		expect(SETTINGS_KEYS.death_whisper).toBe(deathWhisperSettingsKey);
+		expect(deathWhisperSettingsKey({ messages: ['a'] })).toBe(
+			deathWhisperSettingsKey(validateDeathWhisper({ messages: ['a'], teamKillMessages: [] }))
+		);
 		// its own placeholders, and the player's, their stats here and across the org, the server's
 		expect(MESSAGE_RULES.death_whisper?.own).toEqual([
 			'killer',
@@ -204,16 +213,24 @@ describe('the pick', () => {
 });
 
 describe('whom a batch brings a whisper', () => {
-	test('each player killed, once a batch, in the order the game played them', () => {
+	test('each player killed, once a batch, using their latest event in game order', () => {
 		const tracks: WhisperedTracks = new Map();
 		const deaths = [death(A), death(B), death(A)];
 		const s = step(cfg(), tracks, deaths);
 		expect(s.picks.map((p) => [p.steamId, p.eventId])).toEqual([
-			[A, deaths[0].eventId],
-			[B, deaths[1].eventId]
+			[B, deaths[1].eventId],
+			[A, deaths[2].eventId]
 		]);
-		expect(s.passed).toEqual({ few: 0, waiting: 0, listed: 0, reserved: 0, cooling: 1 });
-		expect(tracks.get(A)).toEqual({ at: NOW, index: 0 });
+		expect(s.passed).toEqual({
+			few: 0,
+			waiting: 0,
+			listed: 0,
+			reserved: 0,
+			cooling: 0,
+			superseded: 1,
+			empty: 0
+		});
+		expect(tracks.get(A)).toEqual({ at: NOW, index: 0, eventId: deaths[2].eventId });
 	});
 
 	test('not again inside the cooldown, and again once it has run', () => {
@@ -231,7 +248,7 @@ describe('whom a batch brings a whisper', () => {
 		const tracks: WhisperedTracks = new Map([[A, { at: NOW - 60 * MIN, index: 0 }]]);
 		const s = step(cfg(), tracks, [death(A)], { rand: () => 0 });
 		expect(s.picks[0].index).toBe(1);
-		expect(tracks.get(A)).toEqual({ at: NOW, index: 1 });
+		expect(tracks.get(A)).toMatchObject({ at: NOW, index: 1 });
 	});
 
 	test('never a player on its list, nor one with a slot when it spares them', () => {
@@ -320,5 +337,166 @@ describe('its own placeholders', () => {
 		expect(kill({ killer: { steamId: A, name: 'Self' } }).killer).toBe('');
 		expect(kill({ cause: null }).weapon).toBe('');
 		expect(kill({ distanceM: null }).distance).toBe('');
+	});
+
+	test('a team kill keeps the killer, weapon and distance with a clear header', () => {
+		expect(kill({ teamKill: true }).death_summary).toBe('Team-killed by Ghost | AK74 | 153m');
+		expect(kill({ teamKill: true, suicide: true }).death_summary).toBe('You died | AK74 | 153m');
+	});
+
+	test('the longest team-kill header leaves 173 units for a body and blank line', () => {
+		const summary = kill({
+			teamKill: true,
+			killer: { steamId: B, name: 'N'.repeat(40) },
+			cause: 'Id.Item.' + 'W'.repeat(40),
+			distanceM: 123456789012345
+		}).death_summary as string;
+		expect(summary.length).toBeLessThanOrEqual(81);
+		expect(
+			renderTemplate('{death_summary}\n\n' + 'x'.repeat(173), { death_summary: summary }, 256)
+		).toEndWith('x'.repeat(173));
+	});
+});
+
+describe('separate report pool', () => {
+	const report = (steamId: string): Death => ({ ...death(steamId), teamKill: true });
+	const both = (over: Partial<DeathWhisperConfig> = {}) =>
+		cfg({
+			messages: ['normal one', 'normal two'],
+			teamKillMessages: ['report one', 'report two'],
+			cooldownMinutes: 10,
+			...over
+		});
+
+	test('team kills get reports only; normal deaths retain their own choices', () => {
+		const c = both();
+		const s = step(c, new Map(), [report(A), death(B)]);
+		expect(s.picks.map((p) => [p.pool, deathWhisperText(c, p)])).toEqual([
+			['teamKillMessages', 'report one'],
+			['messages', 'normal one']
+		]);
+	});
+
+	test('missing or empty report pools skip team kills without reserving a cooldown', () => {
+		for (const teamKillMessages of [undefined, []]) {
+			const tracks: WhisperedTracks = new Map();
+			const c = both({ teamKillMessages });
+			expect(step(c, tracks, [report(A)]).picks).toEqual([]);
+			expect(tracks.size).toBe(0);
+			expect(step(c, tracks, [death(A)]).picks[0].pool).toBe('messages');
+		}
+	});
+
+	test('the cooldown is shared in both directions, including exactly ten minutes', () => {
+		for (const firstReport of [true, false]) {
+			const tracks: WhisperedTracks = new Map();
+			const c = both();
+			step(c, tracks, [firstReport ? report(A) : death(A)]);
+			expect(
+				step(c, tracks, [firstReport ? death(A) : report(A)], { now: NOW + 10 * MIN - 1 }).picks
+			).toEqual([]);
+			expect(
+				step(c, tracks, [firstReport ? death(A) : report(A)], { now: NOW + 10 * MIN }).picks
+			).toHaveLength(1);
+		}
+	});
+
+	test('both pools honor reserved slots, explicit exemptions and unknown reserved lists', () => {
+		for (const d of [report, death]) {
+			const c = both({ spareReserved: true, exempt: [A] });
+			const s = step(c, new Map(), [d(A), d(B), d(C)], { reserved: new Set([B]) });
+			expect(s.picks.map((p) => p.steamId)).toEqual([C]);
+			expect(step(c, new Map(), [d(C)], { reserved: null }).held).toBe('reserved');
+		}
+	});
+
+	test('last-choice indexes remain independent across alternating pools', () => {
+		const c = both({ cooldownMinutes: 0 });
+		const tracks: WhisperedTracks = new Map();
+		const chosen = [death(A), report(A), death(A), report(A)].map((d) =>
+			deathWhisperText(c, step(c, tracks, [d]).picks[0])
+		);
+		expect(chosen).toEqual(['normal one', 'report one', 'normal two', 'report two']);
+	});
+
+	test('latest victim event supplies both the pool and event id, even at zero cooldown', () => {
+		const c = both({ cooldownMinutes: 0 });
+		for (const events of [
+			[death(A), report(A)],
+			[report(A), death(A)]
+		]) {
+			const tracks: WhisperedTracks = new Map();
+			const s = step(c, tracks, events);
+			expect(s.picks).toHaveLength(1);
+			expect(s.picks[0]).toMatchObject({
+				eventId: events[1].eventId,
+				pool: events[1].teamKill ? 'teamKillMessages' : 'messages'
+			});
+			expect(step(c, tracks, [events[1]]).picks).toEqual([]);
+		}
+	});
+
+	test('the report pool has its own fitting-placeholder cache and 100-entry cap', () => {
+		const c = both({ teamKillMessages: ['{weapon}', 'report'] });
+		expect(fittingMessages(c, ['weapon'], 'teamKillMessages')).toEqual([1]);
+		expect(fittingMessages(c, ['weapon'])).toEqual([0, 1]);
+		expect(
+			validateDeathWhisper({
+				messages: ['a'],
+				teamKillMessages: Array.from({ length: 100 }, (_, i) => `r${i}`)
+			}).teamKillMessages
+		).toHaveLength(100);
+		expect(
+			refused({ messages: ['a'], teamKillMessages: Array.from({ length: 101 }, (_, i) => `r${i}`) })
+		).toBe('A pool holds at most 100 messages.');
+	});
+
+	test('JSON multiline reports survive editor roundtrip and the rendered 256-unit cap', () => {
+		const templates = [
+			'{death_summary}\n\nREPORT\nTeam kill? Accidents happen. If it was intentional or repeated, report it at discord.gg/exotix.',
+			'x'.repeat(255) + '🎯'
+		];
+		const saved = validateConfig('death_whisper', {
+			messages: ['ad'],
+			teamKillMessages: automationPoolEditorValue(templates).split('\n')
+		}) as DeathWhisperConfig;
+		expect(saved.teamKillMessages).toEqual([templates[0], 'x'.repeat(255)]);
+		const reopened = automationPoolEditorValue(saved.teamKillMessages!);
+		expect(
+			(
+				validateConfig('death_whisper', {
+					messages: ['ad'],
+					teamKillMessages: reopened.split('\n')
+				}) as DeathWhisperConfig
+			).teamKillMessages
+		).toEqual(saved.teamKillMessages);
+		expect(MESSAGE_RULES.death_whisper?.fields).toEqual(['messages', 'teamKillMessages']);
+		const rendered = renderTemplate(
+			'{death_summary}\n\n' + 'x'.repeat(256),
+			{ death_summary: 'Team-killed by Ghost | AK74 | 153m' },
+			256
+		);
+		expect(rendered).toHaveLength(256);
+		expect(rendered.startsWith('Team-killed by Ghost | AK74 | 153m\n\n')).toBe(true);
+	});
+
+	test('only the feed flag plus an attributed non-suicide kill qualifies', () => {
+		const k = {
+			killer: { steamId: B, name: 'Ghost' },
+			victim: { steamId: A },
+			suicide: false,
+			teamKill: true,
+			cause: null,
+			distanceM: null
+		};
+		expect(reportableTeamKill(k)).toBe(true);
+		for (const change of [
+			{ teamKill: false },
+			{ killer: null },
+			{ suicide: true },
+			{ killer: { steamId: A, name: 'Self' } }
+		]) {
+			expect(reportableTeamKill({ ...k, ...change })).toBe(false);
+		}
 	});
 });

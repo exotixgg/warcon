@@ -245,9 +245,10 @@ describe('the catalogue and the rules’ settings', () => {
 	const samples: Partial<Record<TriggerKind, Record<string, unknown>>> = {
 		welcome: { message: 'a' },
 		faction_change: { message: 'a' },
-		death_whisper: { messages: ['a'] },
+		death_whisper: { messages: ['a'], teamKillMessages: ['report'] },
 		broadcast: { messages: ['a'], everyMinutes: 5 },
 		restart_notice: { message: 'a', leadMinutes: 10, leadMessage: 'b' },
+		match_card: { message: '{match_card}' },
 		match_broadcast: { endMessage: 'a', startMessage: 'b' },
 		risk_kick: { vacBans: true, reason: 'a' },
 		name_filter: { builtinWords: true, reason: 'a' },

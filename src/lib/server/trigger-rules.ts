@@ -1,6 +1,7 @@
 // The pure part of automation: trigger settings, their validation, message templates and the
 // kick-on-connect verdict. No database, no game server, so it is unit-testable on its own;
 // triggers.ts holds the engine that runs these against live ticks.
+import type { MatchCardConfig } from './match-card';
 import { ApiError, int, str } from './http';
 import { validateSeedNotices, type SeedNoticeConfig } from './seeding-messages';
 import { accountAgeDays, assessRisk, RISK_HIGH, RISK_MEDIUM, type RiskPerformance } from './risk';
@@ -41,6 +42,7 @@ export const TRIGGER_KINDS: TriggerKind[] = [
 	'team_kill',
 	'seed_reward',
 	'match_broadcast',
+	'match_card',
 	'name_filter',
 	'kill_rate',
 	'two_teams',
@@ -66,6 +68,7 @@ export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	team_kill: 'Team kill limit',
 	seed_reward: 'Seeding reward',
 	match_broadcast: 'Match broadcast',
+	match_card: 'Match stats whisper',
 	name_filter: 'Name filter',
 	kill_rate: 'Kill rate watch',
 	two_teams: 'Team balance',
@@ -265,6 +268,7 @@ export type TriggerConfig =
 	| TeamKillConfig
 	| SeedRewardConfig
 	| MatchBroadcastConfig
+	| MatchCardConfig
 	| NameFilterConfig
 	| KillRateConfig
 	| TwoTeamsConfig
@@ -305,7 +309,7 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 	const c = { ...(raw && typeof raw === 'object' ? raw : {}) } as Record<string, unknown>;
 	for (const field of MESSAGE_RULES[kind]?.fields ?? []) {
 		if (c[field] === undefined || c[field] === null) continue;
-		if (field === 'messages' || field === 'noticeMessages') {
+		if (field === 'messages' || field === 'noticeMessages' || field === 'teamKillMessages') {
 			const list = Array.isArray(c[field]) ? c[field] : String(c[field]).split('\n');
 			c[field] = (list as unknown[]).map(normalizeAutomationMessage);
 		} else c[field] = normalizeAutomationMessage(c[field]);
@@ -480,6 +484,11 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 				message: str(c.message, MAX_CHAT),
 				...(c.noticeEnabled === undefined ? {} : validateSeedNotices(c))
 			};
+		}
+		case 'match_card': {
+			const message = c.message === undefined ? '{match_card}' : str(c.message, MAX_CHAT);
+			if (!message) throw new ApiError(400, 'The match stats message is empty.');
+			return { message, delaySeconds: int(c.delaySeconds, 5, 0, 30) };
 		}
 		case 'match_broadcast': {
 			const endMessage = str(c.endMessage, MAX_CHAT);
