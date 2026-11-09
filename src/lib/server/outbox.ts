@@ -10,7 +10,7 @@
 import { and, desc, eq, gte, inArray, sql } from 'drizzle-orm';
 import type { Env } from './env';
 import type { DbOrTx } from './db';
-import { outbox, triggers, type OutboxRow } from './db/schema';
+import { kills, outbox, triggers, type OutboxRow } from './db/schema';
 import { storable, storableText } from './db/storable';
 import { ACTIONS } from './actions';
 import { GameError, WardogsClient } from './rcon';
@@ -51,6 +51,7 @@ import {
 } from './afk-protection';
 import { AFK_WATCH_FLAG, type AfkCounters } from './afk-watch';
 import { DEATH_WHISPER_MAX_AGE_MS } from './death-whisper';
+import { matchCardStillHolds, type MatchCardEnd } from './match-card';
 import type { PingKickState } from './trigger-rules';
 import {
 	BAN_ANNOUNCEMENT,
@@ -318,6 +319,18 @@ type Outcome = 'delivered' | 'failed' | 'skipped' | 'unknown';
 /** Why a row must not be sent right now, or null. Checked again inside the lane, right before sending. */
 function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | null {
 	if (!m) return 'Server no longer polled.';
+	if (row.triggerKind === 'match_card') {
+		const end = (row.params as { matchCard?: MatchCardEnd })?.matchCard;
+		if (
+			!matchCardStillHolds(end, m.status, m.matchState, m.startedAt, Date.now()) ||
+			(end && m.closed && m.closed.at >= end.at) ||
+			!m.ok ||
+			!m.playersAt ||
+			Date.now() - m.playersAt > Math.max(15_000, m.playersIntervalMs * 2) ||
+			!m.players.some((p) => p.steamId === row.steamId)
+		)
+			return 'Match ended, player left or post-match delivery window closed.';
+	}
 	const age = Date.now() - new Date(row.createdAt).getTime();
 	if (age > settings().outboxMaxAgeMs) return `Stale (${Math.round(age / 1000)}s old).`;
 	if (row.triggerKind === BAN_ANNOUNCEMENT) {
@@ -572,6 +585,41 @@ async function stillHolds(env: Env, row: OutboxRow): Promise<boolean | null> {
 /** What a row decided under settings its rule no longer holds says. */
 const CHANGED = 'The rule was changed before this was sent.';
 
+/** A later team kill cancels an unsent ordinary card, even if the shared cooldown prevents a report.
+ * The persisted feed check also covers restarts and rows already claimed before the new batch. */
+async function deathWhisperSuperseded(env: Env, row: OutboxRow): Promise<boolean> {
+	if (row.triggerKind !== 'death_whisper') return false;
+	const death = (row.params as { death?: { pool: string; ts: string; eventTime: number } })?.death;
+	const receivedAt = typeof death?.ts === 'string' ? new Date(death.ts) : null;
+	if (
+		!row.steamId ||
+		!death ||
+		!receivedAt ||
+		!Number.isFinite(receivedAt.getTime()) ||
+		typeof death.eventTime !== 'number' ||
+		!Number.isFinite(death.eventTime) ||
+		!['messages', 'teamKillMessages'].includes(death.pool)
+	)
+		throw new Skipped('Death whisper context is missing or invalid.');
+	if (death.pool === 'teamKillMessages') return false;
+	const [later] = await env.db
+		.select({ id: kills.eventId })
+		.from(kills)
+		.where(
+			and(
+				eq(kills.serverId, row.serverId),
+				eq(kills.victimSteamId, row.steamId),
+				eq(kills.teamKill, true),
+				eq(kills.suicide, false),
+				gte(kills.ts, receivedAt),
+				sql`${kills.killerSteamId} IS NOT NULL AND ${kills.killerSteamId} <> ${kills.victimSteamId}`,
+				sql`(${kills.ts}, ${kills.eventTime}) > (${receivedAt}, ${death.eventTime})`
+			)
+		)
+		.limit(1);
+	return !!later;
+}
+
 /** How long a row whose player is off the list waits before it is looked at again. */
 const WAIT_MS = 5000;
 
@@ -655,6 +703,15 @@ async function deliverOne(env: Env, row: OutboxRow): Promise<'held' | 'refused' 
 				const holds = await stillHolds(env, row);
 				if (holds === null) throw new Waiting();
 				if (!holds) throw new Skipped(CHANGED);
+				let superseded: boolean;
+				try {
+					superseded = await deathWhisperSuperseded(env, row);
+				} catch (err) {
+					if (err instanceof Skipped) throw err;
+					console.error('[warcon] death whisper context check', forLog(err));
+					throw new Waiting();
+				}
+				if (superseded) throw new Skipped('A later team kill superseded this death whisper.');
 				if (!isOwner()) throw new LostOwnership();
 				const client = await WardogsClient.forServer(env, m!.server);
 				noteMoveSent(row);

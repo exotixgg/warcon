@@ -256,6 +256,7 @@
 					: !canChat
 						? 'Saving needs the Chat capability as well as Automation: the bounty is announced to the server.'
 						: '';
+			case 'match_card':
 			case 'death_whisper':
 				return !data.feed
 					? 'Needs the kill feed, which is off on this server. Turn it on under Config.'
@@ -514,9 +515,11 @@
 		name: string;
 		enabled: boolean;
 		message: string;
+		delaySeconds: number;
 		onlyFirstVisit: boolean;
 		afterFaction: boolean;
 		messages: string;
+		teamKillMessages: string;
 		everyMinutes: number;
 		minPlayers: number;
 		maxPlayers: number | null;
@@ -743,22 +746,28 @@
 			enabled: t?.enabled ?? true,
 			message: s(
 				'message',
-				kind === 'welcome'
-					? '{welcome_card}'
-					: kind === 'faction_change'
-						? 'You are now fighting for {faction}, {name}.'
-						: kind === 'restart_notice'
-							? 'Scheduled restart: the server restarts when this round ends. Rejoin in a minute or two.'
-							: kind === 'seed_reward'
-								? 'Thanks for seeding {server}, {name}: you have a reserved slot until {until}.'
-								: kind === 'two_teams'
-									? 'You have been placed on {team}.'
-									: kind === 'afk_protection'
-										? 'Seeding: everyone was respawned so the idle kick spares you. {players} of {goal} on.'
-										: 'Welcome to {server}, {name}! Read the rules with /rules.'
+				kind === 'match_card'
+					? '{match_card}'
+					: kind === 'welcome'
+						? '{welcome_card}'
+						: kind === 'faction_change'
+							? 'You are now fighting for {faction}, {name}.'
+							: kind === 'restart_notice'
+								? 'Scheduled restart: the server restarts when this round ends. Rejoin in a minute or two.'
+								: kind === 'seed_reward'
+									? 'Thanks for seeding {server}, {name}: you have a reserved slot until {until}.'
+									: kind === 'two_teams'
+										? 'You have been placed on {team}.'
+										: kind === 'afk_protection'
+											? 'Seeding: everyone was respawned so the idle kick spares you. {players} of {goal} on.'
+											: 'Welcome to {server}, {name}! Read the rules with /rules.'
 			),
 			onlyFirstVisit: b('onlyFirstVisit', false),
+			delaySeconds: n('delaySeconds', 5),
 			afterFaction: b('afterFaction', kind === 'welcome' && !t),
+			teamKillMessages: automationPoolEditorValue(
+				Array.isArray(c.teamKillMessages) ? (c.teamKillMessages as string[]) : []
+			),
 			messages: Array.isArray(c.messages)
 				? automationPoolEditorValue(c.messages as string[])
 				: kind === 'death_whisper'
@@ -936,11 +945,14 @@
 					onlyFirstVisit: f.onlyFirstVisit,
 					afterFaction: f.afterFaction
 				};
+			case 'match_card':
+				return { message: f.message, delaySeconds: Number(f.delaySeconds) };
 			case 'faction_change':
 				return { message: f.message };
 			case 'death_whisper':
 				return {
 					messages: f.messages.split('\n'),
+					teamKillMessages: f.teamKillMessages.split('\n'),
 					cooldownMinutes: Number(f.cooldownMinutes),
 					minPlayers: Number(f.minPlayers),
 					spareReserved: f.spareReserved,
@@ -1206,10 +1218,13 @@
 		switch (kind) {
 			case 'welcome':
 				return `"${c.message}"${c.afterFaction ? ' · after faction pick' : ' · on join'}${c.onlyFirstVisit ? ' · first visit only' : ''}`;
+			case 'match_card':
+				return `Private match stats, at least ${c.delaySeconds ?? 5}s after confirmed completion`;
 			case 'faction_change':
 				return `"${c.message}"`;
 			case 'death_whisper': {
 				const count = Array.isArray(c.messages) ? c.messages.length : 0;
+				const reports = Array.isArray(c.teamKillMessages) ? c.teamKillMessages.length : 0;
 				const exempt = Array.isArray(c.exempt) ? c.exempt.length : 0;
 				const spares = [
 					c.spareReserved && 'reserved slots',
@@ -1219,7 +1234,7 @@
 					c.cooldownMinutes === 0
 						? 'every death'
 						: `each player at most every ${c.cooldownMinutes} min`;
-				return `${count} message${count === 1 ? '' : 's'} · ${timing} · at least ${c.minPlayers} on${spares.length ? ` · spares ${spares.join(' and ')}` : ''}`;
+				return `${count} normal message${count === 1 ? '' : 's'} · ${reports ? `${reports} team-kill reports` : 'team kills skipped'} · ${timing} · at least ${c.minPlayers} on${spares.length ? ` · spares ${spares.join(' and ')}` : ''}`;
 			}
 			case 'broadcast':
 				return `${(c.messages as string[]).length} message${(c.messages as string[]).length === 1 ? '' : 's'} every ${c.everyMinutes} min · ${typeof c.maxPlayers === 'number' ? `${c.minPlayers} to ${c.maxPlayers}` : `at least ${c.minPlayers}`} on`;
@@ -1868,6 +1883,28 @@
 						>
 					</fieldset>
 					<p class="note">Sent as a whisper, so only that player sees it.</p>
+				{:else if f.kind === 'match_card'}
+					<fieldset class="space-y-2">
+						<legend class="field-label">Private match stats</legend>
+						<textarea
+							class="min-h-30 input font-mono text-[12.5px]"
+							bind:value={f.message}
+							maxlength={RAW_MESSAGE_INPUT_MAX}
+							required></textarea>
+						<button type="button" class="btn btn-sm" onclick={() => (f.message = '{match_card}')}
+							>Use EXOTIX card</button
+						>
+						{@render placeholders('match_card', [f.message])}
+					</fieldset>
+					<label class="field-label"
+						>Delay after confirmed completion (seconds)
+						<input class="input" type="number" min="0" max="30" bind:value={f.delaySeconds} />
+					</label>
+					<p class="note">
+						One private card per connected match participant, including VIPs. Sent after a fresh
+						player observation during the post-match screen. Cash is match earnings. Missing feed
+						details are omitted.
+					</p>
 				{:else if f.kind === 'faction_change'}
 					<fieldset class="space-y-2">
 						<legend class="field-label">Whisper</legend>
@@ -1887,7 +1924,7 @@
 				{:else if f.kind === 'death_whisper'}
 					<fieldset class="space-y-2">
 						<legend class="field-label"
-							>Whispers · up to 100, one per line, one picked at random</legend
+							>Normal deaths · up to 100, one per line, one picked at random</legend
 						>
 						<textarea class="min-h-[100px] input" bind:value={f.messages} required></textarea>
 						<p class="note">
@@ -1896,6 +1933,22 @@
 							that leaves out missing details.
 						</p>
 						{@render placeholders('death_whisper', [f.messages])}
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label"
+							>Team-kill reports · optional, up to 100, one per line</legend
+						>
+						<textarea
+							class="min-h-[100px] input"
+							bind:value={f.teamKillMessages}
+							placeholder="Team kill? Accidents happen. If it was intentional or repeated, report it at discord.gg/exotix."
+						></textarea>
+						<p class="note">
+							Team-killed victims receive only this pool. Leave it empty to skip their whispers. The
+							same cooldown and exemptions apply to both pools. JSON strings, line breaks and
+							placeholders work as above; {'{death_summary}'} identifies a team kill.
+						</p>
+						{@render placeholders('death_whisper', [f.teamKillMessages])}
 					</fieldset>
 					<fieldset class="space-y-1.5 text-[13px]">
 						<legend class="field-label">When</legend>

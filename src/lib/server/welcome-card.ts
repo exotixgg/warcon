@@ -7,6 +7,7 @@ import { currentSeason } from '$lib/seasons';
 import type { Env } from './env';
 import { rangeBase } from './leaderboards';
 import { orgSeasons } from './seasons';
+import { cardLeaderLine } from './card-format';
 
 export type WelcomeCardValue = string | number;
 export type WelcomeCardVars = Record<string, WelcomeCardValue>;
@@ -25,41 +26,18 @@ const leadersCache = new Map<
 const number = (value: unknown): number =>
 	value === null || value === undefined ? 0 : Number(value);
 
-/** Compact display values are intentional: the RCON chat transport is limited to 256 characters. */
-export function compactNumber(value: number): string {
-	const n = Math.max(0, Math.round(value));
-	if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
-	if (n >= 1_000) return `${(n / 1_000).toFixed(n >= 10_000 ? 0 : 1)}K`;
-	return String(n);
-}
-
-export function compactMinutes(value: number): string {
-	const minutes = Math.max(0, Math.round(value));
-	return minutes >= 60 ? `${Math.round(minutes / 60)}h` : `${minutes}m`;
-}
-
-export function shortWelcomeName(value: string, max = 20): string {
-	const text = value.replace(/\s+/g, ' ').trim();
-	const chars =
-		typeof Intl.Segmenter === 'function'
-			? Array.from(
-					new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text),
-					(part) => part.segment
-				)
-			: Array.from(text);
-	if (text.length <= max) return text;
-	if (max <= 1) return '…';
-	let output = '';
-	for (const part of chars) {
-		if (output.length + part.length + 1 > max) break;
-		output += part;
-	}
-	return output ? `${output}…` : '…';
-}
-
-export function welcomeServerLabel(name: string): string {
-	return shortWelcomeName(name.replace(/^EXOTIX(?:-|\s+)/i, 'EXOTIX.GG '), 24) || '-';
-}
+import {
+	compactNumber,
+	compactMinutes,
+	shortCardName as shortWelcomeName,
+	cardServerLabel as welcomeServerLabel
+} from './card-format';
+export {
+	compactNumber,
+	compactMinutes,
+	shortCardName as shortWelcomeName,
+	cardServerLabel as welcomeServerLabel
+} from './card-format';
 
 export function welcomeSeasonLabel(name: string): string {
 	const simple = name.match(/^season\s+(\d+)$/i);
@@ -277,10 +255,14 @@ export function buildWelcomeCard(vars: WelcomeCardVars): string {
 			...(includeRival ? [`Rival: ${name('season_rival')}${rivalRecord}`] : []),
 			'',
 			'LEADERS',
-			`${name('leader_kills_name')} — ${value('leader_kills_value', 9, '0')} kills`,
-			`${name('leader_cash_name')} — $${value('leader_cash_value', 9, '0')} cash`,
-			`${name('leader_playtime_name')} — ${value('leader_playtime_value', 8, '0m')} played`,
-			`${name('leader_seeded_name')} — ${value('leader_seeded_value', 8, '0m')} seeded`
+			cardLeaderLine(name('leader_kills_name'), value('leader_kills_value', 9, '0'), 'kills'),
+			cardLeaderLine(name('leader_cash_name'), `$${value('leader_cash_value', 9, '0')}`, 'cash'),
+			cardLeaderLine(
+				name('leader_playtime_name'),
+				value('leader_playtime_value', 8, '0m'),
+				'played'
+			),
+			cardLeaderLine(name('leader_seeded_name'), value('leader_seeded_value', 8, '0m'), 'seeded')
 		];
 		return lines.join('\n');
 	};
