@@ -23,7 +23,7 @@ export function usesMessageRotation(rows: { kind: TriggerKind; config: unknown }
 				(text: unknown) =>
 					typeof text === 'string' &&
 					[...text.matchAll(/\{([a-z_]+)\}/gi)].some(([, name]) =>
-						['next_map', 'next_weather'].includes(canonical(name))
+						['next_map', 'next_weather', 'match_card'].includes(canonical(name))
 					)
 			);
 		});

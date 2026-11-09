@@ -118,6 +118,16 @@ import { evalSeedNotices } from './seeding-notices';
 import type { SeedSession } from './seeding-messages';
 import { usesWelcomeCard, WELCOME_PLACEHOLDERS } from '$lib/placeholders';
 import { welcomeCardVars } from './welcome-card';
+import {
+	readMatchCard,
+	matchCardVars,
+	matchCardStillHolds,
+	matchCardSettingsKey,
+	type MatchCardEnd,
+	type MatchCardConfig
+} from './match-card';
+import type { TallyRow } from './match-players';
+import type { MatchStateView } from '$lib/types';
 import { notifyBounty, type BountyCard } from './webhook-delivery';
 import { NAME_FLAG, nameFilterTargets, nameVerdict, type NameFilterConfig } from './name-filter';
 import {
@@ -349,6 +359,7 @@ const RULE_NEEDS: Record<
 	broadcast: ['chat.send', 'messages players'],
 	restart_notice: ['chat.send', 'messages players'],
 	match_broadcast: ['chat.send', 'messages players'],
+	match_card: ['chat.send', 'whispers players'],
 	empty_reset: ['match.control', 'changes the map'],
 	restart_skip: ['match.control', 'ends the match'],
 	weather_cycle: ['match.control', 'changes the weather'],
@@ -608,6 +619,7 @@ export async function deleteTrigger(
  */
 export const SETTINGS_KEYS: Partial<Record<string, (config: unknown) => string>> = {
 	death_whisper: deathWhisperSettingsKey,
+	match_card: (c) => matchCardSettingsKey(c as MatchCardConfig),
 	ping_kick: pingSettingsKey,
 	two_teams: (c) => twoTeamsSettingsKey(c as TwoTeamsConfig),
 	kill_distance: (c) => killDistanceSettingsKey(c as KillDistanceConfig),
@@ -642,6 +654,9 @@ export interface TickContext {
 	server: ServerRow;
 	status: Status;
 	messageRotation?: MessageRotation | null;
+	matchCardEnd?: MatchCardEnd | null;
+	matchCardState?: MatchStateView | null;
+	matchCardLines?: TallyRow[];
 	players: Player[];
 	/** true only when this observation fetched a fresh player list */
 	playersObserved: boolean;
@@ -885,6 +900,9 @@ export async function evaluateTriggers(
 				case 'welcome':
 					await evalWelcome(env, ctx, row, row.config as WelcomeConfig, out, read);
 					break;
+				case 'match_card':
+					await evalMatchCard(env, ctx, row, row.config as MatchCardConfig, out, read);
+					break;
 				case 'faction_change':
 					await evalFactionChange(ctx, row, row.config as FactionChangeConfig, out, read);
 					break;
@@ -1018,6 +1036,80 @@ async function evalWelcome(
 			lastFiredAt: ctx.ts,
 			lastResult: `Whispering ${n === 1 ? last : `${n} players`}`
 		});
+}
+
+async function evalMatchCard(
+	env: Env,
+	ctx: TickContext,
+	row: TriggerRow,
+	cfg: MatchCardConfig,
+	out: Evaluation,
+	read: StatsReader
+) {
+	const end = ctx.matchCardEnd;
+	const now = ctx.ts.getTime();
+	if (
+		!end ||
+		ctx.matchEnd ||
+		ctx.recovered ||
+		!ctx.playersObserved ||
+		now - end.at < cfg.delaySeconds * 1000 ||
+		!matchCardStillHolds(end, ctx.status, ctx.matchCardState ?? null, ctx.startedAt, now)
+	)
+		return;
+	const saved = (row.state ?? {}) as { matchCardEvent?: string; matchCardRow?: number };
+	if (saved.matchCardEvent === end.eventId) return;
+	const targets = ctx.players.filter((p) => end.recipients.includes(p.steamId));
+	if (!targets.length) return;
+	const snapshot = await readMatchCard(env, ctx.server.id, end.map, ctx.matchCardLines ?? []);
+	if (!snapshot || saved.matchCardRow === snapshot.id) return;
+	const stats = await statsFor(
+		read,
+		targets.map((p) => ({ steamId: p.steamId, text: cfg.message }))
+	);
+	for (const p of targets) {
+		const own = matchCardVars(ctx.server.name, p.steamId, snapshot.data, end);
+		if (!own) continue;
+		const message = renderTemplate(
+			cfg.message,
+			vars(ctx, p, statsOf(stats, p.steamId), own),
+			MAX_CHAT
+		);
+		out.intents.push({
+			trigger: row,
+			action: 'whisper',
+			params: {
+				steamId: p.steamId,
+				message,
+				rule: matchCardSettingsKey(cfg),
+				matchCard: {
+					eventId: end.eventId,
+					at: end.at,
+					map: end.map,
+					startedAt: end.startedAt,
+					matchSeconds: end.matchSeconds,
+					rotationNow: end.rotationNow,
+					rotationNext: end.rotationNext
+				}
+			},
+			target: p.steamId,
+			okMessage: `Whispered match stats to ${p.name}.`,
+			detail: { name: p.name, matchId: snapshot.id },
+			steamId: p.steamId,
+			dedupeKey: `${row.id}:match-card:${snapshot.id}:${p.steamId}`
+		});
+	}
+	// State and intents commit together. The outbox key also survives event redelivery and restarts.
+	const state = { matchCardEvent: end.eventId, matchCardRow: snapshot.id };
+	out.updates.push({
+		id: row.id,
+		lastFiredAt: ctx.ts,
+		lastResult: `Whispering match stats to ${targets.length} participants`,
+		state
+	});
+	(out.afterCommit ??= []).push(() => {
+		row.state = state;
+	});
 }
 
 async function evalFactionChange(
@@ -2571,6 +2663,12 @@ export async function dryRun(
 			   ${withFaction ? sql`AND s.faction IS NOT NULL AND s.faction <> ''` : sql``}
 			 ORDER BY s.joined_at ASC LIMIT ${REPLAY_ROWS_MAX}`);
 
+	if (kind === 'match_card') {
+		result.notes.push(
+			'Match cards use a live confirmed match end and final observations; they are not replayed.'
+		);
+		return result;
+	}
 	if (kind === 'welcome') {
 		const c = cfg as WelcomeConfig;
 		const rows = await joins(c.afterFaction);

@@ -51,6 +51,7 @@ import {
 } from './afk-protection';
 import { AFK_WATCH_FLAG, type AfkCounters } from './afk-watch';
 import { DEATH_WHISPER_MAX_AGE_MS } from './death-whisper';
+import { matchCardStillHolds, type MatchCardEnd } from './match-card';
 import type { PingKickState } from './trigger-rules';
 import {
 	BAN_ANNOUNCEMENT,
@@ -318,6 +319,18 @@ type Outcome = 'delivered' | 'failed' | 'skipped' | 'unknown';
 /** Why a row must not be sent right now, or null. Checked again inside the lane, right before sending. */
 function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | null {
 	if (!m) return 'Server no longer polled.';
+	if (row.triggerKind === 'match_card') {
+		const end = (row.params as { matchCard?: MatchCardEnd })?.matchCard;
+		if (
+			!matchCardStillHolds(end, m.status, m.matchState, m.startedAt, Date.now()) ||
+			(end && m.closed && m.closed.at >= end.at) ||
+			!m.ok ||
+			!m.playersAt ||
+			Date.now() - m.playersAt > Math.max(15_000, m.playersIntervalMs * 2) ||
+			!m.players.some((p) => p.steamId === row.steamId)
+		)
+			return 'Match ended, player left or post-match delivery window closed.';
+	}
 	const age = Date.now() - new Date(row.createdAt).getTime();
 	if (age > settings().outboxMaxAgeMs) return `Stale (${Math.round(age / 1000)}s old).`;
 	if (row.triggerKind === BAN_ANNOUNCEMENT) {
