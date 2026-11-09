@@ -242,6 +242,9 @@ import {
 	deathBlanks,
 	deathVars,
 	deathWhisperStep,
+	deathWhisperText,
+	deathWhisperSettingsKey,
+	reportableTeamKill,
 	type DeathWhisperConfig,
 	type WhisperedTracks
 } from './death-whisper';
@@ -604,6 +607,7 @@ export async function deleteTrigger(
  * off or deleted stops it), nor a change of the weather.
  */
 export const SETTINGS_KEYS: Partial<Record<string, (config: unknown) => string>> = {
+	death_whisper: deathWhisperSettingsKey,
 	ping_kick: pingSettingsKey,
 	two_teams: (c) => twoTeamsSettingsKey(c as TwoTeamsConfig),
 	kill_distance: (c) => killDistanceSettingsKey(c as KillDistanceConfig),
@@ -2866,11 +2870,12 @@ export async function dryRun(
 			cause: string | null;
 			distanceM: number | null;
 			suicide: boolean;
+			teamKill: boolean;
 		};
 		const rows = await env.db.execute<DeathRow>(sql`
 			SELECT ts, event_id AS "eventId", map, killer_steam_id AS killer, killer_name AS "killerName",
 			       victim_steam_id AS victim, victim_name AS "victimName", cause,
-			       distance_m AS "distanceM", suicide
+			       distance_m AS "distanceM", suicide, team_kill AS "teamKill"
 			  FROM kills
 			 WHERE server_id = ${server.id} AND ts >= ${from}
 			 ORDER BY ts ASC, event_time ASC LIMIT ${KILL_RATE_REPLAY_MAX}`);
@@ -2888,7 +2893,7 @@ export async function dryRun(
 		}
 		const sampled = counts.map((r) => ({ at: new Date(r.ts).getTime(), n: Number(r.n ?? 0) }));
 		const tracks: WhisperedTracks = new Map();
-		const passed = { few: 0, listed: 0, reserved: 0, cooling: 0 };
+		const passed = { few: 0, listed: 0, reserved: 0, cooling: 0, superseded: 0, empty: 0 };
 		const players = new Set<string>();
 		let next = 0;
 		let on = 0;
@@ -2904,13 +2909,26 @@ export async function dryRun(
 					victim: { steamId: r.victim },
 					cause: r.cause,
 					distanceM: r.distanceM === null ? null : Number(r.distanceM),
-					suicide: !!r.suicide
+					suicide: !!r.suicide,
+					teamKill: r.teamKill
 				})
 			}));
 			const step = deathWhisperStep(
 				c,
 				tracks,
-				batch.map((r) => ({ steamId: r.victim, eventId: r.eventId, blank: deathBlanks(r.own) })),
+				batch.map((r) => ({
+					steamId: r.victim,
+					eventId: r.eventId,
+					blank: deathBlanks(r.own),
+					teamKill: reportableTeamKill({
+						killer: r.killer ? { steamId: r.killer, name: r.killerName ?? '' } : null,
+						victim: { steamId: r.victim },
+						cause: r.cause,
+						distanceM: r.distanceM,
+						suicide: r.suicide,
+						teamKill: r.teamKill
+					})
+				})),
 				{ now: at, on, reserved }
 			);
 			for (const k of Object.keys(passed) as (keyof typeof passed)[]) passed[k] += step.passed[k];
@@ -2924,7 +2942,7 @@ export async function dryRun(
 				);
 				push(
 					new Date(at),
-					`whisper ${r.victimName || r.victim} (${r.victim}): ${renderTemplate(c.messages[p.index], v, MAX_CHAT)}`
+					`whisper ${r.victimName || r.victim} (${r.victim}): ${renderTemplate(deathWhisperText(c, p), v, MAX_CHAT)}`
 				);
 			}
 			i = j;
@@ -2945,6 +2963,8 @@ export async function dryRun(
 			passed.cooling && `${passed.cooling} inside a player's ${c.cooldownMinutes}-minute cooldown`,
 			passed.listed && `${passed.listed} of players on the rule's list`,
 			passed.reserved && `${passed.reserved} of players with a reserved slot`,
+			passed.empty && `${passed.empty} team kills without report messages`,
+			passed.superseded && `${passed.superseded} superseded by a later death in the same batch`,
 			passed.few && `${passed.few} while fewer than ${c.minPlayers} were on`
 		].filter(Boolean);
 		if (why.length) result.notes.push(`Passed over: ${why.join(', ')}.`);

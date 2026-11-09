@@ -107,7 +107,7 @@ export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> 
 	faction_change: { fields: ['message'], own: ['previous'], player: true },
 	// who killed the player, with what, from how far: blank where it does not apply (a fall)
 	death_whisper: {
-		fields: ['messages'],
+		fields: ['messages', 'teamKillMessages'],
 		own: ['killer', 'weapon', 'distance', 'death_summary'],
 		player: true
 	},

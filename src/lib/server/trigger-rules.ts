@@ -305,7 +305,7 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 	const c = { ...(raw && typeof raw === 'object' ? raw : {}) } as Record<string, unknown>;
 	for (const field of MESSAGE_RULES[kind]?.fields ?? []) {
 		if (c[field] === undefined || c[field] === null) continue;
-		if (field === 'messages' || field === 'noticeMessages') {
+		if (field === 'messages' || field === 'noticeMessages' || field === 'teamKillMessages') {
 			const list = Array.isArray(c[field]) ? c[field] : String(c[field]).split('\n');
 			c[field] = (list as unknown[]).map(normalizeAutomationMessage);
 		} else c[field] = normalizeAutomationMessage(c[field]);

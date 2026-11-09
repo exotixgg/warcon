@@ -517,6 +517,7 @@
 		onlyFirstVisit: boolean;
 		afterFaction: boolean;
 		messages: string;
+		teamKillMessages: string;
 		everyMinutes: number;
 		minPlayers: number;
 		maxPlayers: number | null;
@@ -759,6 +760,9 @@
 			),
 			onlyFirstVisit: b('onlyFirstVisit', false),
 			afterFaction: b('afterFaction', kind === 'welcome' && !t),
+			teamKillMessages: automationPoolEditorValue(
+				Array.isArray(c.teamKillMessages) ? (c.teamKillMessages as string[]) : []
+			),
 			messages: Array.isArray(c.messages)
 				? automationPoolEditorValue(c.messages as string[])
 				: kind === 'death_whisper'
@@ -941,6 +945,7 @@
 			case 'death_whisper':
 				return {
 					messages: f.messages.split('\n'),
+					teamKillMessages: f.teamKillMessages.split('\n'),
 					cooldownMinutes: Number(f.cooldownMinutes),
 					minPlayers: Number(f.minPlayers),
 					spareReserved: f.spareReserved,
@@ -1210,6 +1215,7 @@
 				return `"${c.message}"`;
 			case 'death_whisper': {
 				const count = Array.isArray(c.messages) ? c.messages.length : 0;
+				const reports = Array.isArray(c.teamKillMessages) ? c.teamKillMessages.length : 0;
 				const exempt = Array.isArray(c.exempt) ? c.exempt.length : 0;
 				const spares = [
 					c.spareReserved && 'reserved slots',
@@ -1219,7 +1225,7 @@
 					c.cooldownMinutes === 0
 						? 'every death'
 						: `each player at most every ${c.cooldownMinutes} min`;
-				return `${count} message${count === 1 ? '' : 's'} · ${timing} · at least ${c.minPlayers} on${spares.length ? ` · spares ${spares.join(' and ')}` : ''}`;
+				return `${count} normal message${count === 1 ? '' : 's'} · ${reports ? `${reports} team-kill reports` : 'team kills skipped'} · ${timing} · at least ${c.minPlayers} on${spares.length ? ` · spares ${spares.join(' and ')}` : ''}`;
 			}
 			case 'broadcast':
 				return `${(c.messages as string[]).length} message${(c.messages as string[]).length === 1 ? '' : 's'} every ${c.everyMinutes} min · ${typeof c.maxPlayers === 'number' ? `${c.minPlayers} to ${c.maxPlayers}` : `at least ${c.minPlayers}`} on`;
@@ -1887,7 +1893,7 @@
 				{:else if f.kind === 'death_whisper'}
 					<fieldset class="space-y-2">
 						<legend class="field-label"
-							>Whispers · up to 100, one per line, one picked at random</legend
+							>Normal deaths · up to 100, one per line, one picked at random</legend
 						>
 						<textarea class="min-h-[100px] input" bind:value={f.messages} required></textarea>
 						<p class="note">
@@ -1896,6 +1902,22 @@
 							that leaves out missing details.
 						</p>
 						{@render placeholders('death_whisper', [f.messages])}
+					</fieldset>
+					<fieldset class="space-y-2">
+						<legend class="field-label"
+							>Team-kill reports · optional, up to 100, one per line</legend
+						>
+						<textarea
+							class="min-h-[100px] input"
+							bind:value={f.teamKillMessages}
+							placeholder="Team kill? Accidents happen. If it was intentional or repeated, report it at discord.gg/exotix."
+						></textarea>
+						<p class="note">
+							Team-killed victims receive only this pool. Leave it empty to skip their whispers. The
+							same cooldown and exemptions apply to both pools. JSON strings, line breaks and
+							placeholders work as above; {'{death_summary}'} identifies a team kill.
+						</p>
+						{@render placeholders('death_whisper', [f.teamKillMessages])}
 					</fieldset>
 					<fieldset class="space-y-1.5 text-[13px]">
 						<legend class="field-label">When</legend>
