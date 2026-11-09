@@ -14,6 +14,7 @@ import { causeLabel } from '$lib/causes';
 import { MAX_CHAT } from '$lib/chat';
 import { canonical } from '$lib/placeholders';
 import type { MessageVars } from './message-vars';
+import { settingsFingerprint } from './fingerprint';
 
 export const DEATH_WHISPER_MAX_MESSAGES = 100;
 export const DEATH_WHISPER_DEFAULT_COOLDOWN = 30;
@@ -34,6 +35,8 @@ export const DEATH_WHISPER_KEEP_MS = 60 * 60_000;
 export interface DeathWhisperConfig {
 	/** what it whispers, one picked at random each time */
 	messages: string[];
+	/** Report-only choices for team-killed victims. Missing/empty means no team-kill whisper. */
+	teamKillMessages?: string[];
 	/** the rule whispers a player at most once in this long; zero allows every death */
 	cooldownMinutes: number;
 	/** acts only while at least this many are on */
@@ -45,26 +48,31 @@ export interface DeathWhisperConfig {
 }
 
 export function validateDeathWhisper(c: Record<string, unknown>): DeathWhisperConfig {
-	const list = Array.isArray(c.messages) ? c.messages : String(c.messages ?? '').split('\n');
-	// Pool entries may contain line breaks decoded from a JSON string by validateConfig.
-	const messages = [
-		...new Set(
-			list
-				.map((m) =>
-					String(m ?? '')
-						.toWellFormed()
-						.replace(/\r\n?/g, '\n')
-						.replace(/[^\S\n]+|[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, ' ')
-						.trim()
-						.slice(0, MAX_CHAT)
-						.replace(/[\uD800-\uDBFF]$/, '')
-				)
-				.filter(Boolean)
-		)
-	];
+	const pool = (raw: unknown): string[] => {
+		const list = Array.isArray(raw) ? raw : String(raw ?? '').split('\n');
+		// Pool entries may contain line breaks decoded from a JSON string by validateConfig.
+		const messages = [
+			...new Set(
+				list
+					.map((m) =>
+						String(m ?? '')
+							.toWellFormed()
+							.replace(/\r\n?/g, '\n')
+							.replace(/[^\S\n]+|[\u0000-\u0009\u000b-\u001f\u007f-\u009f]/g, ' ')
+							.trim()
+							.slice(0, MAX_CHAT)
+							.replace(/[\uD800-\uDBFF]$/, '')
+					)
+					.filter(Boolean)
+			)
+		];
+		if (messages.length > DEATH_WHISPER_MAX_MESSAGES)
+			throw new ApiError(400, `A pool holds at most ${DEATH_WHISPER_MAX_MESSAGES} messages.`);
+		return messages;
+	};
+	const messages = pool(c.messages);
 	if (!messages.length) throw new ApiError(400, 'Add at least one message to whisper.');
-	if (messages.length > DEATH_WHISPER_MAX_MESSAGES)
-		throw new ApiError(400, `A rule holds at most ${DEATH_WHISPER_MAX_MESSAGES} messages.`);
+	const teamKillMessages = pool(c.teamKillMessages);
 	const cooldownMinutes = int(
 		c.cooldownMinutes,
 		DEATH_WHISPER_DEFAULT_COOLDOWN,
@@ -73,6 +81,7 @@ export function validateDeathWhisper(c: Record<string, unknown>): DeathWhisperCo
 	);
 	return {
 		messages,
+		teamKillMessages,
 		cooldownMinutes,
 		minPlayers: int(c.minPlayers, 1, 0, 1000),
 		spareReserved: !!c.spareReserved,
@@ -85,6 +94,9 @@ export interface Whispered {
 	at: number;
 	/** the message's place in the rule's list; -1 when not known */
 	index: number;
+	/** Independent last choice in the report pool; index remains the normal-pool choice. */
+	reportIndex?: number;
+	eventId?: string;
 }
 export type WhisperedTracks = Map<string, Whispered>;
 
@@ -98,11 +110,20 @@ export interface Death {
 	steamId: string;
 	eventId: string;
 	blank?: readonly DeathPlaceholder[];
+	teamKill?: boolean;
 }
 
 export interface DeathWhisperPick extends Death {
 	index: number;
+	pool: 'messages' | 'teamKillMessages';
 }
+
+/** Canonical settings for both legacy and newly saved rules; used by the native outbox guard. */
+export const deathWhisperSettingsKey = (raw: unknown): string =>
+	settingsFingerprint(validateDeathWhisper((raw ?? {}) as Record<string, unknown>));
+
+export const deathWhisperText = (cfg: DeathWhisperConfig, pick: DeathWhisperPick): string =>
+	(cfg[pick.pool] ?? [])[pick.index];
 
 /**
  * One of the `fit` messages (their places in the list) at random, never `last` (the one the player
@@ -118,14 +139,14 @@ export function pickMessage(
 }
 
 const TOKEN = /\{([a-z_]+)\}/gi;
-const usesCache = new WeakMap<DeathWhisperConfig, Set<string>[]>();
+const usesCache = new WeakMap<readonly string[], Set<string>[]>();
 /** Which of the rule's own placeholders each message uses, through any name it is typed with. */
-const usesOf = (cfg: DeathWhisperConfig): Set<string>[] => {
-	let uses = usesCache.get(cfg);
+const usesOf = (messages: readonly string[]): Set<string>[] => {
+	let uses = usesCache.get(messages);
 	if (!uses)
 		usesCache.set(
-			cfg,
-			(uses = cfg.messages.map((m) => new Set([...m.matchAll(TOKEN)].map(([, n]) => canonical(n)))))
+			messages,
+			(uses = messages.map((m) => new Set([...m.matchAll(TOKEN)].map(([, n]) => canonical(n)))))
 		);
 	return uses;
 };
@@ -136,11 +157,13 @@ const usesOf = (cfg: DeathWhisperConfig): Set<string>[] => {
  */
 export function fittingMessages(
 	cfg: DeathWhisperConfig,
-	blank: readonly DeathPlaceholder[] = []
+	blank: readonly DeathPlaceholder[] = [],
+	pool: DeathWhisperPick['pool'] = 'messages'
 ): number[] {
-	const all = cfg.messages.map((_, i) => i);
+	const messages = cfg[pool] ?? [];
+	const all = messages.map((_, i) => i);
 	if (!blank.length) return all;
-	const uses = usesOf(cfg);
+	const uses = usesOf(messages);
 	const fit = all.filter((i) => !blank.some((b) => uses[i].has(b)));
 	return fit.length ? fit : all;
 }
@@ -160,8 +183,11 @@ export interface DeathsPassed {
 	waiting: number;
 	listed: number;
 	reserved: number;
-	/** inside the player's cooldown (a second death in one batch among them) */
+	/** inside the player's cooldown, or the same event already selected */
 	cooling: number;
+	/** earlier victim events in the same batch */
+	superseded: number;
+	empty: number;
 }
 
 /**
@@ -178,7 +204,15 @@ export function deathWhisperStep(
 	deaths: Death[],
 	at: { now: number; on: number; reserved: ReadonlySet<string> | null; rand?: () => number }
 ): { picks: DeathWhisperPick[]; held: '' | 'reserved'; passed: DeathsPassed; undo: () => void } {
-	const passed: DeathsPassed = { few: 0, waiting: 0, listed: 0, reserved: 0, cooling: 0 };
+	const passed: DeathsPassed = {
+		few: 0,
+		waiting: 0,
+		listed: 0,
+		reserved: 0,
+		cooling: 0,
+		superseded: 0,
+		empty: 0
+	};
 	const none = { picks: [], passed, undo: () => {} };
 	if (at.on < cfg.minPlayers) {
 		passed.few = deaths.length;
@@ -192,7 +226,13 @@ export function deathWhisperStep(
 	const cooled = at.now - cfg.cooldownMinutes * 60_000;
 	const picks: DeathWhisperPick[] = [];
 	const moved: { steamId: string; before: Whispered | undefined; set: Whispered }[] = [];
+	// Only the latest death per victim describes what they are waiting to respawn from now.
+	const latest = new Map(deaths.map((d) => [d.steamId, d]));
 	for (const d of deaths) {
+		if (latest.get(d.steamId) !== d) {
+			passed.superseded++;
+			continue;
+		}
 		if (exempt.has(d.steamId)) {
 			passed.listed++;
 			continue;
@@ -202,15 +242,28 @@ export function deathWhisperStep(
 			continue;
 		}
 		const before = tracks.get(d.steamId);
-		if (before && before.at > cooled) {
+		if (before && (before.at > cooled || before.eventId === d.eventId)) {
 			passed.cooling++;
 			continue;
 		}
-		const index = pickMessage(fittingMessages(cfg, d.blank), before?.index ?? -1, at.rand);
-		const set = { at: at.now, index };
+		const pool = d.teamKill ? 'teamKillMessages' : 'messages';
+		const fit = fittingMessages(cfg, d.blank, pool);
+		if (!fit.length) {
+			passed.empty++;
+			continue;
+		}
+		const last = pool === 'messages' ? before?.index : before?.reportIndex;
+		const index = pickMessage(fit, last ?? -1, at.rand);
+		const set = {
+			...before,
+			at: at.now,
+			index: pool === 'messages' ? index : (before?.index ?? -1),
+			...(pool === 'teamKillMessages' ? { reportIndex: index } : {}),
+			eventId: d.eventId
+		};
 		tracks.set(d.steamId, set);
 		moved.push({ steamId: d.steamId, before, set });
-		picks.push({ ...d, index });
+		picks.push({ ...d, index, pool });
 	}
 	return {
 		picks,
@@ -239,7 +292,12 @@ export interface DeathKill {
 	cause: string | null;
 	distanceM: number | null;
 	suicide: boolean;
+	teamKill?: boolean;
 }
+
+/** Use the feed's team-kill flag, never current faction names; self/environment deaths don't qualify. */
+export const reportableTeamKill = (k: DeathKill): boolean =>
+	!!k.teamKill && !!k.killer?.steamId && !k.suicide && k.killer.steamId !== k.victim.steamId;
 
 /** Keep card headers on one line without splitting a displayed character. */
 function shortDeathLabel(value: string, max: number): string {
@@ -269,7 +327,9 @@ export function deathVars(k: DeathKill): MessageVars {
 	const weapon = causeLabel(k.cause);
 	const distance = k.distanceM === null ? '' : Math.round(k.distanceM);
 	const summary = [
-		killer ? `Killed by ${shortDeathLabel(killer, 24)}` : 'You died',
+		killer
+			? `${reportableTeamKill(k) ? 'Team-killed' : 'Killed'} by ${shortDeathLabel(killer, 24)}`
+			: 'You died',
 		weapon ? shortDeathLabel(weapon, 24) : '',
 		distance === '' ? '' : `${shortDeathLabel(String(distance), 11)}m`
 	]

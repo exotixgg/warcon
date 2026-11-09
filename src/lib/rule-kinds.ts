@@ -45,6 +45,12 @@ export const RULE_KINDS: { kind: TriggerKind; group: RuleGroup; label: string; b
 		blurb: 'Warn players before the scheduled restart and tell them when it lands.'
 	},
 	{
+		kind: 'match_card',
+		group: 'Messages',
+		label: 'Match stats whisper',
+		blurb: 'Privately show each connected participant their completed match, leaders and next map.'
+	},
+	{
 		kind: 'match_broadcast',
 		group: 'Messages',
 		label: 'Match broadcast',
@@ -169,6 +175,7 @@ export const RULE_KINDS: { kind: TriggerKind; group: RuleGroup; label: string; b
  * server has.
  */
 export const ONE_PER_SERVER: TriggerKind[] = [
+	'match_card',
 	'seed_reward',
 	'two_teams',
 	'afk_protection',
@@ -186,6 +193,7 @@ export const ONE_PER_SERVER: TriggerKind[] = [
  * that fail (webhook-delivery.ts).
  */
 export const FAILURES_ONLY: TriggerKind[] = [
+	'match_card',
 	'two_teams',
 	'afk_protection',
 	'weather_cycle',
@@ -205,6 +213,7 @@ export const TRAIL_FAILURES_ONLY: TriggerKind[] = ['death_whisper'];
  * the Automation tab says so on each of them when the feed is silent.
  */
 export const FEED_KINDS: TriggerKind[] = [
+	'match_card',
 	'death_whisper',
 	'name_change',
 	'team_kill',

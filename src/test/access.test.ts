@@ -516,6 +516,7 @@ describe.skipIf(!hasTestDb)('access', () => {
 					.where(eq(orgRoles.id, w.roles.viewer));
 			const rules: [string, Record<string, unknown>, string][] = [
 				['welcome', { message: 'hello' }, 'chat.send'],
+				['match_card', { message: '{match_card}' }, 'chat.send'],
 				['death_whisper', { messages: ['Join our Discord.'] }, 'chat.send'],
 				['empty_reset', { map: 'Bakurani', afterMinutes: 10 }, 'match.control'],
 				['restart_skip', {}, 'match.control'],
@@ -1430,6 +1431,7 @@ describe.skipIf(!hasTestDb)('access', () => {
 			const w = await seedWorld(env);
 			const configs: Record<string, Record<string, unknown>> = {
 				seed_reward: { minutes: 60, scope: 'server' },
+				match_card: { message: '{match_card}', delaySeconds: 5 },
 				two_teams: { closedFaction: 'Lonestar' },
 				afk_protection: {},
 				bounty: {},

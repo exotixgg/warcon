@@ -118,6 +118,16 @@ import { evalSeedNotices } from './seeding-notices';
 import type { SeedSession } from './seeding-messages';
 import { usesWelcomeCard, WELCOME_PLACEHOLDERS } from '$lib/placeholders';
 import { welcomeCardVars } from './welcome-card';
+import {
+	readMatchCard,
+	matchCardVars,
+	matchCardStillHolds,
+	matchCardSettingsKey,
+	type MatchCardEnd,
+	type MatchCardConfig
+} from './match-card';
+import type { TallyRow } from './match-players';
+import type { MatchStateView } from '$lib/types';
 import { notifyBounty, type BountyCard } from './webhook-delivery';
 import { NAME_FLAG, nameFilterTargets, nameVerdict, type NameFilterConfig } from './name-filter';
 import {
@@ -242,6 +252,9 @@ import {
 	deathBlanks,
 	deathVars,
 	deathWhisperStep,
+	deathWhisperText,
+	deathWhisperSettingsKey,
+	reportableTeamKill,
 	type DeathWhisperConfig,
 	type WhisperedTracks
 } from './death-whisper';
@@ -346,6 +359,7 @@ const RULE_NEEDS: Record<
 	broadcast: ['chat.send', 'messages players'],
 	restart_notice: ['chat.send', 'messages players'],
 	match_broadcast: ['chat.send', 'messages players'],
+	match_card: ['chat.send', 'whispers players'],
 	empty_reset: ['match.control', 'changes the map'],
 	restart_skip: ['match.control', 'ends the match'],
 	weather_cycle: ['match.control', 'changes the weather'],
@@ -604,6 +618,8 @@ export async function deleteTrigger(
  * off or deleted stops it), nor a change of the weather.
  */
 export const SETTINGS_KEYS: Partial<Record<string, (config: unknown) => string>> = {
+	death_whisper: deathWhisperSettingsKey,
+	match_card: (c) => matchCardSettingsKey(c as MatchCardConfig),
 	ping_kick: pingSettingsKey,
 	two_teams: (c) => twoTeamsSettingsKey(c as TwoTeamsConfig),
 	kill_distance: (c) => killDistanceSettingsKey(c as KillDistanceConfig),
@@ -638,6 +654,9 @@ export interface TickContext {
 	server: ServerRow;
 	status: Status;
 	messageRotation?: MessageRotation | null;
+	matchCardEnd?: MatchCardEnd | null;
+	matchCardState?: MatchStateView | null;
+	matchCardLines?: TallyRow[];
 	players: Player[];
 	/** true only when this observation fetched a fresh player list */
 	playersObserved: boolean;
@@ -881,6 +900,9 @@ export async function evaluateTriggers(
 				case 'welcome':
 					await evalWelcome(env, ctx, row, row.config as WelcomeConfig, out, read);
 					break;
+				case 'match_card':
+					await evalMatchCard(env, ctx, row, row.config as MatchCardConfig, out, read);
+					break;
 				case 'faction_change':
 					await evalFactionChange(ctx, row, row.config as FactionChangeConfig, out, read);
 					break;
@@ -1014,6 +1036,80 @@ async function evalWelcome(
 			lastFiredAt: ctx.ts,
 			lastResult: `Whispering ${n === 1 ? last : `${n} players`}`
 		});
+}
+
+async function evalMatchCard(
+	env: Env,
+	ctx: TickContext,
+	row: TriggerRow,
+	cfg: MatchCardConfig,
+	out: Evaluation,
+	read: StatsReader
+) {
+	const end = ctx.matchCardEnd;
+	const now = ctx.ts.getTime();
+	if (
+		!end ||
+		ctx.matchEnd ||
+		ctx.recovered ||
+		!ctx.playersObserved ||
+		now - end.at < cfg.delaySeconds * 1000 ||
+		!matchCardStillHolds(end, ctx.status, ctx.matchCardState ?? null, ctx.startedAt, now)
+	)
+		return;
+	const saved = (row.state ?? {}) as { matchCardEvent?: string; matchCardRow?: number };
+	if (saved.matchCardEvent === end.eventId) return;
+	const targets = ctx.players.filter((p) => end.recipients.includes(p.steamId));
+	if (!targets.length) return;
+	const snapshot = await readMatchCard(env, ctx.server.id, end.map, ctx.matchCardLines ?? []);
+	if (!snapshot || saved.matchCardRow === snapshot.id) return;
+	const stats = await statsFor(
+		read,
+		targets.map((p) => ({ steamId: p.steamId, text: cfg.message }))
+	);
+	for (const p of targets) {
+		const own = matchCardVars(ctx.server.name, p.steamId, snapshot.data, end);
+		if (!own) continue;
+		const message = renderTemplate(
+			cfg.message,
+			vars(ctx, p, statsOf(stats, p.steamId), own),
+			MAX_CHAT
+		);
+		out.intents.push({
+			trigger: row,
+			action: 'whisper',
+			params: {
+				steamId: p.steamId,
+				message,
+				rule: matchCardSettingsKey(cfg),
+				matchCard: {
+					eventId: end.eventId,
+					at: end.at,
+					map: end.map,
+					startedAt: end.startedAt,
+					matchSeconds: end.matchSeconds,
+					rotationNow: end.rotationNow,
+					rotationNext: end.rotationNext
+				}
+			},
+			target: p.steamId,
+			okMessage: `Whispered match stats to ${p.name}.`,
+			detail: { name: p.name, matchId: snapshot.id },
+			steamId: p.steamId,
+			dedupeKey: `${row.id}:match-card:${snapshot.id}:${p.steamId}`
+		});
+	}
+	// State and intents commit together. The outbox key also survives event redelivery and restarts.
+	const state = { matchCardEvent: end.eventId, matchCardRow: snapshot.id };
+	out.updates.push({
+		id: row.id,
+		lastFiredAt: ctx.ts,
+		lastResult: `Whispering match stats to ${targets.length} participants`,
+		state
+	});
+	(out.afterCommit ??= []).push(() => {
+		row.state = state;
+	});
 }
 
 async function evalFactionChange(
@@ -2567,6 +2663,12 @@ export async function dryRun(
 			   ${withFaction ? sql`AND s.faction IS NOT NULL AND s.faction <> ''` : sql``}
 			 ORDER BY s.joined_at ASC LIMIT ${REPLAY_ROWS_MAX}`);
 
+	if (kind === 'match_card') {
+		result.notes.push(
+			'Match cards use a live confirmed match end and final observations; they are not replayed.'
+		);
+		return result;
+	}
 	if (kind === 'welcome') {
 		const c = cfg as WelcomeConfig;
 		const rows = await joins(c.afterFaction);
@@ -2866,11 +2968,12 @@ export async function dryRun(
 			cause: string | null;
 			distanceM: number | null;
 			suicide: boolean;
+			teamKill: boolean;
 		};
 		const rows = await env.db.execute<DeathRow>(sql`
 			SELECT ts, event_id AS "eventId", map, killer_steam_id AS killer, killer_name AS "killerName",
 			       victim_steam_id AS victim, victim_name AS "victimName", cause,
-			       distance_m AS "distanceM", suicide
+			       distance_m AS "distanceM", suicide, team_kill AS "teamKill"
 			  FROM kills
 			 WHERE server_id = ${server.id} AND ts >= ${from}
 			 ORDER BY ts ASC, event_time ASC LIMIT ${KILL_RATE_REPLAY_MAX}`);
@@ -2888,7 +2991,7 @@ export async function dryRun(
 		}
 		const sampled = counts.map((r) => ({ at: new Date(r.ts).getTime(), n: Number(r.n ?? 0) }));
 		const tracks: WhisperedTracks = new Map();
-		const passed = { few: 0, listed: 0, reserved: 0, cooling: 0 };
+		const passed = { few: 0, listed: 0, reserved: 0, cooling: 0, superseded: 0, empty: 0 };
 		const players = new Set<string>();
 		let next = 0;
 		let on = 0;
@@ -2904,13 +3007,26 @@ export async function dryRun(
 					victim: { steamId: r.victim },
 					cause: r.cause,
 					distanceM: r.distanceM === null ? null : Number(r.distanceM),
-					suicide: !!r.suicide
+					suicide: !!r.suicide,
+					teamKill: r.teamKill
 				})
 			}));
 			const step = deathWhisperStep(
 				c,
 				tracks,
-				batch.map((r) => ({ steamId: r.victim, eventId: r.eventId, blank: deathBlanks(r.own) })),
+				batch.map((r) => ({
+					steamId: r.victim,
+					eventId: r.eventId,
+					blank: deathBlanks(r.own),
+					teamKill: reportableTeamKill({
+						killer: r.killer ? { steamId: r.killer, name: r.killerName ?? '' } : null,
+						victim: { steamId: r.victim },
+						cause: r.cause,
+						distanceM: r.distanceM,
+						suicide: r.suicide,
+						teamKill: r.teamKill
+					})
+				})),
 				{ now: at, on, reserved }
 			);
 			for (const k of Object.keys(passed) as (keyof typeof passed)[]) passed[k] += step.passed[k];
@@ -2924,7 +3040,7 @@ export async function dryRun(
 				);
 				push(
 					new Date(at),
-					`whisper ${r.victimName || r.victim} (${r.victim}): ${renderTemplate(c.messages[p.index], v, MAX_CHAT)}`
+					`whisper ${r.victimName || r.victim} (${r.victim}): ${renderTemplate(deathWhisperText(c, p), v, MAX_CHAT)}`
 				);
 			}
 			i = j;
@@ -2945,6 +3061,8 @@ export async function dryRun(
 			passed.cooling && `${passed.cooling} inside a player's ${c.cooldownMinutes}-minute cooldown`,
 			passed.listed && `${passed.listed} of players on the rule's list`,
 			passed.reserved && `${passed.reserved} of players with a reserved slot`,
+			passed.empty && `${passed.empty} team kills without report messages`,
+			passed.superseded && `${passed.superseded} superseded by a later death in the same batch`,
 			passed.few && `${passed.few} while fewer than ${c.minPlayers} were on`
 		].filter(Boolean);
 		if (why.length) result.notes.push(`Passed over: ${why.join(', ')}.`);
