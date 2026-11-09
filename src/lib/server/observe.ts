@@ -6,6 +6,7 @@
 // something changed or the heartbeat is due, an analytics sample. Nothing is sent to the game
 // from here; outbox.ts does that afterwards. Then the slower housekeeping runs, each part on its
 // own: match bookkeeping, ban-list snapshot, org-list sync, Steam warm-up.
+import type { MatchCardEnd } from './match-card';
 import { and, desc, eq, isNull } from 'drizzle-orm';
 import type { Env } from './env';
 import { forLog, publicMessage } from './http';
@@ -136,6 +137,8 @@ export interface ServerMemory {
 	matchState: MatchStateView | null;
 	/** the feed's result of the match in progress, held for the look that sees the match end */
 	feedEnd: FeedEnd | null;
+	/** Confirmed end captured before travel, for private match cards only. */
+	matchCardEnd?: MatchCardEnd | null;
 	/** the match the last boundary closed and when, for a result the feed delivers after it */
 	closed: ClosedMatch | null;
 	/** each player's line of the match in progress, from the scoreboard (match-players.ts) */
@@ -422,6 +425,7 @@ export function forgetRemembered(): void {
 		m.lastMatch = null;
 		m.messageRotation = null;
 		m.feedEnd = null;
+		m.matchCardEnd = null;
 		m.closed = null;
 		// the feed's last state, read again from what the web wrote meanwhile
 		m.matchState = null;
@@ -600,6 +604,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	const matchEnd = boundary
 		? withFeedEnd(boundary, takeFeedEnd(m, boundary.scores, started))
 		: null;
+	if (boundary || wasOffline) m.matchCardEnd = null;
 	if (look) m.lastMatch = look;
 	if (hadFailed || started - m.identity.checkedAt >= IDENTITY_TTL_MS)
 		await refreshIdentity(client, m, started);
@@ -722,6 +727,22 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	// remembered from when they joined.
 	for (const { player: p } of diff.factioned)
 		if (m.presence.open.get(p.steamId)?.firstVisit) firstVisit.add(p.steamId);
+	const cardEnd = rows.some((r) => r.kind === 'match_card') ? m.matchCardEnd : null;
+	const cardTallies: Tallies = cardEnd
+		? new Map(
+				[...m.tallies].map(([id, t]) => [
+					id,
+					{ ...t, banked: { ...t.banked }, last: { ...t.last } }
+				])
+			)
+		: new Map();
+	if (players && cardEnd)
+		tallyLook(cardTallies, players, {
+			now: started,
+			gapMs,
+			stayed: joinsTrusted ? new Set(diff.stayed.map((x) => x.player.steamId)) : new Set(),
+			teams
+		});
 	const ev =
 		m.status && rows.length
 			? await evaluateTriggers(
@@ -730,6 +751,9 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 						server,
 						status: m.status,
 						messageRotation: m.messageRotation,
+						matchCardEnd: cardEnd,
+						matchCardState: m.matchState,
+						matchCardLines: cardEnd ? [...cardTallies.values()].map(tallyRow) : [],
 						players: m.players,
 						playersObserved: players !== null,
 						playersIntervalMs: m.playersIntervalMs,

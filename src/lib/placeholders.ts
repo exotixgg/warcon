@@ -22,6 +22,28 @@ export const SERVER_PLACEHOLDERS = [
 /** The player a message is to or about. */
 export const PLAYER_PLACEHOLDERS = ['name', 'faction', 'steamid', 'ping'] as const;
 
+/** This completed match on this server. Cash is scoreboard earnings, never TIX or a wallet. */
+export const MATCH_CARD_PLACEHOLDERS = [
+	'match_card',
+	'server_label',
+	'match_rank',
+	'match_kills',
+	'match_deaths',
+	'match_kd',
+	'match_cash',
+	'match_playtime',
+	'match_streak',
+	'match_rival',
+	'match_rival_kills',
+	'match_rival_deaths',
+	'leader_kills_name',
+	'leader_kills_value',
+	'leader_cash_name',
+	'leader_cash_value',
+	'leader_streak_name',
+	'leader_streak_value'
+] as const;
+
 /** Current official season across the organisation; only private welcome messages expose these. */
 export const WELCOME_PLACEHOLDERS = [
 	'welcome_card',
@@ -104,10 +126,11 @@ interface MessageRule {
 /** Every rule that sends a message or a kick reason. */
 export const MESSAGE_RULES: Readonly<Partial<Record<TriggerKind, MessageRule>>> = {
 	welcome: { fields: ['message'], own: WELCOME_PLACEHOLDERS, player: true },
+	match_card: { fields: ['message'], own: MATCH_CARD_PLACEHOLDERS, player: true },
 	faction_change: { fields: ['message'], own: ['previous'], player: true },
 	// who killed the player, with what, from how far: blank where it does not apply (a fall)
 	death_whisper: {
-		fields: ['messages'],
+		fields: ['messages', 'teamKillMessages'],
 		own: ['killer', 'weapon', 'distance', 'death_summary'],
 		player: true
 	},

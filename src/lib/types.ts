@@ -582,6 +582,7 @@ export type TriggerKind =
 	| 'team_kill'
 	| 'seed_reward'
 	| 'match_broadcast'
+	| 'match_card'
 	| 'name_filter'
 	| 'kill_rate'
 	| 'two_teams'
