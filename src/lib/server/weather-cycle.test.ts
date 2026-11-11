@@ -15,11 +15,23 @@ import {
 } from './weather-cycle';
 import { evaluateTriggers, SETTINGS_KEYS, validateConfig, type TickContext } from './triggers';
 import type { TriggerRow } from './db/schema';
-import type { Status } from '../types';
+import type { Rotation, Status } from '../types';
+import { messageRotationSnapshot } from './message-rotation';
 
 const MIN = 60_000;
 const NOW = Date.UTC(2026, 9, 25, 18, 0, 0);
 const THREE = ['DayClear', 'DayLateRain', 'DayLateGray'];
+const RAIN = 'DayLateRain';
+const DRY = ['DayEarlyClear', 'DayClear', 'DayLateClear', 'DayEndClear'];
+const rotationFor = (lighting: string): Rotation => ({
+	enabled: true,
+	mode: 'ordered',
+	nowIndex: 0,
+	nextIndex: -1,
+	entries: [
+		{ map: 'Kavkazi', lighting, experiences: [], zoneAlternator: '', denied: false, status: 'now' }
+	]
+});
 
 const refused = (raw: Record<string, unknown>): string => {
 	try {
@@ -79,6 +91,21 @@ describe('settings', () => {
 		expect(c({ minPlayers: 5000 }).minPlayers).toBe(1000);
 		expect(c({ everyMinutes: 5 }).everyMinutes).toBe(5);
 		expect(c({ everyMinutes: '15' }).everyMinutes).toBe(15);
+	});
+
+	test('validates excluded presets without changing older rule settings', () => {
+		const raw = { lightings: DRY };
+		const cfg = validateWeatherCycle(raw);
+		expect(validateWeatherCycle({ ...raw, skipStartingLightings: [] })).toEqual(cfg);
+		const protectedCfg = validateWeatherCycle({
+			...raw,
+			skipStartingLightings: [RAIN, 'daylaterain']
+		});
+		expect(protectedCfg.skipStartingLightings).toEqual([RAIN]);
+		expect(weatherCycleSettingsKey(protectedCfg)).not.toBe(weatherCycleSettingsKey(cfg));
+		expect(refused({ lightings: THREE, skipStartingLightings: [RAIN] })).toContain(
+			'excluded presets'
+		);
 	});
 
 	test('a queued change carries the settings it was decided under', () => {
@@ -159,13 +186,19 @@ describe('at the look', () => {
 			lastFiredAt: null,
 			lastResult: ''
 		}) as unknown as TriggerRow;
-	const look = (row: TriggerRow, at: number, status: Partial<Status> = {}) =>
+	const look = (
+		row: TriggerRow,
+		at: number,
+		status: Partial<Status> = {},
+		rotation: Rotation | null = null
+	) =>
 		evaluateTriggers(
 			{} as Env,
 			{
 				server: { id: 'server-1', name: 'Test' },
 				status: {
 					map: 'Kavkazi',
+					rotationNow: 0,
 					experiences: ['Bakurani_KOTH_02'],
 					lighting: 'DayClear',
 					alternator: '',
@@ -173,6 +206,11 @@ describe('at the look', () => {
 					scores: [],
 					...status
 				},
+				messageRotation: messageRotationSnapshot(
+					{ map: 'Kavkazi', rotationNow: 0, rotationNext: -1 },
+					rotation,
+					at
+				),
 				players: [],
 				ts: new Date(at)
 			} as unknown as TickContext,
@@ -232,6 +270,24 @@ describe('at the look', () => {
 		expect(out.intents.map((i) => i.params.lighting)).toEqual(['DayLateGray']);
 	});
 
+	test('an excluded round leaves the timer and sequence alone', async () => {
+		const row = rule({ lightings: DRY, skipStartingLightings: [RAIN], minPlayers: 20 });
+		const status = { playerCount: 20 };
+		const protectedRound = await look(row, NOW, status, rotationFor(RAIN));
+		expect(protectedRound.intents).toHaveLength(0);
+		expect(protectedRound.updates).toHaveLength(0);
+		expect(row.lastFiredAt).toBeNull();
+		expect(
+			(await look(row, NOW, { ...status, lighting: RAIN }, rotationFor(DRY[0]))).intents
+		).toHaveLength(0);
+		expect((await look(row, NOW, status)).intents).toHaveLength(0);
+		expect((await look(row, NOW, status, rotationFor(DRY[0]))).intents[0]?.params).toMatchObject({
+			lighting: DRY[0],
+			skipStartingLightings: [RAIN],
+			minPlayers: 20
+		});
+	});
+
 	test('at random: never the lighting on', async () => {
 		const row = rule({ lightings: THREE, random: true });
 		for (let i = 0; i < 20; i++) {
@@ -245,12 +301,26 @@ describe('at the look', () => {
 // ---- the change at delivery ----
 
 /** A game that lists these lightings and records what it is asked. */
-const standIn = (ids: string[], asked: string[]) =>
+const standIn = (
+	ids: string[],
+	asked: string[],
+	starting = DRY[0],
+	active = starting,
+	players = 20
+) =>
 	({
 		json: async (method: string, path: string, body?: unknown) => {
 			asked.push(`${method} ${path}${body === undefined ? '' : ` ${JSON.stringify(body)}`}`);
 			if (path === '/v1/catalog/lightings')
 				return { lightings: ids.map((id) => ({ id, displayName: `${id} (game's own words)` })) };
+			if (path === '/v1/rotation') return rotationFor(starting);
+			if (path === '/v1/status')
+				return {
+					map: 'Kavkazi',
+					lighting: active,
+					rotation: { nowIndex: 0 },
+					players: { current: players }
+				};
 			if (path === '/v1/world/lighting') return { message: "The game's own words." };
 			throw new Error(`unexpected ${method} ${path}`);
 		}
@@ -276,6 +346,29 @@ describe('changeWeather', () => {
 			message: 'Not sent: Day Late Rain is not among the lightings this server lists.'
 		});
 		expect(asked).toEqual(['GET /v1/catalog/lightings']);
+	});
+
+	test('rechecks the live round before delivery and leaves a rainy entry alone', async () => {
+		const change = { lighting: DRY[1], skipStartingLightings: [RAIN], minPlayers: 20 };
+		const asked: string[] = [];
+		expect(await changeWeather(standIn(DRY, asked, RAIN, DRY[0]), change)).toMatchObject({
+			skipped: true
+		});
+		expect(await changeWeather(standIn(DRY, asked, DRY[0], RAIN), change)).toMatchObject({
+			skipped: true
+		});
+		expect(await changeWeather(standIn(DRY, asked, DRY[0], DRY[0], 19), change)).toMatchObject({
+			skipped: true
+		});
+		expect(asked.filter((call) => call.startsWith('PUT'))).toEqual([]);
+		expect(await changeWeather(standIn(DRY, asked), change)).toEqual({
+			message: 'Changed the weather to Day Clear.'
+		});
+		expect(asked.slice(-3)).toEqual([
+			'GET /v1/rotation',
+			'GET /v1/status',
+			'PUT /v1/world/lighting {"lighting":"DayClear"}'
+		]);
 	});
 
 	test('against the mock game: the status shows the new lighting', async () => {

@@ -636,7 +636,12 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 			]
 		: [];
 	const rows = m.status ? await enabledTriggers(env, server.id) : [];
-	if (m.status && usesMessageRotation(rows)) {
+	const protectsStartingLighting = rows.some(
+		({ kind, config }) =>
+			kind === 'weather_cycle' &&
+			(config as { skipStartingLightings?: string[] }).skipStartingLightings?.length
+	);
+	if (m.status && (usesMessageRotation(rows) || protectsStartingLighting)) {
 		if (hadFailed || m.again || messageRotationDue(m.messageRotation, m.status, started)) {
 			// A failed optional read must not interrupt observation or retain an old next entry.
 			m.messageRotation = messageRotationSnapshot(m.status, null, started);
