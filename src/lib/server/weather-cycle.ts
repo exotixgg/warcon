@@ -10,8 +10,8 @@ import { ApiError, int, str } from './http';
 import { ACTIONS } from './actions';
 import { settingsFingerprint } from './fingerprint';
 import type { WardogsClient } from './rcon';
-import { prettify } from '../format';
-import type { CatalogItem } from '../types';
+import { mapName, prettify } from '../format';
+import type { CatalogItem, Rotation, Status } from '../types';
 
 /** The outbox action that changes the weather for the rule (not in ACTIONS). */
 export const WEATHER_CYCLE = 'weather_cycle';
@@ -32,11 +32,13 @@ export interface WeatherCycleConfig {
 	random: boolean;
 	/** changes only while at least this many are on */
 	minPlayers: number;
+	/** Starting presets the rule leaves alone. Absent on older rules. */
+	skipStartingLightings?: string[];
 }
 
-export function validateWeatherCycle(c: Record<string, unknown>): WeatherCycleConfig {
+function lightingIds(values: unknown): string[] {
 	const lightings: string[] = [];
-	for (const v of Array.isArray(c.lightings) ? c.lightings : []) {
+	for (const v of Array.isArray(values) ? values : []) {
 		const id = str(v, 101);
 		if (!LIGHTING_ID.test(id))
 			throw new ApiError(
@@ -45,10 +47,18 @@ export function validateWeatherCycle(c: Record<string, unknown>): WeatherCycleCo
 			);
 		if (!lightings.some((x) => same(x, id))) lightings.push(id);
 	}
-	if (lightings.length < 2)
-		throw new ApiError(400, 'Pick at least two lightings to change between.');
 	if (lightings.length > MAX_LIGHTINGS)
 		throw new ApiError(400, `At most ${MAX_LIGHTINGS} lightings.`);
+	return lightings;
+}
+
+export function validateWeatherCycle(c: Record<string, unknown>): WeatherCycleConfig {
+	const lightings = lightingIds(c.lightings);
+	if (lightings.length < 2)
+		throw new ApiError(400, 'Pick at least two lightings to change between.');
+	const skipStartingLightings = lightingIds(c.skipStartingLightings);
+	if (lightings.some((id) => skipsLighting(skipStartingLightings, id)))
+		throw new ApiError(400, 'Remove excluded presets from the cycle’s lighting list.');
 	const everyMinutes = int(c.everyMinutes, WEATHER_DEFAULT_MINUTES);
 	if (everyMinutes < WEATHER_MIN_MINUTES || everyMinutes > WEATHER_MAX_MINUTES)
 		throw new ApiError(
@@ -59,7 +69,8 @@ export function validateWeatherCycle(c: Record<string, unknown>): WeatherCycleCo
 		lightings,
 		everyMinutes,
 		random: c.random === true,
-		minPlayers: int(c.minPlayers, 1, 0, 1000)
+		minPlayers: int(c.minPlayers, 1, 0, 1000),
+		...(skipStartingLightings.length ? { skipStartingLightings } : {})
 	};
 }
 
@@ -74,6 +85,34 @@ export const weatherCycleIndex = (state: unknown): number => {
 };
 
 const same = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
+
+export const skipsLighting = (excluded: readonly string[], lighting: string): boolean =>
+	excluded.some((id) => same(id, lighting));
+
+/** A protected preset can be visible before the status and rotation indices agree on map travel. */
+export function weatherCycleBlock(
+	excluded: readonly string[],
+	status: Pick<Status, 'map' | 'lighting' | 'rotationNow'>,
+	rotation: Rotation | null
+): string | null {
+	if (!excluded.length) return null;
+	if (skipsLighting(excluded, status.lighting))
+		return `The active lighting is ${lightingName(status.lighting)}, an excluded preset.`;
+	if (rotation && !rotation.enabled && status.map && status.lighting) return null;
+	const entry = rotation?.entries[status.rotationNow];
+	if (
+		!entry?.lighting ||
+		!status.map ||
+		!status.lighting ||
+		rotation?.nowIndex !== status.rotationNow ||
+		entry.denied ||
+		!same(mapName(entry.map), mapName(status.map))
+	)
+		return 'The starting preset could not be verified.';
+	return skipsLighting(excluded, entry.lighting)
+		? `This round starts with ${lightingName(entry.lighting)}, an excluded preset.`
+		: null;
+}
 
 /** "Day Late Rain": a lighting's name in the panel's own words, from its id. */
 export const lightingName = (id: string): string => prettify(id) || id;
@@ -122,6 +161,17 @@ export async function changeWeather(
 			skipped: true,
 			message: `Not sent: ${lightingName(lighting)} is not among the lightings this server lists.`
 		};
+	const excluded = Array.isArray(params.skipStartingLightings)
+		? (params.skipStartingLightings as string[])
+		: [];
+	if (excluded.length) {
+		const rotation = (await ACTIONS.rotation.run(client, {})) as Rotation;
+		const status = (await ACTIONS.status.run(client, {})) as Status;
+		const block = weatherCycleBlock(excluded, status, rotation);
+		if (block) return { skipped: true, message: `Not sent: ${block}` };
+		if (status.playerCount < Number(params.minPlayers))
+			return { skipped: true, message: 'Not sent: the player count fell below the minimum.' };
+	}
 	await ACTIONS.setWeather.run(client, { lighting: offered.id });
 	return { message: `Changed the weather to ${lightingName(offered.id)}.` };
 }

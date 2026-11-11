@@ -600,6 +600,7 @@
 		 *  the ticked ones */
 		lightOrder: string[];
 		lightOn: string[];
+		skipStartingLightings: string[];
 		random: boolean;
 	}
 	/** WARDOGS' factions, offered for Team balance; a name the game adds later can still be typed. */
@@ -905,6 +906,9 @@
 				data.catalog.lightings.map((l) => l.id)
 			),
 			lightOn: Array.isArray(c.lightings) ? [...(c.lightings as string[])] : weatherPicks(),
+			skipStartingLightings: Array.isArray(c.skipStartingLightings)
+				? [...(c.skipStartingLightings as string[])]
+				: [],
 			random: b('random', false)
 		};
 		dry = null;
@@ -1135,6 +1139,7 @@
 			case 'weather_cycle':
 				return {
 					lightings: f.lightOrder.filter((l) => f.lightOn.includes(l)),
+					skipStartingLightings: f.skipStartingLightings,
 					everyMinutes: Number(f.everyMinutes),
 					random: f.random,
 					minPlayers: Number(f.minPlayers)
@@ -2245,6 +2250,16 @@
 							><input type="radio" value={true} bind:group={f.random} /> At random
 							<span class="text-mist-600">(never the lighting already on)</span></label
 						>
+					</fieldset>
+					<fieldset class="space-y-1.5 text-[13px]">
+						<legend class="field-label">Skip rounds that start with these presets</legend>
+						{#each turnOf( data.catalog.lightings.map((l) => l.id), f.skipStartingLightings ) as l}
+							<label class="flex items-center gap-2">
+								<input type="checkbox" value={l} bind:group={f.skipStartingLightings} />
+								{lightingLabel(data.catalog, l)}
+							</label>
+						{/each}
+						<p class="note">Remove any excluded preset from the cycle's lighting list.</p>
 					</fieldset>
 					<fieldset class="space-y-2">
 						<legend class="field-label">When</legend>

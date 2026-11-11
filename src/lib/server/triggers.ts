@@ -244,6 +244,8 @@ import {
 	lightingName,
 	nextLighting,
 	WEATHER_CYCLE,
+	skipsLighting,
+	weatherCycleBlock,
 	weatherCycleIndex,
 	weatherCycleSettingsKey,
 	type WeatherCycleConfig
@@ -1881,13 +1883,19 @@ function evalWeatherCycle(
 	if (ctx.status.playerCount < cfg.minPlayers) return;
 	if (row.lastFiredAt && ctx.ts.getTime() - row.lastFiredAt.getTime() < cfg.everyMinutes * 60_000)
 		return;
+	const excluded = cfg.skipStartingLightings ?? [];
+	if (weatherCycleBlock(excluded, ctx.status, ctx.messageRotation?.rotation ?? null)) return;
 	const next = nextLighting(cfg, weatherCycleIndex(row.state), ctx.status.lighting);
 	if (!next) return;
 	const name = lightingName(next.lighting);
 	out.intents.push({
 		trigger: row,
 		action: WEATHER_CYCLE,
-		params: { rule: weatherCycleSettingsKey(cfg), lighting: next.lighting },
+		params: {
+			rule: weatherCycleSettingsKey(cfg),
+			lighting: next.lighting,
+			...(excluded.length ? { skipStartingLightings: excluded, minPlayers: cfg.minPlayers } : {})
+		},
 		target: name,
 		okMessage: `Changed the weather to ${name}.`,
 		detail: { lighting: next.lighting, from: ctx.status.lighting },
@@ -3739,6 +3747,7 @@ export async function dryRun(
 				seen = `${r.map}|${lighting}`;
 				showing = lighting;
 			}
+			if (skipsLighting(c.skipStartingLightings ?? [], lighting)) continue;
 			if ((r.count ?? 0) < c.minPlayers) continue;
 			if (last && r.ts.getTime() - last.getTime() < c.everyMinutes * 60_000) continue;
 			const from = showing ? lightingName(showing) : 'the lighting on';
@@ -3757,6 +3766,10 @@ export async function dryRun(
 		result.notes.push(
 			`Times shown are the samples a change fell due at, with at least ${c.minPlayers} on. A new map comes up on its rotation entry's own lighting, which the rule changes at its next turn; a lighting the server does not list is not sent.`
 		);
+		if (c.skipStartingLightings?.length)
+			result.notes.push(
+				'Historical samples show the active lighting. Live delivery also checks the starting preset of the rotation entry.'
+			);
 		return result;
 	}
 	if (kind === 'broadcast') {
