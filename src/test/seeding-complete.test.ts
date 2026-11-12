@@ -5,7 +5,7 @@ import { reserveSeedComplete } from '$lib/server/seeding-complete';
 import { hasTestDb, testEnv } from './db';
 import { seedWorld } from './world';
 
-test.skipIf(!hasTestDb)('completion cooldown follows the player across an org and uses delivery time', async () => {
+test.skipIf(!hasTestDb)('shares the delivery cooldown across an org', async () => {
 	const env = await testEnv();
 	const world = await seedWorld(env);
 	const steamId = '76561198000001891';
