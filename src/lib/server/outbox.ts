@@ -61,6 +61,7 @@ import {
 import { TRAIL_FAILURES_ONLY } from '$lib/rule-kinds';
 import { MAX_CHAT } from '$lib/chat';
 import { waitingForPlayers, playing, seedNoticeSettingsKey } from './seeding-messages';
+import { reserveSeedComplete } from './seeding-complete';
 import { currentState } from '$lib/match-state';
 import { mapName, takesLighting } from '$lib/format';
 import type { OutboxView } from '$lib/types';
@@ -722,6 +723,25 @@ async function deliverOne(env: Env, row: OutboxRow): Promise<'held' | 'refused' 
 				if (superseded) throw new Skipped('A later team kill superseded this death whisper.');
 				if (!isOwner()) throw new LostOwnership();
 				const client = await WardogsClient.forServer(env, m!.server);
+				const notice = (row.params as { seedNotice?: { stage?: string } } | null)?.seedNotice;
+				if (
+					row.triggerKind === 'seed_reward' &&
+					row.action === 'whisper' &&
+					row.steamId &&
+					notice?.stage === 'complete'
+				) {
+					let reserved: boolean;
+					try {
+						reserved = await withOwnedTransaction(env, (tx) =>
+							reserveSeedComplete(tx, m!.server.orgId, row)
+						);
+					} catch (err) {
+						if (err instanceof LostOwnership) throw err;
+						console.error('[warcon] seeding complete cooldown check', forLog(err));
+						throw new Waiting();
+					}
+					if (!reserved) throw new Skipped('Seeding Complete is limited to once per hour.');
+				}
 				noteMoveSent(row);
 				return execute(client, row);
 			},
