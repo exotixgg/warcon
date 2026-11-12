@@ -1,4 +1,4 @@
-import { beforeAll, describe, expect, test } from 'bun:test';
+import { afterEach, beforeAll, describe, expect, setSystemTime, test } from 'bun:test';
 import type { Env } from '$lib/server/env';
 import {
 	archivedServers,
@@ -182,7 +182,11 @@ describe.skipIf(!hasTestDb)('welcome-card season data', () => {
 		]);
 	});
 
+	afterEach(() => setSystemTime());
+
 	test('uses only this org and current official season, including archived history', async () => {
+		// Keep the app in the fixture's season; PostgreSQL measures the open sessions separately.
+		setSystemTime(new Date(+at + HOUR));
 		const vars = await welcomeCardVars(env, world.server.id, [A, B, C, OUTSIDER]);
 		const alpha = vars.get(A)!;
 		expect(alpha.season_name).toBe('SEASON 02');
