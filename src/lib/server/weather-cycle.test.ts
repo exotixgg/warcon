@@ -30,9 +30,7 @@ const rotationFor = (lighting: string, map = 'Kavkazi'): Rotation => ({
 	mode: 'ordered',
 	nowIndex: 0,
 	nextIndex: -1,
-	entries: [
-		{ map, lighting, experiences: [], zoneAlternator: '', denied: false, status: 'now' }
-	]
+	entries: [{ map, lighting, experiences: [], zoneAlternator: '', denied: false, status: 'now' }]
 });
 
 const refused = (raw: Record<string, unknown>): string => {
