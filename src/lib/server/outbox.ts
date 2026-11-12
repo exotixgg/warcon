@@ -12,7 +12,7 @@ import type { Env } from './env';
 import type { DbOrTx } from './db';
 import { kills, outbox, triggers, type OutboxRow } from './db/schema';
 import { storable, storableText } from './db/storable';
-import { ACTIONS } from './actions';
+import { actionNamed, ACTIONS } from './actions';
 import { GameError, WardogsClient } from './rcon';
 import { ApiError, forLog, str } from './http';
 import { LaneFull, LaneTimeout, PRIORITY, withServer } from './dispatcher';
@@ -40,7 +40,7 @@ import { PANEL_BAN, type PanelBanParams } from './rule-ban';
 import { killAndTell, RULE_KILL, RULE_KILL_MAX_AGE_MS } from './rule-kill';
 import { ROTATION_SHUFFLE, shuffleOnServer } from './rotation-shuffle';
 import { RESTART_SKIP, skipStartupMap } from './restart-skip';
-import { changeWeather, WEATHER_CYCLE } from './weather-cycle';
+import { changeWeather, lightingName, WEATHER_CYCLE } from './weather-cycle';
 import { queueEvent } from './json-webhook-queue';
 import { seedRewardGranted } from './json-webhook-events';
 import {
@@ -62,6 +62,7 @@ import { TRAIL_FAILURES_ONLY } from '$lib/rule-kinds';
 import { MAX_CHAT } from '$lib/chat';
 import { waitingForPlayers, playing, seedNoticeSettingsKey } from './seeding-messages';
 import { currentState } from '$lib/match-state';
+import { mapName, takesLighting } from '$lib/format';
 import type { OutboxView } from '$lib/types';
 
 /** Actions delivered without a game request: they need no roster, only the server's row. */
@@ -420,6 +421,13 @@ function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | nu
 			player.ping <= guard.maxPingMs
 		)
 			return 'High ping is no longer present.';
+	}
+	// A Weather cycle change is decided for the map the server was on. If the worker has since seen
+	// it on a map that does not take the lighting (Sabatulo takes four), the change is not sent.
+	if (row.action === WEATHER_CYCLE && m.status?.map) {
+		const lighting = (row.params as { lighting?: unknown } | null)?.lighting;
+		if (typeof lighting === 'string' && !takesLighting(m.status.map, lighting))
+			return `${mapName(m.status.map)} does not take ${lightingName(lighting)}.`;
 	}
 	// An AFK protection round goes only while what the worker last saw still says the server seeds:
 	// a round in a live match kills everyone mid-fight. It goes soon or not at all.
@@ -1182,7 +1190,7 @@ async function execute(client: WardogsClient, row: OutboxRow): Promise<unknown> 
 		await ACTIONS.changeMap.run(client, params);
 		return rotationOn ? { message: 'Map changed directly.' } : ACTIONS.endMatch.run(client, {});
 	}
-	const def = ACTIONS[row.action];
+	const def = actionNamed(row.action);
 	if (!def) throw new ApiError(400, `Unknown action '${row.action}'.`);
 	return def.run(client, params);
 }
