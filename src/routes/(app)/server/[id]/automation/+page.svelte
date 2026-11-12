@@ -5,7 +5,16 @@
 	import { MAX_CHAT } from '$lib/chat';
 	import { SEED_NOTICE_MESSAGES, SEED_COMPLETE_MESSAGE } from '$lib/seeding-messages';
 	import { automationMessageEditorValue, automationPoolEditorValue } from '$lib/automation-message';
-	import { fmtAgo, fmtSpan, fmtTime, lightingLabel, mapLabel } from '$lib/format';
+	import {
+		andList,
+		fmtAgo,
+		fmtSpan,
+		fmtTime,
+		lightingLabel,
+		lightingsOn,
+		limitsLightings,
+		mapLabel
+	} from '$lib/format';
 	import { can } from '$lib/capabilities';
 	import {
 		causeKind,
@@ -694,6 +703,16 @@
 		list.splice(list.indexOf(other) + (by > 0 ? 1 : 0), 0, l);
 		f.lightOrder = list;
 	}
+	/** The maps the server lists that take only some of its lightings (Sabatulo), and which. */
+	let limitedMaps = $derived(
+		data.catalog.maps
+			.filter((m) => limitsLightings(m.id))
+			.map((m) => ({
+				name: mapLabel(data.catalog, m.id),
+				takes: andList(lightingsOn(m.id, data.catalog.lightings).map((l) => l.display))
+			}))
+			.filter((m) => m.takes)
+	);
 	/** A new Weather cycle rule's lightings: clear, fog, cloud and rain, where the server has them. */
 	const WEATHER_PICKS = ['DayClear', 'DayEarlyFog', 'DayLateGray', 'DayLateRain'];
 	function weatherPicks(): string[] {
@@ -2239,6 +2258,9 @@
 						<p class="note">
 							Tick two or more. The list is the server's own: rain, say, is there only where the
 							server allows it.
+							{#each limitedMaps as m (m.name)}
+								{m.name} takes {m.takes} only, so on {m.name} the rule passes over the others.
+							{/each}
 						</p>
 					</fieldset>
 					<fieldset class="space-y-1.5 text-[13px]">
