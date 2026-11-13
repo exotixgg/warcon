@@ -550,7 +550,18 @@ describe('a Chat command’s own placeholders', () => {
 		expect(names('staff_call')).toEqual({
 			own: ['command', 'seconds'],
 			player: ['name', 'faction', 'steamid', 'ping'],
-			server: ['server', 'map', 'players', 'max', 'scores', 'cap', 'uptime']
+			server: [
+				'server',
+				'map',
+				'weather',
+				'next_map',
+				'next_weather',
+				'players',
+				'max',
+				'scores',
+				'cap',
+				'uptime'
+			]
 		});
 		expect(unfilled(['{kills} {command}'], 'staff_call')).toEqual(['{kills}']);
 		// no placeholder of either kind carries what the player typed

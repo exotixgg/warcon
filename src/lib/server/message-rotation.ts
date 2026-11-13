@@ -16,6 +16,8 @@ export interface MessageRotation {
 
 export function usesMessageRotation(rows: { kind: TriggerKind; config: unknown }[]): boolean {
 	return rows.some(({ kind, config }) => {
+		// Chat commands read rotation on demand when a reply uses it.
+		if (kind === 'chat_command') return false;
 		const c = (config ?? {}) as Record<string, unknown>;
 		return MESSAGE_RULES[kind]?.fields.some((field) => {
 			const texts = Array.isArray(c[field]) ? c[field] : [c[field]];
