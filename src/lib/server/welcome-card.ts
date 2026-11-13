@@ -5,6 +5,7 @@ import { sql } from 'drizzle-orm';
 import { DEFAULT_FLOOR_MINUTES, kdRatio } from '$lib/leaderboard';
 import { currentSeason } from '$lib/seasons';
 import type { Env } from './env';
+import { latestHiddenNames } from './sessions';
 import { rangeBase } from './leaderboards';
 import { orgSeasons } from './seasons';
 import { cardLeaderLine } from './card-format';
@@ -14,7 +15,7 @@ export type WelcomeCardVars = Record<string, WelcomeCardValue>;
 
 type Scope = { orgId: string; serverName: string; ids: string[] };
 type LeaderKey = 'kills' | 'cash' | 'playtime' | 'seeded';
-type Leader = { name: string; value: string };
+type Leader = { steamId?: string; name: string; value: string };
 
 const TTL_MS = 60_000;
 const CACHE_MAX = 500;
@@ -121,6 +122,7 @@ async function readLeaders(
 	}[]) {
 		const raw = number(row.raw);
 		fallback[row.kind] = {
+			steamId: row.steamId,
 			name: shortWelcomeName(row.name || row.steamId),
 			value:
 				row.kind === 'playtime' || row.kind === 'seeded' ? compactMinutes(raw) : compactNumber(raw)
@@ -183,7 +185,7 @@ export async function welcomeCardVars(
 			SELECT m.steam_id AS "steamId", m.minutes, m.seed_minutes AS "seedMinutes", m.cash, m.kills, m.deaths,
 			       (SELECT COUNT(*) FROM base b WHERE b.minutes >= ${DEFAULT_FLOOR_MINUTES} AND b.kills > m.kills) AS above
 			  FROM mine m`),
-		env.db.execute<{ steamId: string; name: string; kills: string; deaths: string }>(sql`
+		env.db.execute<{ steamId: string; rivalId: string; name: string; kills: string; deaths: string }>(sql`
 			WITH grouped AS (
 				SELECT victim_steam_id, killer_steam_id, COUNT(*) AS deaths, MAX(ts) AS latest,
 				       (array_agg(COALESCE(killer_name, killer_steam_id) ORDER BY ts DESC))[1] AS name
@@ -194,7 +196,7 @@ export async function welcomeCardVars(
 				 GROUP BY victim_steam_id, killer_steam_id
 			), ranked AS (
 				SELECT *, row_number() OVER (PARTITION BY victim_steam_id ORDER BY deaths DESC, latest DESC, killer_steam_id ASC) AS place FROM grouped
-			) SELECT r.victim_steam_id AS "steamId", r.name, r.deaths,
+			) SELECT r.victim_steam_id AS "steamId", r.killer_steam_id AS "rivalId", r.name, r.deaths,
 			         (SELECT COUNT(*) FROM kills k
 			           WHERE k.server_id IN ${scope.ids} AND k.killer_steam_id = r.victim_steam_id
 			             AND k.victim_steam_id = r.killer_steam_id
@@ -202,6 +204,12 @@ export async function welcomeCardVars(
 			    FROM ranked r WHERE r.place = 1`)
 	]);
 
+	const hidden = await latestHiddenNames(env.db, scope.ids, [
+		...Object.values(leaders).flatMap((leader) => (leader.steamId ? [leader.steamId] : [])),
+		...rivals.map((rival) => rival.rivalId)
+	]);
+	const leaderName = (leader: Leader) =>
+		shortWelcomeName((leader.steamId && hidden.get(leader.steamId)) || leader.name);
 	const rivalsBySteam = new Map(rivals.map((r) => [r.steamId, r]));
 	const statsBySteam = new Map(stats.map((s) => [s.steamId, s]));
 	for (const steamId of unique) {
@@ -209,16 +217,16 @@ export async function welcomeCardVars(
 		const vars = emptyVars(label);
 		vars.season_name = welcomeSeasonLabel(season.name);
 		const rival = rivalsBySteam.get(steamId);
-		vars.season_rival = rival ? shortWelcomeName(rival.name) : '-';
+		vars.season_rival = rival ? shortWelcomeName(hidden.get(rival.rivalId) ?? rival.name) : '-';
 		vars.season_rival_kills = number(rival?.kills);
 		vars.season_rival_deaths = number(rival?.deaths);
-		vars.leader_kills_name = leaders.kills.name;
+		vars.leader_kills_name = leaderName(leaders.kills);
 		vars.leader_kills_value = leaders.kills.value;
-		vars.leader_cash_name = leaders.cash.name;
+		vars.leader_cash_name = leaderName(leaders.cash);
 		vars.leader_cash_value = leaders.cash.value;
-		vars.leader_playtime_name = leaders.playtime.name;
+		vars.leader_playtime_name = leaderName(leaders.playtime);
 		vars.leader_playtime_value = leaders.playtime.value;
-		vars.leader_seeded_name = leaders.seeded.name;
+		vars.leader_seeded_name = leaderName(leaders.seeded);
 		vars.leader_seeded_value = leaders.seeded.value;
 		if (row) {
 			const kills = number(row.kills),
