@@ -185,7 +185,13 @@ export async function welcomeCardVars(
 			SELECT m.steam_id AS "steamId", m.minutes, m.seed_minutes AS "seedMinutes", m.cash, m.kills, m.deaths,
 			       (SELECT COUNT(*) FROM base b WHERE b.minutes >= ${DEFAULT_FLOOR_MINUTES} AND b.kills > m.kills) AS above
 			  FROM mine m`),
-		env.db.execute<{ steamId: string; rivalId: string; name: string; kills: string; deaths: string }>(sql`
+		env.db.execute<{
+			steamId: string;
+			rivalId: string;
+			name: string;
+			kills: string;
+			deaths: string;
+		}>(sql`
 			WITH grouped AS (
 				SELECT victim_steam_id, killer_steam_id, COUNT(*) AS deaths, MAX(ts) AS latest,
 				       (array_agg(COALESCE(killer_name, killer_steam_id) ORDER BY ts DESC))[1] AS name
