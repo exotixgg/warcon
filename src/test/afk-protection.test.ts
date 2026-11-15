@@ -143,6 +143,8 @@ describe.skipIf(!hasTestDb)('AFK protection on a live look', () => {
 		spy.mockRestore();
 		forgetMemory(w.server.id);
 		await releaseOwnership(env);
+		// These tests inspect the intents. Don't leave them queued for the delivery fixture.
+		await env.db.delete(outbox).where(eq(outbox.serverId, w.server.id));
 	});
 	afterEach(() => forgetRuleMemory());
 
@@ -444,10 +446,10 @@ describe.skipIf(!hasTestDb)('AFK protection rounds at delivery', () => {
 		});
 		invalidateTriggers(w.server.id);
 		spy = spyOn(WardogsClient, 'forServer').mockImplementation(
-			async () =>
+			async (_env, server) =>
 				({
 					json: async (method: string, path: string) => {
-						requests.push(`${method} ${path}`);
+						if (server.id === w.server.id) requests.push(`${method} ${path}`);
 						const killOf = /^\/v1\/players\/(\d+)\/kill$/.exec(path)?.[1];
 						if (killOf && notAlive.has(killOf))
 							throw new GameError(404, 'No living character.', 'not_alive');
