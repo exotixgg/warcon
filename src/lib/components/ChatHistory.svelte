@@ -27,7 +27,6 @@
 		live = [],
 		liveLoading = false,
 		scores = null,
-		settings,
 		notice,
 		footer,
 		inspect
@@ -42,7 +41,6 @@
 		live?: LiveChatLine[];
 		liveLoading?: boolean;
 		scores?: FactionScore[] | null;
-		settings?: Snippet;
 		notice?: Snippet;
 		footer?: Snippet;
 		inspect?: (line: LiveChatLine) => void;
@@ -217,6 +215,12 @@
 		month: 'short',
 		day: 'numeric'
 	});
+	function historyStatus(state: string) {
+		if (state === 'ready') return 'History on';
+		if (state === 'terms') return 'Waiting for accepted chat terms';
+		if (state === 'unavailable') return 'Waiting for RCON';
+		return 'Waiting for first read';
+	}
 </script>
 
 <section class="my-3 min-w-0 panel" aria-label={compact ? 'Recent chat' : 'Chat'}>
@@ -261,7 +265,6 @@
 			<select aria-label="Time range" class="input w-auto" bind:value={range}>
 				{#each archiveRanges as r}<option value={r}>{r === 'all' ? 'All time' : r}</option>{/each}
 			</select>
-			{#if server === serverId && serverId}{@render settings?.()}{/if}
 			{#if !server}<a
 					class="btn btn-sm"
 					href={allPath}
@@ -305,21 +308,15 @@
 	{#if !compact && (!server || focusedSource)}
 		<div class="my-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-mist-400">
 			{#if focusedSource}
-				<span
-					>{focusedSource.enabled
-						? focusedSource.state === 'ready'
-							? 'History on'
-							: focusedSource.state === 'terms'
-								? 'History waiting for chat terms'
-								: focusedSource.state === 'unavailable'
-									? 'History waiting for RCON'
-									: 'History waiting for first read'
-						: 'History off'}</span
-				>
+				<span>{focusedSource.retired ? 'Retired server' : historyStatus(focusedSource.state)}</span>
 			{:else}
 				{#each sources as s (s.id)}<span
 						><b class="font-mono">#{numbers.get(s.id)}</b>
-						{s.name}{s.retired ? ' · retired' : !s.enabled ? ' · history off' : ''}</span
+						{s.name}{s.retired
+							? ' · retired'
+							: s.state === 'ready'
+								? ''
+								: ' · ' + historyStatus(s.state)}</span
 					>{/each}
 			{/if}
 		</div>

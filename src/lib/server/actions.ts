@@ -650,12 +650,7 @@ export const ACTIONS: Record<string, ActionDef> = {
 		cap: 'chat.read',
 		poll: true,
 		mutating: false,
-		run: async (c) => {
-			const terms = chatTermsOf(await c.json('GET', '/v1/chat/terms'));
-			if (!terms)
-				throw new GameError(502, 'The server did not return its chat terms.', 'bad_response');
-			return terms;
-		}
+		run: (c) => readChatTerms(c)
 	},
 	// Accepting them is the agreement of whoever runs the server: an owner of its organisation, in
 	// person, for the version they were shown. The trail keeps who accepted which version.
@@ -1080,9 +1075,15 @@ export const ACTIONS: Record<string, ActionDef> = {
 	}
 };
 
+export async function readChatTerms(c: WardogsClient, timeoutMs?: number) {
+	const terms = chatTermsOf(await c.json('GET', '/v1/chat/terms', undefined, timeoutMs));
+	if (!terms) throw new GameError(502, 'The server did not return its chat terms.', 'bad_response');
+	return terms;
+}
+
 /**
  * The chat lines after `after`, oldest first, `limit` at most: the one request that reads the chat
- * from the game. Used by the live reader, the chat rules and the independently enabled archive.
+ * from the game. Used by the live reader, the chat rules and the moderation archive.
  * No action auditing or forwarding of message content happens here.
  */
 export async function readChat(

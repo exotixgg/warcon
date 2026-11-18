@@ -39,7 +39,7 @@ export async function chatSources(
 			name,
 			retired,
 			enabled: !!s?.enabled && !retired,
-			state: s?.state ?? 'off',
+			state: s?.enabled ? s.state : 'waiting',
 			epoch: s?.epoch ?? null,
 			lastRead: s?.lastReadAt?.toISOString() ?? null
 		};

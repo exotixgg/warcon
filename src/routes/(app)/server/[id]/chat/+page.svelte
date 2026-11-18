@@ -2,7 +2,6 @@
 	import { untrack } from 'svelte';
 	import type { LiveChatLine } from '$lib/chat-archive';
 	import { page } from '$app/state';
-	import { invalidateAll } from '$app/navigation';
 	import ChatHistory from '$lib/components/ChatHistory.svelte';
 	import { api, ApiError, rconGet, rconPost, errorMessage } from '$lib/api';
 	import { poll } from '$lib/poll';
@@ -28,20 +27,6 @@
 	let scope = $state(untrack(() => (page.url.searchParams.get('scope') === 'org' ? '' : id)));
 	const around = $derived(page.url.searchParams.get('around') ?? '');
 	const showLive = $derived(scope === id && !around && data.reachable);
-	let configBusy = $state(false);
-	async function enableArchive() {
-		configBusy = true;
-		try {
-			await api('PUT', `/api/servers/${encodeURIComponent(id)}/chat-archive`, { enabled: true });
-			await invalidateAll();
-			toast('Chat history enabled.', 'ok');
-		} catch (e) {
-			toast(errorMessage(e), 'err');
-		} finally {
-			configBusy = false;
-		}
-	}
-
 	/** how often the game is asked for new lines while the tab shows */
 	const EVERY_MS = 4000;
 	/** pages of a read taken in one go, when a busy server has more than one waiting */
@@ -247,14 +232,6 @@
 	</div>
 {/snippet}
 
-{#snippet settings()}
-	{#if manager && scope === id && !data.archiveEnabled}
-		<button class="btn btn-sm" disabled={configBusy} onclick={enableArchive}>
-			Enable indefinite chat history
-		</button>
-	{/if}
-{/snippet}
-
 {#snippet notice()}
 	{#if !data.reachable}
 		<p class="callout">Live chat unavailable. {data.problem}</p>
@@ -403,7 +380,6 @@
 	live={showLive && terms?.accepted && !closed ? lines : []}
 	liveLoading={showLive && !loaded && !problem && !closed && (!terms || terms.accepted)}
 	{scores}
-	{settings}
 	{notice}
 	{footer}
 	inspect={(line) => (picked = picked?.seq === line.seq ? null : line)}

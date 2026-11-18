@@ -1,8 +1,13 @@
 import { createHash } from 'node:crypto';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, isNull } from 'drizzle-orm';
 import { CHAT_PAGE, shownName, type ChatLine } from '$lib/chat-read';
-import { readChat } from './actions';
-import { chatArchiveSources as sources, chatMessages as messages } from './db/schema';
+import { readChat, readChatTerms } from './actions';
+import {
+	chatArchiveSources as sources,
+	chatMessages as messages,
+	servers,
+	organizations
+} from './db/schema';
 import type { Env } from './env';
 import { ownershipPeriod, withOwnedTransaction } from './leadership';
 import { GameError, type WardogsClient } from './rcon';
@@ -33,17 +38,49 @@ export async function collectArchive(
 	startedAt: number
 ) {
 	const period = ownershipPeriod();
-	const [s] = await env.db
-		.select()
-		.from(sources)
-		.where(
-			and(
-				eq(sources.serverId, server.id),
-				eq(sources.orgId, server.orgId),
-				eq(sources.enabled, true)
-			)
+	const [existing] = await env.db.select().from(sources).where(eq(sources.serverId, server.id));
+	// A registered server owns one archive. Retired sources retain their original organisation.
+	if (existing && existing.orgId !== server.orgId) return 60_000;
+	let s = existing;
+	if (!s?.enabled) {
+		const [active] = await withOwnedTransaction(
+			env,
+			async (tx) => {
+				const [registered] = await tx
+					.select({ name: servers.name })
+					.from(servers)
+					.innerJoin(organizations, eq(organizations.id, servers.orgId))
+					.where(
+						and(
+							eq(servers.id, server.id),
+							eq(servers.orgId, server.orgId),
+							isNull(organizations.suspendedAt)
+						)
+					)
+					.for('share');
+				if (!registered) return [];
+				const start = {
+					name: registered.name,
+					enabled: true,
+					changedAt: new Date(),
+					revision: crypto.randomUUID(),
+					state: 'waiting'
+				};
+				return tx
+					.insert(sources)
+					.values({ serverId: server.id, orgId: server.orgId, ...start })
+					.onConflictDoUpdate({
+						target: sources.serverId,
+						set: start,
+						setWhere: and(eq(sources.orgId, server.orgId), eq(sources.enabled, false))
+					})
+					.returning();
+			},
+			{ period }
 		);
-	if (!s) return 30_000;
+		if (!active) return 4000;
+		s = active;
+	}
 	let epoch = s.epoch;
 	let cursor = s.cursor;
 	let anchor = s.anchor;
@@ -59,6 +96,11 @@ export async function collectArchive(
 	// Drain bounded pages in the existing server lane. An unfinished page sequence resumes
 	// on the next observation. No archive read is passed to command or Staff Call handling.
 	try {
+		if (s.state !== 'ready' || epoch !== s.epoch) {
+			const terms = await readChatTerms(client, 3000);
+			if (!terms.accepted || terms.cut)
+				throw new GameError(409, 'Waiting for accepted chat terms.', 'chat_terms_not_accepted');
+		}
 		for (let page = 0; page < 3; page++) {
 			const read = await readChat(client, Math.max(0, cursor - 1), CHAT_PAGE, 3000);
 			if (read.latestSeq === null || read.lines.some((l) => l.seq > read.latestSeq!))
@@ -123,7 +165,7 @@ export async function collectArchive(
 	await withOwnedTransaction(
 		env,
 		async (tx) => {
-			// An owner can pause collection or a new worker can advance it during the RCON read.
+			// Another observation may have advanced the cursor during the RCON read.
 			const claimed = await tx
 				.update(sources)
 				.set({

@@ -1,25 +1,6 @@
-// With per-server archive collection off, a chat line is written nowhere. It goes from the game to
-// the page of whoever holds Read chat. chat.test.ts shows who may read it and that the audit trail
-// holds no line. This suite is the fence round the rule, there to fail when a later change starts
-// keeping chat without meaning to:
-//
-//   - every table of the database is searched after the lines have been read, refused and failed
-//     on, with reads audited and a Discord and a JSON webhook taking everything they can;
-//   - so is everything the process sent out and wrote to its log, and what the worker holds of the
-//     server in memory;
-//   - the worker's own look at a server never asks the game for its chat, unless the server has a
-//     chat rule switched on (a Chat command or a Staff call; chat-look.ts). That reader was a
-//     decision, made with the chat rules, and chat-commands.test.ts holds it to the same rule:
-//     nothing typed reaches a table, a log line, the worker's memory or a request out, but for
-//     what a player sends staff through a Staff call, which goes to the Discord webhooks that
-//     take Staff calls and nowhere else;
-//   - the same reads through the relay, as where the web and the worker run apart;
-//   - a feed event that carries chat is dropped, as every event of a type Warcon does not know is;
-//   - and the source: which files may name the game's chat routes, read its lines or ask for them.
-//
-// A test here that fails on a change is that change keeping, sending or reading players' chat
-// somewhere new. That is a decision about the game's terms, to be made before the change and not
-// by editing this file until it passes.
+// The private moderation archive keeps displayed messages from the worker's read. The live
+// API, relay, audit, webhooks and worker memory must never retain or forward their content.
+// Exercise those boundaries with uniquely marked messages and inspect each destination.
 import { afterAll, beforeAll, describe, expect, spyOn, test } from 'bun:test';
 import { randomBytes, randomInt, randomUUID } from 'node:crypto';
 import { readdirSync, readFileSync } from 'node:fs';
@@ -147,7 +128,7 @@ async function logOf(fn: () => Promise<void>): Promise<string[]> {
 	return logged;
 }
 
-describe.skipIf(!hasTestDb)('players’ chat without archive collection is kept nowhere', () => {
+describe.skipIf(!hasTestDb)('live chat from before archive collection started', () => {
 	let env: Env;
 	let w: World;
 	let spy: ReturnType<typeof spyOn>;
@@ -268,16 +249,15 @@ describe.skipIf(!hasTestDb)('players’ chat without archive collection is kept 
 		chat = () => answers(200, CHAT);
 	};
 
-	test('read, refused and failed on, with everything listening: no table, log line, request out or memory holds a line', async () => {
+	test('live reads, refusals and errors do not persist or forward older messages', async () => {
 		const logged = await logOf(async () => {
 			// The terms accepted, as on a server whose chat is being read.
 			expect(
 				(await rcon(w.users.owner, 'POST', 'chatTermsAccept', { body: { version: 1 } })).status
 			).toBe(200);
 
-			// The worker's own look at the server, twice (the second knows what the build serves): it
-			// reads the status and the players, never the chat. From here on the worker holds the
-			// server in memory, as it does every server it watches.
+			// The game buffer already contains the marked messages when this server first starts
+			// its archive. The worker reads the sequence but only retains later messages.
 			const [server] = await env.db.select().from(servers).where(eq(servers.id, w.server.id));
 			const [org] = await env.db.select().from(organizations).where(eq(organizations.id, w.org.id));
 			const quiet = { ...env, STEAM_API_KEY: '' };
@@ -286,10 +266,11 @@ describe.skipIf(!hasTestDb)('players’ chat without archive collection is kept 
 				await observeServer(quiet, memoryFor(server, org), { status: true, players: true });
 				const looked = asked.slice(before);
 				expect(looked).toContain('GET /v1/players');
-				expect(looked.filter((a) => /chat/i.test(a))).toEqual([]);
 			};
 			await look();
 			await look();
+			const workerReads = chatAsks();
+			expect(workerReads).toBeGreaterThan(0);
 
 			// The lines reach the reader, whole, in an answer nothing may store on its way.
 			const read = await rcon(w.users.owner, 'GET', 'chat');
@@ -300,7 +281,7 @@ describe.skipIf(!hasTestDb)('players’ chat without archive collection is kept 
 				200
 			);
 			expect((await rcon(w.users.owner, 'GET', 'chatTerms')).status).toBe(200);
-			expect(chatAsks()).toBe(2);
+			expect(chatAsks() - workerReads).toBe(2);
 
 			// Refused: each refusal is a row in the trail and a card on Discord, and the game is not asked.
 			for (const who of [w.users.viewer, w.users.admin, w.users.keyAll])
@@ -310,16 +291,15 @@ describe.skipIf(!hasTestDb)('players’ chat without archive collection is kept 
 				body: { method: 'GET', path: '/v1/chat?after=0&limit=500' }
 			});
 			expect([raw.status, raw.code]).toEqual([403, 'use_chat']);
-			expect(chatAsks()).toBe(2);
+			expect(chatAsks() - workerReads).toBe(2);
 
 			// The game failing with the lines in its answer, then answering again: the last thing that
 			// went through the worker is a read.
 			await failEachWay();
 			expect((await rcon(w.users.owner, 'GET', 'chat')).status).toBe(200);
-			expect(chatAsks()).toBe(3 + FAILURES.length);
+			expect(chatAsks() - workerReads).toBe(3 + FAILURES.length);
 
-			// The worker looks again, after the chat has been read through it: still not at the chat,
-			// and what it holds of the server in memory has no line.
+			// The worker keeps no message content in its server memory.
 			await look();
 			expect(memoryOf(w.server.id)?.players.length).toBeGreaterThan(0);
 			expect(
@@ -472,8 +452,8 @@ describe('players’ chat: the code that may touch it', () => {
 			...read('lib/server/actions.ts').matchAll(/c\.json\(\s*'(\w+)',\s*[`']\/v1\/chat([^`']*)/g)
 		];
 		expect(requests.map((m) => `${m[1]} ${m[2].replace(/\?.*$/, '')}`)).toEqual([
-			'GET /terms',
 			'POST /terms',
+			'GET /terms',
 			'GET '
 		]);
 	});
@@ -481,6 +461,7 @@ describe('players’ chat: the code that may touch it', () => {
 	test('the lines are shaped by the action registry, shown by the Chat tab and read by the chat rules, and by nothing else', () => {
 		expect(holding(/chat-read['"]/)).toEqual([
 			// what counts as a command in one line, and whom a report names (a line's type alone)
+			'lib/chat-archive.ts',
 			'lib/chat-commands.ts',
 			'lib/server/actions.ts',
 			'lib/server/chat-archive-collect.ts',
@@ -488,8 +469,7 @@ describe('players’ chat: the code that may touch it', () => {
 			'lib/server/chat-look.ts',
 			// the step that decides what one read brings (a line's type alone)
 			'lib/server/chat-rules.ts',
-			CHAT_TAB,
-			'routes/api/servers/[id]/chat-archive/+server.ts'
+			CHAT_TAB
 		]);
 	});
 
@@ -534,14 +514,11 @@ describe('players’ chat: the code that may touch it', () => {
 		expect([...page.matchAll(/\brconPost(?:<[^(]*>)?\(([^)]*)\)/g)].map((m) => m[1])).toEqual([
 			"id, 'chatTermsAccept', { version }"
 		]);
-		// Only the archive switch is written by this page's API calls. The live reads stay isolated.
+		// The chat page reads server information and cannot change archive collection.
 		expect([...page.matchAll(/\brconGet(?:<[^(]*>)?\(\s*id,\s*'(\w+)'/g)].map((m) => m[1])).toEqual(
 			['chatTerms', 'chat']
 		);
-		expect([...page.matchAll(/\bapi(?:<[^(]*>)?\(\s*'(\w+)'/g)].map((m) => m[1])).toEqual([
-			'PUT',
-			'GET'
-		]);
+		expect([...page.matchAll(/\bapi(?:<[^(]*>)?\(\s*'(\w+)'/g)].map((m) => m[1])).toEqual(['GET']);
 		expect(page).not.toMatch(/\bfetch\(/);
 	});
 });

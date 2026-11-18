@@ -13,10 +13,8 @@ import { acquireOrRenew, releaseOwnership } from '$lib/server/leadership';
 import { collectArchive } from '$lib/server/chat-archive-collect';
 import { chatHistory } from '$lib/server/chat-history';
 import { GameError, type WardogsClient } from '$lib/server/rcon';
-import { PUT } from '../routes/api/servers/[id]/chat-archive/+server';
 import { testEnv, hasTestDb } from './db';
 import { seedWorld, type World } from './world';
-import { callApi, stubGateway } from './call';
 
 describe.skipIf(!hasTestDb)('moderation chat archive', () => {
 	let env: Env, w: World;
@@ -26,7 +24,6 @@ describe.skipIf(!hasTestDb)('moderation chat archive', () => {
 	}, 30_000);
 	afterAll(async () => {
 		if (env) await releaseOwnership(env);
-		stubGateway();
 	});
 	const steam = '76561198000000001';
 	const line = (seq: number, text: string, at: Date) => ({
@@ -40,15 +37,22 @@ describe.skipIf(!hasTestDb)('moderation chat archive', () => {
 		channel: 'Team',
 		sentUtc: at.toISOString()
 	});
-	test('owner opt-in, catch-up, repeated reads, sequence reuse, holds and paused history', async () => {
+	test('automatic logging waits for game terms, catches up, and resumes legacy paused sources', async () => {
 		const server = { ...w.server, orgId: w.org.id, name: 'EU-01' };
-		const toggle = (enabled: boolean) =>
-			callApi(PUT, w.users.owner, { method: 'PUT', params: { id: server.id }, body: { enabled } });
+		let accepted = false;
 		let game: ReturnType<typeof line>[] = [];
 		let reads = 0;
 		let throttleRead = 0;
 		const client = {
 			json: async (_method: string, path: string) => {
+				if (path.endsWith('/terms'))
+					return {
+						requiredVersion: 1,
+						acceptedVersion: accepted ? 1 : 0,
+						accepted,
+						text: 'Example terms'
+					};
+
 				reads++;
 				if (reads === throttleRead) throw new GameError(429, 'Slow down', 'rate_limited');
 				const q = new URL(path, 'http://local').searchParams;
@@ -66,10 +70,10 @@ describe.skipIf(!hasTestDb)('moderation chat archive', () => {
 		};
 		await collect();
 		expect(reads).toBe(0);
-		stubGateway({ accepted: false });
-		expect((await toggle(true)).status).toBe(409);
-		stubGateway({ accepted: true, cut: false });
-		expect((await toggle(true)).status).toBe(200);
+		const source = async () =>
+			(await env.db.select().from(sources).where(eq(sources.serverId, server.id)))[0];
+		expect((await source()).state).toBe('terms');
+		accepted = true;
 		const time = new Date(Date.now() + 1000);
 		game = Array.from({ length: 225 }, (_, i) => line(i + 1, 'line ' + i, time));
 		throttleRead = reads + 2;
@@ -94,11 +98,27 @@ describe.skipIf(!hasTestDb)('moderation chat archive', () => {
 		game.push(line(233, 'after gap', time));
 		await collect();
 		expect((await stored()).filter((r) => r.kind === 'gap')).toHaveLength(1);
-		expect((await toggle(false)).status).toBe(200);
-		const before = reads;
+		const before = await source();
+		await env.db
+			.update(sources)
+			.set({ enabled: false, state: 'off', changedAt: new Date(Date.now() - 60000) })
+			.where(eq(sources.serverId, server.id));
+		game.push(
+			line(234, 'while paused', new Date(Date.now() - 5000)),
+			line(235, 'after resume', new Date(Date.now() + 1000))
+		);
 		await collect();
-		expect(reads).toBe(before);
-		expect((await stored()).length).toBe(457);
+		await collect();
+		const resumed = await source();
+		expect(resumed.enabled).toBe(true);
+		expect(resumed.createdAt).toEqual(before.createdAt);
+		expect(resumed.epoch).toBe(before.epoch);
+		expect(resumed.cursor).toBe(235);
+		expect((await stored()).map((l) => l.body)).not.toContain('while paused');
+		expect((await stored()).length).toBe(458);
+		await env.db.delete(servers).where(eq(servers.id, server.id));
+		const retired = await stored();
+		expect(retired.length).toBe(458);
 	});
 	test('scoped cross-server search, private player history, round markers and stable pagination', async () => {
 		const world = await seedWorld(env);
