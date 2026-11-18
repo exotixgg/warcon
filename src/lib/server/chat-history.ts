@@ -1,6 +1,8 @@
 import { eq, sql, type SQL } from 'drizzle-orm';
 import {
 	archiveRanges,
+	archiveWindow,
+	type ArchiveRange,
 	type ArchiveLine,
 	type ArchivePage,
 	type ChatSource
@@ -31,21 +33,23 @@ export async function chatSources(
 		.leftJoin(servers, eq(servers.id, sources.serverId))
 		.where(eq(sources.orgId, orgId));
 	const byId = new Map(rows.map((r) => [r.source.serverId, r.source]));
-	const view = (id: string, name: string, retired = false): ChatSource => {
+	const view = (id: string, name: string, canSend: boolean, retired = false): ChatSource => {
 		const s = byId.get(id);
 		return {
 			id,
 			name,
 			retired,
+			canSend,
 			enabled: !!s?.enabled && !retired,
-			state: s?.state ?? 'off',
+			state: s?.enabled ? s.state : 'waiting',
+			epoch: s?.epoch ?? null,
 			lastRead: s?.lastReadAt?.toISOString() ?? null
 		};
 	};
-	const result = allowed.map((s) => view(s.id, s.name));
+	const result = allowed.map((s) => view(s.id, s.name, s.caps.includes('chat.send')));
 	if (role === 'owner')
 		for (const r of rows)
-			if (!r.registered) result.push(view(r.source.serverId, r.source.name, true));
+			if (!r.registered) result.push(view(r.source.serverId, r.source.name, false, true));
 	if (!result.length && role !== 'owner')
 		throw new ApiError(403, 'Read chat permission is required.');
 	return result.sort(
@@ -53,12 +57,6 @@ export async function chatSources(
 	);
 }
 
-const durations: Record<string, number> = {
-	'1h': 3600000,
-	'24h': 86400000,
-	'7d': 604800000,
-	'30d': 2592000000
-};
 const kinds = ['start', 'message', 'gap', 'end'] as const;
 function before(p: URLSearchParams) {
 	const value = p.get('before');
@@ -95,18 +93,34 @@ export async function chatHistory(
 	const limit = Math.min(100, Math.max(1, Number(p.get('limit')) || 100));
 	if (!Number.isInteger(limit)) throw new ApiError(400, 'Invalid page size.');
 	const player = (p.get('player') ?? '').trim(),
-		text = (p.get('q') ?? '').trim();
-	if (player.length > 100 || text.length > 500) throw new ApiError(400, 'Search is too long.');
+		text = (p.get('q') ?? '').trim(),
+		any = (p.get('any') ?? '').trim(),
+		channel = (p.get('channel') ?? '').trim(),
+		faction = (p.get('faction') ?? '').trim();
+	if (
+		player.length > 100 ||
+		text.length > 500 ||
+		any.length > 500 ||
+		channel.length > 24 ||
+		faction.length > 24
+	)
+		throw new ApiError(400, 'Search is too long.');
 	const cursor = before(p);
 	const focus = p.get('around');
 	if (focus && !Number.isFinite(Date.parse(focus)))
 		throw new ApiError(400, 'Invalid context time.');
-	const lower = focus
-		? Date.parse(focus) - 300000
-		: durations[range]
-			? Date.now() - durations[range]
-			: null;
-	const upper = focus ? Date.parse(focus) + 300000 : null;
+	const from = p.get('from') ?? '',
+		to = p.get('to') ?? '';
+	if (range === 'custom') {
+		const valid = (at: string) =>
+			/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(at) && Number.isFinite(Date.parse(at));
+		if ((!from && !to) || (from && !valid(from)) || (to && !valid(to)) || (from && to && from > to))
+			throw new ApiError(400, 'Choose a valid start or end time.');
+	}
+	const { lower, upper } = focus
+		? { lower: Date.parse(focus) - 300000, upper: Date.parse(focus) + 300000 }
+		: archiveWindow(range as ArchiveRange, Date.now(), from, to);
+	const liveRoundWindow = !focus && list.some((s) => s.id === selected && !s.retired);
 	if (!ids.length) return { servers: list, lines: [], next: null };
 	const idSet = sql.join(
 		ids.map((id) => sql`${id}`),
@@ -119,15 +133,18 @@ export async function chatHistory(
 	}
 	const rank = sql`case when c.kind='gap' then 2 else 1 end`;
 	const parts = [
-		sql`(select c.at, c.id, ${rank} as rank, c.server_id, c.kind,c.speaker,c.steam_id,c.channel,c.body
+		sql`(select c.at, c.id, ${rank} as rank, c.server_id, c.kind,c.speaker,c.steam_id,c.channel,c.body,c.seq,c.epoch,c.faction,c.ping
 		from chat_messages c where c.org_id=${orgId} and c.server_id in (${idSet})
 		${bounds(sql`c.at`, rank, sql`c.id`)}
-		${player || text ? sql`and c.kind='message'` : sql``}
+		${player || text || any || channel || faction ? sql`and c.kind='message'` : sql``}
 		${player ? sql`and ${/^\d{17}$/.test(player) ? sql`c.steam_id=${player}` : contains(sql`c.speaker`, player)}` : sql``}
 		${text ? sql`and ${contains(sql`c.body`, text)}` : sql``}
-		order by c.at desc,rank desc,c.id desc limit ${limit + 1})`
+		${faction ? sql`and lower(c.faction)=lower(${faction}::text)` : sql``}
+		${channel ? sql`and c.channel=${channel}` : sql``}
+        ${any ? sql`and (${contains(sql`c.speaker`, any)} or ${contains(sql`c.body`, any)} or c.steam_id=${any})` : sql``}
+        order by c.at desc,rank desc,c.id desc limit ${limit + 1})`
 	];
-	if (!player && !text)
+	if (!player && !text && !any && !channel && !faction)
 		for (const end of [false, true]) {
 			const at = end ? sql`m.ended_at` : sql`m.started_at`,
 				rank = end ? sql`3` : sql`0`;
@@ -139,16 +156,18 @@ export async function chatHistory(
 				(select string_agg(concat_ws(' ',f->>'name',f->>'score'),', ' order by pos)
 				 from jsonb_array_elements(case when jsonb_typeof(m.final_scores)='array' then m.final_scores else '[]'::jsonb end) with ordinality as scores(f,pos))`
 					: sql`null::text`
-			}) as body
-			from matches m join chat_archive_sources s on s.server_id=m.server_id
-			where s.org_id=${orgId} and m.server_id in (${idSet}) and coalesce(m.ended_at,'infinity'::timestamptz)>=s.created_at and ${at} is not null
-			and (s.enabled or ${at}<=s.changed_at) ${bounds(at, rank, sql`m.id`)}
+			}) as body, null::bigint as seq, null::int as epoch, ''::text as faction, false as ping
+			from matches m left join chat_archive_sources s on s.server_id=m.server_id and s.org_id=${orgId}
+            where m.server_id in (${idSet}) and ${at} is not null
+            and ((coalesce(m.ended_at,'infinity'::timestamptz)>=s.created_at and (s.enabled or ${at}<=s.changed_at))
+                 ${liveRoundWindow ? sql`or ${at} >= now() - interval '1 hour'` : sql``})
+            ${bounds(at, rank, sql`m.id`)}
 			order by ${at} desc,m.id desc limit ${limit + 1})`);
 		}
 	// Source game and match timestamps have millisecond precision. Always return UTC for deep links.
 	const rows = (await env.db
 		.execute(sql`select to_char(at at time zone 'UTC','YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') as at,
-		id::text,server_id as "serverId",kind,speaker,steam_id as "steamId",channel,body
+		id::text,server_id as "serverId",kind,speaker,steam_id as "steamId",channel,body,seq::double precision as seq,epoch,faction,ping
 		from (${sql.join(parts, sql` union all `)}) as timeline order by at desc,rank desc,id::bigint desc limit ${limit + 1}`)) as unknown as ArchiveLine[];
 	const lines = rows.slice(0, limit),
 		last = lines.at(-1);

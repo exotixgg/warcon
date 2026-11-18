@@ -8,7 +8,20 @@ export const POST = route(async (event) => {
 	const user = requireUser(event.locals);
 	const body = await readJson(event.request);
 	const p = new URLSearchParams();
-	for (const key of ['server', 'range', 'limit', 'before', 'around', 'player', 'q'])
+	for (const key of [
+		'server',
+		'range',
+		'limit',
+		'before',
+		'around',
+		'player',
+		'q',
+		'any',
+		'channel',
+		'faction',
+		'from',
+		'to'
+	])
 		if (typeof body[key] === 'string') p.set(key, body[key]);
 	return apiJson(await chatHistory(getEnv(), user, param(event, 'id'), p));
 });

@@ -937,7 +937,12 @@
 
 {#if data.showRecentChat}
 	{#key data.server.orgId + d.steamId}
-		<ChatHistory orgId={data.server.orgId} initialPlayer={d.steamId} compact />
+		<ChatHistory
+			homeId={data.server.id}
+			orgId={data.server.orgId}
+			initialPlayer={d.steamId}
+			compact
+		/>
 	{/key}
 {/if}
 
