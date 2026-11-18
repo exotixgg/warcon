@@ -2,7 +2,7 @@
 // (and on its event feed, which sends nothing until they are accepted) and the chat lines
 // themselves, each kept to the fields below. The lines are players' messages, shown to the people
 // who moderate a server under those terms. They go from the game to the reader's page and are kept
-// in the page by the live reader. An owner can separately enable the private moderation archive. The worker reads them as well,
+// in the page by the live reader. The worker retains displayed messages for moderation. It also reads chat
 // on a server with a chat rule switched on, to answer the lines that are commands of that server
 // (server/chat-look.ts): it holds no line between two reads, and what a player sends staff through
 // a Staff call is the one thing passed on, to the organisation's own Discord.

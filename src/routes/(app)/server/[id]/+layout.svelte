@@ -213,8 +213,8 @@
 	{/each}
 </nav>
 
-{#if data.reachable}
-	{#key data.server.id}
+{#if data.reachable || current === '/chat'}
+	{#key current === '/chat' ? data.server.id + page.url.search : data.server.id}
 		{@render children()}
 	{/key}
 {:else}
