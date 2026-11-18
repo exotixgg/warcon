@@ -144,7 +144,7 @@ describe.skipIf(!hasTestDb)('moderation chat archive', () => {
 					steamId: steam,
 					speaker: 'Pilot',
 					channel: 'Global',
-					faction: '',
+					faction: i === 0 ? 'RED' : 'BLU',
 					body: 'literal 100%_' + seq,
 					at: seq === 1 ? old : now
 				}))
@@ -170,6 +170,27 @@ describe.skipIf(!hasTestDb)('moderation chat archive', () => {
 		expect((await read({ player: steam, range: 'all' })).lines).toHaveLength(4);
 		expect((await read({ q: '100%_1', range: 'all' })).lines).toHaveLength(2);
 		expect((await read({ q: '100__1', range: 'all' })).lines).toHaveLength(0);
+
+		const filters = {
+			range: 'custom',
+			from: now.toISOString(),
+			to: now.toISOString(),
+			player: 'Pilo',
+			q: '100%_',
+			faction: 'red',
+			channel: 'Global'
+		};
+		const scoped = await read(filters);
+		expect(scoped.lines.map((l) => [l.kind, l.serverId, l.at])).toEqual([
+			['message', serverIds[0], now.toISOString()]
+		]);
+		expect(scoped.servers.every((s) => s.canSend)).toBe(true);
+		expect((await read({ ...filters, player: 'literal' })).lines).toHaveLength(0);
+		expect((await read({ ...filters, q: 'Pilot' })).lines).toHaveLength(0);
+		expect((await read({ ...filters, from: '', to: old.toISOString() })).lines).toHaveLength(1);
+		await expect(read({ ...filters, from: '', to: '' })).rejects.toThrow();
+		await expect(read({ ...filters, to: old.toISOString() })).rejects.toThrow();
+		await expect(read({ ...filters, from: 'yesterday' })).rejects.toThrow();
 
 		const found = (await read({ any: '100%_2', channel: 'Global' })).lines;
 		expect(found).toHaveLength(2);
@@ -198,6 +219,24 @@ describe.skipIf(!hasTestDb)('moderation chat archive', () => {
 				now.getTime(),
 				0
 			);
+		const fresh = { ...live, faction: 'RED', seq: 3 };
+		expect(
+			chatTimeline(
+				[],
+				[
+					fresh,
+					{ ...fresh, seq: 4, faction: 'BLU' },
+					{ ...fresh, seq: 5, channel: 'Squad' },
+					{ ...fresh, seq: 6, at: old.toISOString() },
+					{ ...fresh, seq: 7, name: 'Else' },
+					{ ...fresh, seq: 8, text: 'Else' }
+				],
+				serverIds[0],
+				{ ...filters, range: 'custom' },
+				now.getTime(),
+				0
+			).map((l) => l.seq)
+		).toEqual([3]);
 		const merged = timeline([live, { ...live, seq: 3 }]);
 		expect(merged).toHaveLength(3);
 		expect(
@@ -230,6 +269,7 @@ describe.skipIf(!hasTestDb)('moderation chat archive', () => {
 		expect(
 			(await read({ range: 'all', player: steam }, 'viewer')).lines.map((l) => l.serverId)
 		).toEqual([serverIds[0], serverIds[0]]);
+		expect((await read({}, 'viewer')).servers.every((s) => !s.canSend)).toBe(true);
 		await expect(read({ server: serverIds[1] }, 'viewer')).rejects.toThrow();
 		await env.db
 			.update(sources)
@@ -243,6 +283,9 @@ describe.skipIf(!hasTestDb)('moderation chat archive', () => {
 		expect((await read({ range: 'all', server: serverIds[1], player: steam })).lines).toHaveLength(
 			2
 		);
-		expect((await read()).servers.find((s) => s.id === serverIds[1])?.retired).toBe(true);
+		expect((await read()).servers.find((s) => s.id === serverIds[1])).toMatchObject({
+			retired: true,
+			canSend: false
+		});
 	});
 });

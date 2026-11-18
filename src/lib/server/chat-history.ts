@@ -1,7 +1,8 @@
 import { eq, sql, type SQL } from 'drizzle-orm';
 import {
 	archiveRanges,
-	archiveDurations,
+	archiveWindow,
+	type ArchiveRange,
 	type ArchiveLine,
 	type ArchivePage,
 	type ChatSource
@@ -32,22 +33,23 @@ export async function chatSources(
 		.leftJoin(servers, eq(servers.id, sources.serverId))
 		.where(eq(sources.orgId, orgId));
 	const byId = new Map(rows.map((r) => [r.source.serverId, r.source]));
-	const view = (id: string, name: string, retired = false): ChatSource => {
+	const view = (id: string, name: string, canSend: boolean, retired = false): ChatSource => {
 		const s = byId.get(id);
 		return {
 			id,
 			name,
 			retired,
+			canSend,
 			enabled: !!s?.enabled && !retired,
 			state: s?.enabled ? s.state : 'waiting',
 			epoch: s?.epoch ?? null,
 			lastRead: s?.lastReadAt?.toISOString() ?? null
 		};
 	};
-	const result = allowed.map((s) => view(s.id, s.name));
+	const result = allowed.map((s) => view(s.id, s.name, s.caps.includes('chat.send')));
 	if (role === 'owner')
 		for (const r of rows)
-			if (!r.registered) result.push(view(r.source.serverId, r.source.name, true));
+			if (!r.registered) result.push(view(r.source.serverId, r.source.name, false, true));
 	if (!result.length && role !== 'owner')
 		throw new ApiError(403, 'Read chat permission is required.');
 	return result.sort(
@@ -93,21 +95,32 @@ export async function chatHistory(
 	const player = (p.get('player') ?? '').trim(),
 		text = (p.get('q') ?? '').trim(),
 		any = (p.get('any') ?? '').trim(),
-		channel = (p.get('channel') ?? '').trim();
-	if (player.length > 100 || text.length > 500 || any.length > 500 || channel.length > 24)
+		channel = (p.get('channel') ?? '').trim(),
+		faction = (p.get('faction') ?? '').trim();
+	if (
+		player.length > 100 ||
+		text.length > 500 ||
+		any.length > 500 ||
+		channel.length > 24 ||
+		faction.length > 24
+	)
 		throw new ApiError(400, 'Search is too long.');
 	const cursor = before(p);
 	const focus = p.get('around');
 	if (focus && !Number.isFinite(Date.parse(focus)))
 		throw new ApiError(400, 'Invalid context time.');
-	const lower = focus
-		? Date.parse(focus) - 300000
-		: range !== 'all'
-			? Date.now() - archiveDurations[range as keyof typeof archiveDurations]
-			: null;
-	// A server's live buffer can still be read when retention is off.
+	const from = p.get('from') ?? '',
+		to = p.get('to') ?? '';
+	if (range === 'custom') {
+		const valid = (at: string) =>
+			/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(at) && Number.isFinite(Date.parse(at));
+		if ((!from && !to) || (from && !valid(from)) || (to && !valid(to)) || (from && to && from > to))
+			throw new ApiError(400, 'Choose a valid start or end time.');
+	}
+	const { lower, upper } = focus
+		? { lower: Date.parse(focus) - 300000, upper: Date.parse(focus) + 300000 }
+		: archiveWindow(range as ArchiveRange, Date.now(), from, to);
 	const liveRoundWindow = !focus && list.some((s) => s.id === selected && !s.retired);
-	const upper = focus ? Date.parse(focus) + 300000 : null;
 	if (!ids.length) return { servers: list, lines: [], next: null };
 	const idSet = sql.join(
 		ids.map((id) => sql`${id}`),
@@ -123,14 +136,15 @@ export async function chatHistory(
 		sql`(select c.at, c.id, ${rank} as rank, c.server_id, c.kind,c.speaker,c.steam_id,c.channel,c.body,c.seq,c.epoch,c.faction,c.ping
 		from chat_messages c where c.org_id=${orgId} and c.server_id in (${idSet})
 		${bounds(sql`c.at`, rank, sql`c.id`)}
-		${player || text || any || channel ? sql`and c.kind='message'` : sql``}
+		${player || text || any || channel || faction ? sql`and c.kind='message'` : sql``}
 		${player ? sql`and ${/^\d{17}$/.test(player) ? sql`c.steam_id=${player}` : contains(sql`c.speaker`, player)}` : sql``}
 		${text ? sql`and ${contains(sql`c.body`, text)}` : sql``}
+		${faction ? sql`and lower(c.faction)=lower(${faction}::text)` : sql``}
 		${channel ? sql`and c.channel=${channel}` : sql``}
         ${any ? sql`and (${contains(sql`c.speaker`, any)} or ${contains(sql`c.body`, any)} or c.steam_id=${any})` : sql``}
         order by c.at desc,rank desc,c.id desc limit ${limit + 1})`
 	];
-	if (!player && !text && !any && !channel)
+	if (!player && !text && !any && !channel && !faction)
 		for (const end of [false, true]) {
 			const at = end ? sql`m.ended_at` : sql`m.started_at`,
 				rank = end ? sql`3` : sql`0`;

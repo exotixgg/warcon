@@ -1,6 +1,6 @@
 import { shownName, type ChatLine } from './chat-read';
 
-export const archiveRanges = ['1h', '24h', '7d', '30d', 'all'] as const;
+export const archiveRanges = ['1h', '24h', '7d', '30d', 'all', 'custom'] as const;
 export type ArchiveRange = (typeof archiveRanges)[number];
 export const archiveDurations = {
 	'1h': 3600000,
@@ -8,6 +8,12 @@ export const archiveDurations = {
 	'7d': 604800000,
 	'30d': 2592000000
 };
+
+export function archiveWindow(range: ArchiveRange, now: number, from = '', to = '') {
+	if (range === 'custom')
+		return { lower: from ? Date.parse(from) : null, upper: to ? Date.parse(to) : null };
+	return { lower: range === 'all' ? null : now - archiveDurations[range], upper: null };
+}
 
 export interface ChatSource {
 	id: string;
@@ -17,6 +23,7 @@ export interface ChatSource {
 	lastRead: string | null;
 	epoch: number | null;
 	retired: boolean;
+	canSend: boolean;
 }
 export interface ArchiveLine {
 	id: string;
@@ -45,7 +52,16 @@ export function chatTimeline(
 	archived: ArchiveLine[],
 	live: LiveChatLine[],
 	serverId: string,
-	filters: { range: ArchiveRange; player: string; any: string; channel: string },
+	filters: {
+		range: ArchiveRange;
+		player: string;
+		any?: string;
+		channel: string;
+		q?: string;
+		faction?: string;
+		from?: string;
+		to?: string;
+	},
 	now: number,
 	archiveEpoch: number | null
 ): ChatEntry[] {
@@ -58,16 +74,29 @@ export function chatTimeline(
 		if (same) same.push(line);
 		else bySequence.set(line.seq, [line]);
 	}
-	const lower = filters.range === 'all' ? 0 : now - archiveDurations[filters.range];
+	const { lower, upper } = archiveWindow(filters.range, now, filters.from, filters.to);
 	const player = filters.player.toLowerCase(),
-		any = filters.any.toLowerCase();
+		any = filters.any?.toLowerCase(),
+		q = filters.q?.toLowerCase(),
+		faction = filters.faction?.toLowerCase();
 	for (const l of live) {
 		const at = l.at ?? l.observedAt;
-		if (!at || Date.parse(at) < lower || (filters.channel && l.channel !== filters.channel))
+		if (
+			!at ||
+			(lower !== null && Date.parse(at) < lower) ||
+			(upper !== null && Date.parse(at) > upper) ||
+			(filters.channel && l.channel !== filters.channel) ||
+			(faction && l.faction.toLowerCase() !== faction) ||
+			(q && !l.text.toLowerCase().includes(q))
+		)
 			continue;
 		const speaker = shownName(l);
 		const names = [l.name, l.hiddenName, l.steamId, speaker].map((s) => s.toLowerCase());
-		if (player && !names.some((n) => n.includes(player))) continue;
+		if (
+			player &&
+			(/^\d{17}$/.test(player) ? l.steamId !== player : !speaker.toLowerCase().includes(player))
+		)
+			continue;
 		if (
 			any &&
 			![...names, l.text.toLowerCase(), l.typed?.toLowerCase() ?? ''].some((s) => s.includes(any))

@@ -1,6 +1,7 @@
 <script lang="ts">
-	import { untrack, type Snippet } from 'svelte';
-	import type { FactionScore } from '$lib/types';
+	import { untrack, tick, type Snippet } from 'svelte';
+	import ChatComposer from './ChatComposer.svelte';
+	import type { FactionScore, ServerInfo } from '$lib/types';
 	import FactionChip from './FactionChip.svelte';
 	import Badge from './Badge.svelte';
 	import { api, errorMessage } from '$lib/api';
@@ -18,6 +19,7 @@
 
 	let {
 		orgId,
+		operator,
 		serverId = '',
 		homeId = '',
 		initialPlayer = '',
@@ -32,6 +34,7 @@
 		inspect
 	}: {
 		orgId: string;
+		operator?: Pick<ServerInfo, 'orgName' | 'manager'>;
 		serverId?: string;
 		homeId?: string;
 		initialPlayer?: string;
@@ -45,16 +48,39 @@
 		footer?: Snippet;
 		inspect?: (line: LiveChatLine) => void;
 	} = $props();
-	let range = $state<ArchiveRange>(untrack(() => (initialPlayer ? 'all' : '1h')));
+	let range = $state<ArchiveRange>(untrack(() => (initialPlayer && !compact ? 'all' : '1h')));
 	let player = $state(untrack(() => initialPlayer));
-	let query = $state('');
-	let draft = $state('');
+	let playerDraft = $state(untrack(() => initialPlayer));
+	let query = $state(''),
+		draft = $state('');
+	let faction = $state(''),
+		teamDraft = $state('');
 	$effect(() => {
-		const value = draft.trim();
-		const timer = setTimeout(() => (query = value), 300);
+		const values = [playerDraft.trim(), draft.trim(), teamDraft.trim()];
+		const timer = setTimeout(() => {
+			[player, query, faction] = values;
+		}, 300);
 		return () => clearTimeout(timer);
 	});
 	let channel = $state('');
+	let fromLocal = $state(''),
+		toLocal = $state('');
+	function toUtc(value: string, end: boolean) {
+		if (!value) return '';
+		const date = new Date(value);
+		if (!Number.isFinite(date.getTime())) return '';
+		if (end) date.setSeconds(59, 999);
+		return date.toISOString();
+	}
+	const from = $derived(range === 'custom' ? toUtc(fromLocal, false) : '');
+	const to = $derived(range === 'custom' ? toUtc(toLocal, true) : '');
+	const invalidWindow = $derived(
+		range === 'custom' && ((!from && !to) || (from && to && from > to))
+	);
+	const filterId = $props.id();
+	let target = $state('');
+	let composer = $state<ReturnType<typeof ChatComposer>>();
+	const sending = $derived(composer?.locked() ?? false);
 	let now = $state(Date.now());
 	let scroller: HTMLDivElement;
 	let sources = $state<ChatSource[]>([]),
@@ -70,12 +96,23 @@
 		server,
 		range,
 		player,
-		any: query,
+		q: query,
+		faction,
+		from,
+		to,
 		channel,
 		limit: compact ? '10' : '100',
 		around
 	});
 	const sourceMap = $derived(new Map(sources.map((s) => [s.id, s])));
+	const destination = $derived(sourceMap.get(server || target));
+	async function replyTo(entry: ArchiveLine) {
+		if (!entry.steamId || sending || !sourceMap.get(entry.serverId)?.canSend) return;
+		if (!server) target = entry.serverId;
+		await tick();
+		if (destination?.id === entry.serverId) await composer?.replyTo(entry.steamId, entry.speaker);
+	}
+
 	// Use the server's own suffix (EU-03 → 3). For duplicate or unnumbered names,
 	// reserve the other suffixes first and assign an unused number in stable name/ID order.
 	const numbers = $derived.by(() => {
@@ -115,6 +152,10 @@
 		next = null;
 		browsing = false;
 		moreBusy = false;
+		if (invalidWindow) {
+			loaded = true;
+			return;
+		}
 		const stop = untrack(() =>
 			poll(
 				async () => {
@@ -199,8 +240,24 @@
 			)
 		].sort()
 	);
+	const factions = $derived(
+		[
+			...new Set(
+				[
+					'RED',
+					'BLU',
+					'GRN',
+					...(scores ?? []).map((s) => s.name),
+					...lines.map((l) => l.faction),
+					...live.map((l) => l.faction)
+				].filter(Boolean)
+			)
+		].sort()
+	);
 	const visibleLive = $derived(
-		server && server === serverId && !around && sourceMap.has(server) && !error ? live : []
+		server && server === serverId && !around && sourceMap.has(server) && !error && !invalidWindow
+			? live
+			: []
 	);
 	const entries = $derived(
 		chatTimeline(lines, visibleLive, serverId, filters, now, focusedSource?.epoch ?? null)
@@ -246,14 +303,19 @@
 					<button
 						class="btn btn-sm"
 						class:btn-primary={server === serverId}
+						disabled={sending}
 						aria-pressed={server === serverId}
 						onclick={() => (server = serverId)}>This server</button
 					>
 					<button
 						class="btn btn-sm"
 						class:btn-primary={!server}
+						disabled={sending}
 						aria-pressed={!server}
-						onclick={() => (server = '')}>All servers</button
+						onclick={() => {
+							target = '';
+							server = '';
+						}}>All servers</button
 					>
 				</div>
 			{:else}
@@ -262,9 +324,6 @@
 					{#each sources as s}<option value={s.id}>#{numbers.get(s.id)} · {s.name}</option>{/each}
 				</select>
 			{/if}
-			<select aria-label="Time range" class="input w-auto" bind:value={range}>
-				{#each archiveRanges as r}<option value={r}>{r === 'all' ? 'All time' : r}</option>{/each}
-			</select>
 			{#if !server}<a
 					class="btn btn-sm"
 					href={allPath}
@@ -273,37 +332,96 @@
 					aria-label="Open all servers in a new window">Open window ↗</a
 				>{/if}
 		{/if}
-	</header>
-	{#if !compact && !around}
-		<form
-			class="mt-3 flex flex-wrap items-center gap-2"
-			onsubmit={(e) => {
-				e.preventDefault();
-				query = draft.trim();
-			}}
-		>
-			<select aria-label="Channel" class="input w-auto" bind:value={channel}>
-				<option value="">All channels</option>{#each channels as c}<option value={c}>{c}</option
+		{#if !around && !compact && (draft || playerDraft || teamDraft || channel || range !== '1h')}
+			<button
+				type="button"
+				class="btn btn-sm"
+				onclick={() => {
+					draft = '';
+					playerDraft = '';
+					teamDraft = '';
+					channel = '';
+					range = '1h';
+					fromLocal = '';
+					toLocal = '';
+				}}>Clear filters</button
+			>
+		{/if}
+		{#if !around}
+			<select aria-label="History time range" class="input w-auto" bind:value={range}>
+				{#each archiveRanges as r}<option value={r}
+						>{r === 'all' ? 'All time' : r === 'custom' ? 'Custom dates' : 'Last ' + r}</option
 					>{/each}
 			</select>
-
-			{#if player}
-				<button
-					class="btn btn-sm"
-					type="button"
-					aria-label="Remove player filter"
-					onclick={() => (player = '')}>Player {player} ×</button
+		{/if}
+	</header>
+	{#if !compact && !around}
+		<div
+			class="mt-3 grid grid-cols-2 gap-2 md:grid-cols-[minmax(0,1.4fr)_minmax(0,1fr)_7.5rem_8rem]"
+		>
+			<label class="min-w-0"
+				><span class="field-label">Message</span><input
+					type="search"
+					class="input min-w-0"
+					aria-label="Message text"
+					placeholder="Search message text…"
+					maxlength="500"
+					bind:value={draft}
+				/></label
+			>
+			<label class="min-w-0"
+				><span class="field-label">Player</span><input
+					type="search"
+					class="input min-w-0"
+					aria-label="Filter by player"
+					placeholder="Player name or SteamID…"
+					maxlength="100"
+					bind:value={playerDraft}
+				/></label
+			>
+			<label class="min-w-0"
+				><span class="field-label">Team</span><input
+					type="search"
+					class="input min-w-0"
+					aria-label="Filter by team"
+					placeholder="All teams"
+					maxlength="24"
+					list={filterId + '-teams'}
+					bind:value={teamDraft}
+				/></label
+			>
+			<datalist id={filterId + '-teams'}
+				>{#each factions as name}<option value={name}></option>{/each}</datalist
+			>
+			<label class="min-w-0"
+				><span class="field-label">Channel</span><select
+					aria-label="Channel"
+					class="input min-w-0"
+					bind:value={channel}
 				>
-			{/if}
-			<input
-				class="input min-w-32 flex-1"
-				type="search"
-				aria-label="Search chat"
-				placeholder="Search player, SteamID or message…"
-				maxlength="500"
-				bind:value={draft}
-			/>
-		</form>
+					<option value="">All channels</option>{#each channels as c}<option value={c}>{c}</option
+						>{/each}
+				</select></label
+			>
+		</div>
+	{/if}
+	{#if range === 'custom' && !around}
+		<div class="mt-2 flex flex-wrap items-end gap-2">
+			<label class="text-xs text-mist-400"
+				>From (local time)<input
+					type="datetime-local"
+					class="input"
+					bind:value={fromLocal}
+				/></label
+			>
+			<label class="text-xs text-mist-400"
+				>Through (local time)<input
+					type="datetime-local"
+					class="input"
+					bind:value={toLocal}
+				/></label
+			>
+		</div>
 	{/if}
 	{#if !compact && (!server || focusedSource)}
 		<div class="my-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-mist-400">
@@ -323,10 +441,15 @@
 	{/if}
 	{#if server && server === serverId && !around}{@render notice?.()}{/if}
 	<div
-		class="mt-2 max-h-[62vh] overflow-y-auto rounded-ctl border border-white/10 bg-ink-950"
+		class="mt-2 max-h-[45vh] overflow-y-auto rounded-ctl border border-white/10 bg-ink-950"
 		bind:this={scroller}
 	>
-		{#if error}<p class="callout">{error}</p>
+		{#if invalidWindow}<p class="p-4 text-sm text-mist-400">
+				{from && to
+					? 'End time must follow start time.'
+					: 'Enter a start or end time to view history.'}
+			</p>
+		{:else if error}<p class="callout">{error}</p>
 		{:else if !loaded || (!entries.length && liveLoading)}<p class="p-4 text-sm text-mist-400">
 				Loading chat…
 			</p>
@@ -339,7 +462,7 @@
 					{@const source = sourceMap.get(entry.serverId)}
 					{@const path = '/server/' + encodeURIComponent(entry.serverId)}
 					{@const date = new Date(entry.at)}
-					<li class="border-b border-white/5 last:border-b-0">
+					<li class="group border-b border-white/5 last:border-b-0">
 						{#if !i || day.format(date) !== day.format(new Date(entries[i - 1].at))}
 							<div
 								class="border-b border-white/10 bg-white/5 px-3 py-1 font-mono text-[11px] text-mist-400"
@@ -387,10 +510,19 @@
 								<span class="min-w-0 [overflow-wrap:anywhere] break-words whitespace-pre-wrap"
 									>{entry.body}</span
 								>
+								{#if operator && !compact && !around && entry.steamId && source?.canSend}
+									<button
+										type="button"
+										aria-label={'Whisper to ' + entry.speaker}
+										class="ml-auto text-xs text-mist-400 hover:text-accent hover:underline focus:opacity-100 [@media(hover:hover)]:opacity-0 [@media(hover:hover)]:group-hover:opacity-100"
+										disabled={sending}
+										onclick={() => replyTo(entry)}>Whisper</button
+									>
+								{/if}
 								{#if entry.live && inspect}
 									{@const line = entry.live}
 									<button
-										class="ml-auto text-xs text-mist-400 hover:underline"
+										class="text-xs text-mist-400 hover:underline"
 										aria-label="Inspect chat line {line.seq}"
 										onclick={() => inspect?.(line)}>Details</button
 									>
@@ -420,5 +552,35 @@
 	</div>
 	{#if browsing}<button class="mt-2 btn btn-sm" onclick={() => revision++}>Return to latest</button
 		>{/if}
+	{#if operator && !compact && !around && (server ? destination?.canSend : sources.some((s) => s.canSend))}
+		<section aria-label="Send a message" class="mt-3 space-y-2 border-t border-white/10 pt-3">
+			<div class="flex flex-wrap items-center gap-2">
+				<h3 class="field-label mb-0!">Send to</h3>
+				{#if server}
+					<strong class="text-sm">{destination?.name}</strong>
+				{:else}
+					<select
+						aria-label="Destination server"
+						class="input w-auto max-w-full"
+						disabled={sending}
+						bind:value={target}
+					>
+						<option value="">Choose a server…</option>
+						{#each sources.filter((s) => s.canSend) as s (s.id)}<option value={s.id}
+								>#{numbers.get(s.id)} · {s.name}</option
+							>{/each}
+					</select>
+				{/if}
+			</div>
+			{#if destination?.canSend}
+				{#key destination.id}
+					<ChatComposer
+						server={{ ...destination, orgId, orgName: operator.orgName, manager: operator.manager }}
+						bind:this={composer}
+					/>
+				{/key}
+			{/if}
+		</section>
+	{/if}
 	{#if server && server === serverId && !around && !error && focusedSource}{@render footer?.()}{/if}
 </section>

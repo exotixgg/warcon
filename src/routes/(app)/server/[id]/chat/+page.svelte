@@ -373,6 +373,7 @@
 
 <ChatHistory
 	orgId={data.server.orgId}
+	operator={data.server}
 	serverId={id}
 	bind:server={scope}
 	initialPlayer={page.url.searchParams.get('player') ?? ''}

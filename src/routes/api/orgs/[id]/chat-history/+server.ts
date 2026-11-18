@@ -17,7 +17,10 @@ export const POST = route(async (event) => {
 		'player',
 		'q',
 		'any',
-		'channel'
+		'channel',
+		'faction',
+		'from',
+		'to'
 	])
 		if (typeof body[key] === 'string') p.set(key, body[key]);
 	return apiJson(await chatHistory(getEnv(), user, param(event, 'id'), p));
