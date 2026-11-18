@@ -114,6 +114,8 @@ const MATRIX: Record<string, Policy | typeof PER_LIST> = {
 	'GET api/orgs/[id]/lists/import': 'listsOwner',
 	'POST api/orgs/[id]/lists/import': 'listsOwner',
 	'POST api/orgs/[id]/lists/sync': 'lists',
+	'POST api/orgs/[id]/chat-history': 'anyCap:chat.read',
+	'PUT api/servers/[id]/chat-archive': 'manager',
 	'GET api/orgs/[id]/players': 'lists',
 	// an announcement: Chat on each server it names, so Chat somewhere in the org to ask at all
 	'POST api/orgs/[id]/broadcast': 'anyCap:chat.send',

@@ -100,8 +100,15 @@
 	const lag = (s: number | null) => (s === null ? '' : ` · lag ${Math.round(s * 1000)} ms`);
 
 	const TOP_TABLES = 8;
-	const shown = $derived(live.database.tables.slice(0, TOP_TABLES));
-	const rest = $derived(live.database.tables.slice(TOP_TABLES).reduce((a, t) => a + t.bytes, 0));
+	const shown = $derived(
+		live.database.tables.filter((t, i) => i < TOP_TABLES || t.name === 'chat_messages')
+	);
+	const rest = $derived(
+		live.database.tables
+			.slice(TOP_TABLES)
+			.filter((t) => t.name !== 'chat_messages')
+			.reduce((a, t) => a + t.bytes, 0)
+	);
 	const share = (bytes: number) =>
 		live.database.bytes ? Math.min(100, (bytes / live.database.bytes) * 100) : 0;
 
@@ -313,7 +320,7 @@
 				<tbody>
 					{#each shown as t (t.name)}
 						<tr>
-							<td>{t.name}</td>
+							<td>{t.name === 'chat_messages' ? 'Chat logs' : t.name}</td>
 							<td class="num whitespace-nowrap">{fmtCompact(t.rows)}</td>
 							<td class="num whitespace-nowrap">{fmtBytes(t.bytes)}</td>
 							<td
