@@ -143,7 +143,7 @@ What is in the box:
   it: the channel, the side, the name the others saw (the hidden name of a player in anonymous
   mode), and where the game's chat filter changed a line, what was typed. It is for those an
   organisation's owners give _Read chat_, once an owner has accepted the game's chat terms for the
-  server on that tab. An owner can enable indefinite moderation history per server. See [In-game chat](#in-game-chat).
+  server on that tab. Moderation history starts automatically after the game's chat terms are accepted. See [In-game chat](#in-game-chat).
 - **Chat commands**: on those servers a [Chat command](#chat-commands) rule answers a word players
   type in chat (`!rules`, `!discord`, `!next`, or one of your own) with your text, whispered to the
   player or said to everyone, and a Staff call rule sends what follows `!admin` or `!report` to
@@ -1046,9 +1046,9 @@ The Chat tab is there for those who hold it, on servers whose build serves the c
 role again, it closes that role's open Chat tabs at their next read. Where the site's sign-in
 rules are _Require for privileged accounts_, an account that reads chat is one of those.
 
-**Moderation history.** On Server → Chat an owner can enable indefinite chat history once the game's terms are accepted. The worker then retains displayed messages, including their server, time, channel and supplied SteamID, even when nobody has the page open. Pausing collection preserves existing history. Live RCON continues to show the game's current buffer. Earlier maps and lines lost during an outage cannot be reconstructed.
+**Moderation history.** After an owner accepts the game's chat terms, the worker automatically retains displayed messages indefinitely, including their server, time, channel and supplied SteamID, even when nobody has the page open. The server chat also shows the game's current buffer while the tab is open. Earlier maps and lines lost during an outage cannot be reconstructed.
 
-Chat history opens on the last hour with round boundaries from Matches. Open org chat to follow numbered servers, search messages or players, and switch to All for older pages. Player profiles show the latest ten archived messages across servers the reader can moderate. The same human-only Read chat permission applies to each source. Organisation owners can review archived messages after a server is retired. Admin → Overview shows the chat table's estimated rows and disk usage including its indexes.
+The Chat tab opens on the last hour. Live lines and retained messages share one conversation, with round boundaries from Matches. Select All servers in the same chat box to follow the numbered organisation archive. Filter by channel, search by player or message, or choose All time and load older messages. Player profiles show the latest ten archived messages across servers the reader can moderate. The same human-only Read chat permission applies to each source. Organisation owners can review archived messages after a server is retired. Admin → Overview shows the chat table's estimated rows and disk usage including its indexes.
 
 #### Chat commands
 

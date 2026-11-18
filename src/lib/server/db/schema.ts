@@ -596,8 +596,7 @@ export const playerSessions = pgTable(
 	]
 );
 
-// Archive records outlive the live RCON server registration. Only an explicit owner opt-in
-// creates a source; removing or renaming a server never reassigns its messages.
+// The worker starts one archive per server. Removing or renaming a server never reassigns its messages.
 export const chatArchiveSources = pgTable(
 	'chat_archive_sources',
 	{
