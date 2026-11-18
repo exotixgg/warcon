@@ -53,6 +53,7 @@ export async function collectArchive(
 		anchor = '';
 	}
 	const rows: Entry[] = [];
+	let rateLimit: GameError | null = null;
 	let state = 'ready';
 	let delay = 4000;
 	// Drain bounded pages in the existing server lane. An unfinished page sequence resumes
@@ -101,13 +102,14 @@ export async function collectArchive(
 		}
 	} catch (err) {
 		// Game response bodies can carry player text. Only a fixed status leaves this reader.
-		if (err instanceof GameError && err.code === 'rate_limited') throw err;
+		if (err instanceof GameError && err.code === 'rate_limited') rateLimit = err;
 		state =
 			err instanceof GameError && err.code === 'chat_terms_not_accepted' ? 'terms' : 'unavailable';
 		delay = 60_000;
 	}
 	const processStart = startedAt || s.startedAt;
 	if (
+		!rateLimit &&
 		!rows.length &&
 		cursor === s.cursor &&
 		epoch === s.epoch &&
@@ -140,5 +142,7 @@ export async function collectArchive(
 		},
 		{ period }
 	);
+	// Commit completed pages before applying the listener’s hold to the whole server.
+	if (rateLimit) throw rateLimit;
 	return delay;
 }

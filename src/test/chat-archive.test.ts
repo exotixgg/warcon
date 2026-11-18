@@ -11,7 +11,7 @@ import type { Env } from '$lib/server/env';
 import { acquireOrRenew, releaseOwnership } from '$lib/server/leadership';
 import { collectArchive } from '$lib/server/chat-archive-collect';
 import { chatHistory } from '$lib/server/chat-history';
-import type { WardogsClient } from '$lib/server/rcon';
+import { GameError, type WardogsClient } from '$lib/server/rcon';
 import { PUT } from '../routes/api/servers/[id]/chat-archive/+server';
 import { testEnv, hasTestDb } from './db';
 import { seedWorld, type World } from './world';
@@ -22,7 +22,7 @@ describe.skipIf(!hasTestDb)('moderation chat archive', () => {
 	beforeAll(async () => {
 		env = await testEnv();
 		w = await seedWorld(env);
-	});
+	}, 30_000);
 	afterAll(async () => {
 		if (env) await releaseOwnership(env);
 		stubGateway();
@@ -45,9 +45,11 @@ describe.skipIf(!hasTestDb)('moderation chat archive', () => {
 			callApi(PUT, w.users.owner, { method: 'PUT', params: { id: server.id }, body: { enabled } });
 		let game: ReturnType<typeof line>[] = [];
 		let reads = 0;
+		let throttleRead = 0;
 		const client = {
 			json: async (_method: string, path: string) => {
 				reads++;
+				if (reads === throttleRead) throw new GameError(429, 'Slow down', 'rate_limited');
 				const q = new URL(path, 'http://local').searchParams;
 				return {
 					latestSeq: game.at(-1)?.seq ?? 0,
@@ -69,6 +71,14 @@ describe.skipIf(!hasTestDb)('moderation chat archive', () => {
 		expect((await toggle(true)).status).toBe(200);
 		const time = new Date(Date.now() + 1000);
 		game = Array.from({ length: 225 }, (_, i) => line(i + 1, 'line ' + i, time));
+		throttleRead = reads + 2;
+		await expect(collect()).rejects.toThrow('Slow down');
+		expect(
+			await env.db
+				.select({ seq: messages.seq })
+				.from(messages)
+				.where(eq(messages.serverId, server.id))
+		).toHaveLength(200);
 		await collect();
 		await collect();
 		const stored = () => env.db.select().from(messages).where(eq(messages.serverId, server.id));

@@ -534,7 +534,7 @@ describe('players’ chat: the code that may touch it', () => {
 		expect([...page.matchAll(/\brconPost(?:<[^(]*>)?\(([^)]*)\)/g)].map((m) => m[1])).toEqual([
 			"id, 'chatTermsAccept', { version }"
 		]);
-		// its other requests are reads: the terms, the lines, and the live view for the sides' colours
+		// Only the archive switch is written by this page's API calls. The live reads stay isolated.
 		expect([...page.matchAll(/\brconGet(?:<[^(]*>)?\(\s*id,\s*'(\w+)'/g)].map((m) => m[1])).toEqual(
 			['chatTerms', 'chat']
 		);

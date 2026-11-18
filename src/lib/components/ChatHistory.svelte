@@ -278,9 +278,11 @@
 								>{/if}
 							{#if l.kind === 'message'}
 								<td
-									>{#if l.steamId && !source?.retired}<a
+									>{#if l.steamId}<a
 											class="text-accent hover:underline"
-											href="{path}/players/{l.steamId}">{l.speaker}</a
+											href={source?.retired
+												? orgPath + '?player=' + encodeURIComponent(l.steamId)
+												: path + '/players/' + l.steamId}>{l.speaker}</a
 										>{:else}{l.speaker}{/if}
 									{#if l.channel}<span class="ml-1 text-xs text-mist-400">{l.channel}</span
 										>{/if}</td

@@ -1,7 +1,7 @@
 <script lang="ts">
 	// The in-game chat as players type it (Season 3), for those who hold Read chat, under the
 	// game's own chat terms. The lines are read from the game through the panel every few seconds
-	// while this tab is open and live in this page alone: the panel stores none of them, and
+	// while Live RCON is open. Its buffer is independent of the optional moderation archive, and
 	// leaving the tab forgets them. Every read is checked by the action it goes through
 	// (chatTerms, chat: Read chat; chatTermsAccept: an owner of the organisation, in person).
 	import { page } from '$app/state';
