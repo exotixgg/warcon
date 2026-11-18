@@ -82,6 +82,7 @@ import { nextDue, withHold } from './poller-schedule';
 import { cashByFaction } from '$lib/cash';
 import { keepName } from './live-name-write';
 import { keepChat } from './chat-look';
+import { collectArchive } from './chat-archive-collect';
 import type { NameMemory } from './live-name';
 import { takeFeedEnd, withFeedEnd, type ClosedMatch, type FeedEnd } from './match-feed';
 import { matchStateOf, currentState } from '$lib/match-state';
@@ -118,6 +119,7 @@ export interface ServerMemory {
 	failures: number;
 	/** no look before this time: the listener answered 429 with Retry-After (not a failure) */
 	holdUntil: number;
+	archiveDueAt?: number;
 	ok: boolean;
 	error: string;
 	/** last attempt, successful or not */
@@ -957,6 +959,21 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 			});
 			if (retryAfterMs) m.holdUntil = Math.max(m.holdUntil, Date.now() + retryAfterMs);
 		});
+	if (
+		isOwner() &&
+		!m.org.suspendedAt &&
+		m.identity.features?.chat &&
+		Date.now() >= Math.max(m.holdUntil, m.archiveDueAt ?? 0)
+	) {
+		await stage('chat archive', m, async () => {
+			m.archiveDueAt = Date.now() + 30_000;
+			try {
+				m.archiveDueAt = Date.now() + (await collectArchive(env, server, client, m.startedAt));
+			} catch (err) {
+				if (!holdFor(m, err)) throw err;
+			}
+		});
+	}
 	if (diff.joined.length && steamEnabled(env))
 		void getProfiles(
 			env,

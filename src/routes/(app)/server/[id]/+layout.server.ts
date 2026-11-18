@@ -1,3 +1,5 @@
+import { eq } from 'drizzle-orm';
+import { chatArchiveSources } from '$lib/server/db/schema';
 import { error } from '@sveltejs/kit';
 import type { LayoutServerLoad } from './$types';
 import { getEnv } from '$lib/server/env';
@@ -77,8 +79,10 @@ export const load: LayoutServerLoad = async ({ params, locals }) => {
 			const read = (await gateway().run(env, row, 'catalog', {})) as Catalog;
 			let served = features;
 			try {
-				served = ((await gateway().run(env, row, 'capabilities', {})) as { features: Features })
-					.features;
+				const reply = (await gateway().run(env, row, 'capabilities', {})) as {
+					features?: Features;
+				} | null;
+				served = reply?.features ?? features;
 			} catch {
 				/* older plugin builds have no capabilities route */
 			}
@@ -93,5 +97,15 @@ export const load: LayoutServerLoad = async ({ params, locals }) => {
 			}
 		}
 	}
-	return { server, catalog, features, reachable, problem, identity, occupancy };
+	const savedChat =
+		!features.chat &&
+		access.caps.has('chat.read') &&
+		!!(
+			await env.db
+				.select({ id: chatArchiveSources.serverId })
+				.from(chatArchiveSources)
+				.where(eq(chatArchiveSources.serverId, row.id))
+				.limit(1)
+		)[0];
+	return { server, catalog, features, savedChat, reachable, problem, identity, occupancy };
 };

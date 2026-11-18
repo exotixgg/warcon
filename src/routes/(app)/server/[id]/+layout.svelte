@@ -34,7 +34,8 @@
 	let visibleTabs = $derived([
 		...TABS.filter(
 			([path, , cap]) =>
-				(!cap || can(data.server.caps, cap)) && (path !== '/chat' || data.features.chat)
+				(!cap || can(data.server.caps, cap)) &&
+				(path !== '/chat' || data.features.chat || data.savedChat)
 		),
 		...(data.server.manager ? [['/settings', 'Settings'] as const] : [])
 	]);
