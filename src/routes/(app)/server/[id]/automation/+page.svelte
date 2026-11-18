@@ -287,6 +287,8 @@
 				return data.steam
 					? ''
 					: 'Steam lookup is off on this panel, so only the ban-list and watchlist rows can run.';
+			case 'seeding_bot_kick':
+				return canKick ? '' : 'Saving needs the Kick capability as well as Automation.';
 			case 'seed_reward':
 				return canSlotHere || canSlotOrg
 					? ''
@@ -587,6 +589,7 @@
 		maxPingMs: number;
 		durationSeconds: number;
 		pingWarningSeconds: string;
+		botSteamIds: string;
 		minAccountDays: number;
 		privateProfiles: boolean;
 		bannedElsewhere: boolean;
@@ -858,7 +861,13 @@
 			),
 			minPlayers: n(
 				'minPlayers',
-				kind === 'ping_kick' ? 0 : kind === 'bounty' || kind === 'afk_watch' ? 20 : 1
+				kind === 'seeding_bot_kick'
+					? 95
+					: kind === 'ping_kick'
+						? 0
+						: kind === 'bounty' || kind === 'afk_watch'
+							? 20
+							: 1
 			),
 			maxPlayers: typeof c.maxPlayers === 'number' ? c.maxPlayers : null,
 			afterMinutes: n('afterMinutes', 20),
@@ -873,6 +882,7 @@
 				: kind === 'ping_kick' && !t
 					? '15, 30, 45'
 					: '',
+			botSteamIds: Array.isArray(c.steamIds) ? c.steamIds.join('\n') : '',
 			minAccountDays: n('minAccountDays', 0),
 			privateProfiles: b('privateProfiles', false),
 			bannedElsewhere: b('bannedElsewhere', true),
@@ -1127,6 +1137,11 @@
 					warnMessage: f.warnMessage,
 					spareReserved: f.spareReserved,
 					reason: f.reason
+				};
+			case 'seeding_bot_kick':
+				return {
+					minPlayers: Number(f.minPlayers),
+					steamIds: f.botSteamIds.split(/[\s,]+/).filter(Boolean)
 				};
 			case 'afk_watch':
 				return {
@@ -1532,6 +1547,10 @@
 				]
 					.filter(Boolean)
 					.join(' · ');
+			}
+			case 'seeding_bot_kick': {
+				const accounts = (c.steamIds as string[]).length;
+				return `At ${c.minPlayers}+ players · ${accounts} account${accounts === 1 ? '' : 's'}`;
 			}
 			case 'afk_watch': {
 				const exempt = ((c.exempt as string[] | undefined) ?? []).length;
@@ -2054,7 +2073,7 @@
 				>
 				name{r.fires === 1 ? '' : 's'}</span
 			>
-		{:else if r.kind === 'afk_watch'}
+		{:else if r.kind === 'afk_watch' || r.kind === 'seeding_bot_kick'}
 			<span>Nothing to replay</span>
 		{:else if r.kind === 'chat_command' || r.kind === 'staff_call'}
 			<span>What it would send</span>
@@ -3695,6 +3714,32 @@
 						The distance is the kill feed's, between killer and victim. A ban goes on the ban list
 						like one added by hand, and is lifted there.
 					</p>
+				{:else if f.kind === 'seeding_bot_kick'}
+					<label class="block space-y-1">
+						<span class="field-label">Player threshold</span>
+						<input
+							class="input w-full"
+							type="number"
+							min="2"
+							max="1000"
+							required
+							bind:value={f.minPlayers}
+						/>
+					</label>
+					<label class="block space-y-1">
+						<span class="field-label">Seeding account SteamID64s</span>
+						<textarea
+							class="input w-full font-mono"
+							rows="6"
+							required
+							bind:value={f.botSteamIds}
+							data-plain></textarea>
+						<span class="block text-[12px] text-mist-600">
+							One SteamID64 per line, in kick order. The population includes listed accounts. The
+							next kick waits for the previous account to leave and for the count to be at or above
+							the threshold.
+						</span>
+					</label>
 				{:else if f.kind === 'afk_protection'}
 					<fieldset class="space-y-2">
 						<legend class="field-label">When</legend>

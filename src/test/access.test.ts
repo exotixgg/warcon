@@ -525,6 +525,7 @@ describe.skipIf(!hasTestDb)('access', () => {
 				['name_filter', { characters: 'ascii' }, 'players.kick'],
 				['name_filter', { characters: 'ascii', action: 'alert' }, 'players.kick'],
 				['ping_kick', { maxPingMs: 250, spareReserved: true }, 'players.kick'],
+				['seeding_bot_kick', { steamIds: ['76561198000000001'] }, 'players.kick'],
 				['team_kill', { kickAt: 3 }, 'players.kick'],
 				[
 					'team_kill',
@@ -1434,6 +1435,7 @@ describe.skipIf(!hasTestDb)('access', () => {
 			const w = await seedWorld(env);
 			const configs: Record<string, Record<string, unknown>> = {
 				seed_reward: { minutes: 60, scope: 'server' },
+				seeding_bot_kick: { steamIds: ['76561198000000001'] },
 				match_card: { message: '{match_card}', delaySeconds: 5 },
 				two_teams: { closedFaction: 'Lonestar' },
 				afk_protection: {},

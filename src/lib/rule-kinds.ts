@@ -129,6 +129,12 @@ export const RULE_KINDS: { kind: TriggerKind; group: RuleGroup; label: string; b
 		blurb: 'Give players who stay while the server is quiet a reserved slot.'
 	},
 	{
+		kind: 'seeding_bot_kick',
+		group: 'Seeding and rewards',
+		label: 'Seeding bot kick',
+		blurb: 'Free one slot at a time by kicking listed seeding accounts at your player count.'
+	},
+	{
 		kind: 'afk_protection',
 		group: 'Seeding and rewards',
 		label: 'AFK protection',
@@ -193,6 +199,7 @@ export const RULE_KINDS: { kind: TriggerKind; group: RuleGroup; label: string; b
 export const ONE_PER_SERVER: TriggerKind[] = [
 	'match_card',
 	'seed_reward',
+	'seeding_bot_kick',
 	'two_teams',
 	'afk_protection',
 	'bounty',

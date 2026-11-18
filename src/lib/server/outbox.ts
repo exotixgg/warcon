@@ -62,9 +62,14 @@ import { TRAIL_FAILURES_ONLY } from '$lib/rule-kinds';
 import { MAX_CHAT } from '$lib/chat';
 import { waitingForPlayers, playing, seedNoticeSettingsKey } from './seeding-messages';
 import { reserveSeedComplete } from './seeding-complete';
+import {
+	SEEDING_BOT_KICK_MAX_AGE_MS,
+	seedingBotKickTarget,
+	type SeedingBotKickConfig
+} from './seeding-bot-kick';
 import { currentState } from '$lib/match-state';
 import { mapName, takesLighting } from '$lib/format';
-import type { OutboxView } from '$lib/types';
+import type { OutboxView, Player } from '$lib/types';
 
 /** Actions delivered without a game request: they need no roster, only the server's row. */
 const PANEL_ACTIONS = new Set([
@@ -396,6 +401,8 @@ function skipReason(row: OutboxRow, m: ReturnType<typeof memoryOf>): string | nu
 				return 'Round already started.';
 		}
 	}
+	if (row.triggerKind === 'seeding_bot_kick' && age > SEEDING_BOT_KICK_MAX_AGE_MS)
+		return 'The seeding bot kick expired.';
 	if (row.triggerKind === 'ping_kick') {
 		const guard = (
 			row.params as {
@@ -538,6 +545,15 @@ function holdsFor(
 	const key = SETTINGS_KEYS[row.triggerKind];
 	const params = row.params as { rule?: string; on?: number | null } | null;
 	if (key && params?.rule !== key(rule.config)) return false;
+	if (row.triggerKind === 'seeding_bot_kick')
+		return (
+			row.action === 'kick' &&
+			!!row.steamId &&
+			(row.params as { steamId?: string }).steamId === row.steamId &&
+			(rule.config as SeedingBotKickConfig).steamIds.includes(row.steamId) &&
+			(row.params as { minPlayers?: number }).minPlayers ===
+				(rule.config as SeedingBotKickConfig).minPlayers
+		);
 	if (row.triggerKind === 'ping_kick') {
 		const ping = row.params as { since?: number; warningSeconds?: number } | null;
 		const streak = row.steamId
@@ -742,6 +758,7 @@ async function deliverOne(env: Env, row: OutboxRow): Promise<'held' | 'refused' 
 					}
 					if (!reserved) throw new Skipped('Seeding Complete is limited to once per hour.');
 				}
+				if (row.triggerKind === 'seeding_bot_kick') await checkSeedingBotKick(env, client, row);
 				noteMoveSent(row);
 				return execute(client, row);
 			},
@@ -1167,6 +1184,29 @@ async function afkRound(
 		);
 	if (killed && message) parts.push(announced ? 'announced' : 'message not sent');
 	return { message: `${parts.join(' · ')}.`, ...(retryAfterMs ? { retryAfterMs } : {}) };
+}
+
+// A poll can be old by the time a kick gets the lane. Check the target and population
+// against a live roster in the lane, then check for edits that landed while it was in flight.
+async function checkSeedingBotKick(env: Env, client: WardogsClient, row: OutboxRow): Promise<void> {
+	const { minPlayers } = row.params as { minPlayers: number };
+	const steamId = row.steamId!;
+	let roster: { players: Player[] };
+	try {
+		roster = (await ACTIONS.players.run(client, {})) as { players: Player[] };
+	} catch (err) {
+		if (err instanceof GameError && err.code === 'unreachable')
+			throw new Skipped('Could not refresh the roster before the seeding bot kick.');
+		throw err;
+	}
+	if (!seedingBotKickTarget({ minPlayers, steamIds: [steamId] }, roster.players))
+		throw new Skipped('Population fell below the threshold or the seeding account left.');
+	const holds = await stillHolds(env, row);
+	if (holds === null) throw new Waiting();
+	if (!holds) throw new Skipped(CHANGED);
+	if (Date.now() - new Date(row.createdAt).getTime() > SEEDING_BOT_KICK_MAX_AGE_MS)
+		throw new Skipped('The seeding bot kick expired.');
+	if (!isOwner()) throw new LostOwnership();
 }
 
 /** Runs the row's action; "empty_reset" decides between a rotation edit and a direct change. */
