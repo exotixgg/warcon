@@ -18,7 +18,14 @@ import { validateLiveName } from './live-name';
 import { validateRestartSkip, type RestartSkipConfig } from './restart-skip';
 import { validateWeatherCycle, type WeatherCycleConfig } from './weather-cycle';
 import { validateDeathWhisper, type DeathWhisperConfig } from './death-whisper';
+import {
+	validateChatCommand,
+	validateStaffCall,
+	type ChatCommandConfig,
+	type StaffCallConfig
+} from './chat-rules';
 import { steamIdList } from './steam';
+import { validateSeedingBotKick, type SeedingBotKickConfig } from './seeding-bot-kick';
 import type { LiveNameConfig } from '$lib/live-name';
 import { causeTags } from './cause-tags';
 import { MAX_RESTART_LEAD_MINUTES, restartWindow, type RestartSchedule } from '$lib/uptime';
@@ -41,6 +48,7 @@ export const TRIGGER_KINDS: TriggerKind[] = [
 	'restart_notice',
 	'team_kill',
 	'seed_reward',
+	'seeding_bot_kick',
 	'match_broadcast',
 	'match_card',
 	'name_filter',
@@ -55,7 +63,9 @@ export const TRIGGER_KINDS: TriggerKind[] = [
 	'restart_skip',
 	'afk_watch',
 	'weather_cycle',
-	'death_whisper'
+	'death_whisper',
+	'chat_command',
+	'staff_call'
 ];
 export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	welcome: 'Welcome whisper',
@@ -67,6 +77,7 @@ export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	restart_notice: 'Restart notice',
 	team_kill: 'Team kill limit',
 	seed_reward: 'Seeding reward',
+	seeding_bot_kick: 'Seeding bot kick',
 	match_broadcast: 'Match broadcast',
 	match_card: 'Match stats whisper',
 	name_filter: 'Name filter',
@@ -81,7 +92,9 @@ export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	restart_skip: 'Skip map after restart',
 	afk_watch: 'AFK watch',
 	weather_cycle: 'Weather cycle',
-	death_whisper: 'Death whisper'
+	death_whisper: 'Death whisper',
+	chat_command: 'Chat command',
+	staff_call: 'Staff call'
 };
 
 export interface WelcomeConfig {
@@ -267,6 +280,7 @@ export type TriggerConfig =
 	| RestartNoticeConfig
 	| TeamKillConfig
 	| SeedRewardConfig
+	| SeedingBotKickConfig
 	| MatchBroadcastConfig
 	| MatchCardConfig
 	| NameFilterConfig
@@ -281,7 +295,9 @@ export type TriggerConfig =
 	| RestartSkipConfig
 	| AfkWatchConfig
 	| WeatherCycleConfig
-	| DeathWhisperConfig;
+	| DeathWhisperConfig
+	| ChatCommandConfig
+	| StaffCallConfig;
 
 /** A kick reason: not chat, so not held to the game's chat cap. */
 export const MAX_REASON = 200;
@@ -308,7 +324,8 @@ export function riskKickScore(c: Record<string, unknown> | RiskKickConfig): numb
 export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 	const c = { ...(raw && typeof raw === 'object' ? raw : {}) } as Record<string, unknown>;
 	for (const field of MESSAGE_RULES[kind]?.fields ?? []) {
-		if (c[field] === undefined || c[field] === null) continue;
+		// Chat commands validate each reply as its own single-line message.
+		if (field === 'replies' || c[field] === undefined || c[field] === null) continue;
 		if (field === 'messages' || field === 'noticeMessages' || field === 'teamKillMessages') {
 			const list = Array.isArray(c[field]) ? c[field] : String(c[field]).split('\n');
 			c[field] = (list as unknown[]).map(normalizeAutomationMessage);
@@ -508,6 +525,8 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 			return validateTwoTeams(c);
 		case 'kill_distance':
 			return validateKillDistance(c);
+		case 'seeding_bot_kick':
+			return validateSeedingBotKick(c);
 		case 'afk_protection':
 			return validateAfkProtection(c);
 		case 'name_change':
@@ -526,6 +545,10 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 			return validateWeatherCycle(c);
 		case 'death_whisper':
 			return validateDeathWhisper(c);
+		case 'chat_command':
+			return validateChatCommand(c);
+		case 'staff_call':
+			return validateStaffCall(c);
 	}
 }
 

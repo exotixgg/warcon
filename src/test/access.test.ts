@@ -525,6 +525,7 @@ describe.skipIf(!hasTestDb)('access', () => {
 				['name_filter', { characters: 'ascii' }, 'players.kick'],
 				['name_filter', { characters: 'ascii', action: 'alert' }, 'players.kick'],
 				['ping_kick', { maxPingMs: 250, spareReserved: true }, 'players.kick'],
+				['seeding_bot_kick', { steamIds: ['76561198000000001'] }, 'players.kick'],
 				['team_kill', { kickAt: 3 }, 'players.kick'],
 				[
 					'team_kill',
@@ -547,7 +548,10 @@ describe.skipIf(!hasTestDb)('access', () => {
 				['seed_reward', { minutes: 60, scope: 'org' }, 'lists.reserve'],
 				['bounty', { reward: 'none' }, 'chat.send'],
 				['rotation_shuffle', { maps: ['Europe', 'Kavkazi'] }, 'config.apply'],
-				['live_name', { base: 'Demo Clan #1' }, 'config.apply']
+				['live_name', { base: 'Demo Clan #1' }, 'config.apply'],
+				// has the panel read the chat; one that whispers nothing back needs nothing else
+				// (chat-commands.test.ts holds a Chat command to Read chat and Chat both)
+				['staff_call', { commands: 'mods', ack: '', usage: '', wait: '' }, 'chat.read']
 			];
 			for (const [kind, config, cap] of rules) {
 				await holds([]);
@@ -1431,6 +1435,7 @@ describe.skipIf(!hasTestDb)('access', () => {
 			const w = await seedWorld(env);
 			const configs: Record<string, Record<string, unknown>> = {
 				seed_reward: { minutes: 60, scope: 'server' },
+				seeding_bot_kick: { steamIds: ['76561198000000001'] },
 				match_card: { message: '{match_card}', delaySeconds: 5 },
 				two_teams: { closedFaction: 'Lonestar' },
 				afk_protection: {},
@@ -1438,7 +1443,8 @@ describe.skipIf(!hasTestDb)('access', () => {
 				rotation_shuffle: {},
 				live_name: { base: 'Demo Clan #1' },
 				restart_skip: {},
-				weather_cycle: { lightings: ['DayClear', 'DayLateRain'] }
+				weather_cycle: { lightings: ['DayClear', 'DayLateRain'] },
+				staff_call: { commands: 'mods' }
 			};
 			const save = (kind: string, name: string, config: Record<string, unknown>) =>
 				api(w, 'owner', 'POST api/servers/[id]/triggers', {
