@@ -1,9 +1,12 @@
 <script lang="ts">
 	// The in-game chat as players type it (Season 3), for those who hold Read chat, under the
 	// game's own chat terms. The lines are read from the game through the panel every few seconds
-	// while this tab is open and live in this page alone: the panel stores none of them, and
+	// while Live RCON is open. Its buffer is independent of the optional moderation archive, and
 	// leaving the tab forgets them. Every read is checked by the action it goes through
 	// (chatTerms, chat: Read chat; chatTermsAccept: an owner of the organisation, in person).
+	import { page } from '$app/state';
+	import { invalidateAll } from '$app/navigation';
+	import ChatHistory from '$lib/components/ChatHistory.svelte';
 	import { api, ApiError, rconGet, rconPost, errorMessage } from '$lib/api';
 	import { poll } from '$lib/poll';
 	import { toast } from '$lib/toast.svelte';
@@ -28,6 +31,26 @@
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
 	let manager = $derived(data.server.manager);
+	let selectedView = $state<{ id: string; history: boolean } | null>(null);
+	let history = $derived(
+		selectedView?.id === id
+			? selectedView.history
+			: data.archiveExists || page.url.searchParams.has('around')
+	);
+	let configBusy = $state(false);
+	async function setArchive(enabled: boolean) {
+		configBusy = true;
+		try {
+			await api('PUT', `/api/servers/${encodeURIComponent(id)}/chat-archive`, { enabled });
+			await invalidateAll();
+			selectedView = { id, history: true };
+			toast(enabled ? 'Chat collection enabled.' : 'Chat collection paused.', 'ok');
+		} catch (e) {
+			toast(errorMessage(e), 'err');
+		} finally {
+			configBusy = false;
+		}
+	}
 
 	/** how often the game is asked for new lines while the tab shows */
 	const EVERY_MS = 4000;
@@ -187,7 +210,9 @@
 		if (!terms || (!terms.accepted && (pending || ++waited % RECHECK === 0))) await readTerms();
 		if (!closed && terms?.accepted) await readChat();
 	}
-	$effect(() => poll(tick, EVERY_MS));
+	$effect(() => {
+		if (!history) return poll(tick, EVERY_MS);
+	});
 
 	function tryAgain() {
 		closed = '';
@@ -262,7 +287,41 @@
 		>{/if}
 {/snippet}
 
-{#if closed === 'unserved'}
+<div class="mb-3 flex flex-wrap items-center gap-2">
+	<button
+		class="btn btn-sm"
+		class:btn-primary={history}
+		onclick={() => (selectedView = { id, history: true })}>Chat history</button
+	>
+	<button
+		class="btn btn-sm"
+		class:btn-primary={!history}
+		onclick={() => (selectedView = { id, history: false })}>Live RCON</button
+	>
+	<a
+		class="btn btn-sm"
+		target="_blank"
+		rel="noopener"
+		href="/orgs/{encodeURIComponent(data.server.orgId)}/chat">Open org chat ↗</a
+	>
+	{#if manager}
+		<button
+			class="ml-auto btn btn-sm"
+			disabled={configBusy}
+			onclick={() => setArchive(!data.archiveEnabled)}
+			>{data.archiveEnabled ? 'Pause collection' : 'Enable indefinite chat history'}</button
+		>
+	{/if}
+</div>
+{#if history}
+	{#key id + page.url.search}
+		<ChatHistory
+			orgId={data.server.orgId}
+			serverId={id}
+			around={page.url.searchParams.get('around') ?? ''}
+		/>
+	{/key}
+{:else if closed === 'unserved'}
 	<div class="panel">
 		<span class="label-sm">Chat</span>
 		<p class="text-[13.5px]">
@@ -457,8 +516,8 @@
 		{/if}
 		<p class="note">
 			Live from the game, which keeps the last lines of the map being played. The panel reads them
-			every few seconds while this tab is open and keeps none of them: no history, no audit detail,
-			nothing on Discord.
+			every few seconds while this tab is open. The server’s chat history shows messages retained
+			while collection is enabled.
 			{#if terms}
 				Shown under the game's chat terms, version {terms.acceptedVersion || terms.requiredVersion}:
 				<button class="text-accent underline" onclick={() => (showTerms = !showTerms)}

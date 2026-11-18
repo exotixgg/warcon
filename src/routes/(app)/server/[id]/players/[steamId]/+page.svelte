@@ -9,6 +9,7 @@
 	import { confirmDialog } from '$lib/confirm.svelte';
 	import Badge from '$lib/components/Badge.svelte';
 	import BanDialog from '$lib/components/BanDialog.svelte';
+	import ChatHistory from '$lib/components/ChatHistory.svelte';
 	import CareerPanel from '$lib/components/CareerPanel.svelte';
 	import CombatSummary from '$lib/components/CombatSummary.svelte';
 	import SavedMessages from '$lib/components/SavedMessages.svelte';
@@ -933,6 +934,12 @@
 		{/if}
 	</div>
 </div>
+
+{#if data.showRecentChat}
+	{#key data.server.orgId + d.steamId}
+		<ChatHistory orgId={data.server.orgId} initialPlayer={d.steamId} compact />
+	{/key}
+{/if}
 
 {#if banning}
 	<BanDialog
