@@ -1,3 +1,5 @@
+import { eq } from 'drizzle-orm';
+import { chatArchiveSources } from '$lib/server/db/schema';
 import { error } from '@sveltejs/kit';
 import type { LayoutServerLoad } from './$types';
 import { getEnv } from '$lib/server/env';
@@ -93,5 +95,15 @@ export const load: LayoutServerLoad = async ({ params, locals }) => {
 			}
 		}
 	}
-	return { server, catalog, features, reachable, problem, identity, occupancy };
+	const savedChat =
+		!features.chat &&
+		access.caps.has('chat.read') &&
+		!!(
+			await env.db
+				.select({ id: chatArchiveSources.serverId })
+				.from(chatArchiveSources)
+				.where(eq(chatArchiveSources.serverId, row.id))
+				.limit(1)
+		)[0];
+	return { server, catalog, features, savedChat, reachable, problem, identity, occupancy };
 };

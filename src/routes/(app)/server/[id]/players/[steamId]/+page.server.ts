@@ -1,7 +1,7 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 import { getEnv } from '$lib/server/env';
-import { requireServerCap } from '$lib/server/access';
+import { accessibleServers, requireServerCap } from '$lib/server/access';
 import { orgLeaderboardServers } from '$lib/server/leaderboard-servers';
 import { normalizeError } from '$lib/server/http';
 import { dossier } from '$lib/server/players';
@@ -30,6 +30,12 @@ export const load: PageServerLoad = async ({ locals, params }) => {
 		]);
 		return {
 			dossier: d,
+			showRecentChat:
+				!user.apiKey &&
+				(access.caps.has('chat.read') ||
+					(await accessibleServers(env, user, server.orgId)).some((s) =>
+						s.caps.includes('chat.read')
+					)),
 			career,
 			multiServer: visible.length > 1,
 			archivedServerIds: visible.filter((s) => s.archived).map((s) => s.id)

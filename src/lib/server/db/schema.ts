@@ -596,6 +596,59 @@ export const playerSessions = pgTable(
 	]
 );
 
+// Archive records outlive the live RCON server registration. Only an explicit owner opt-in
+// creates a source; removing or renaming a server never reassigns its messages.
+export const chatArchiveSources = pgTable(
+	'chat_archive_sources',
+	{
+		serverId: text('server_id').primaryKey(),
+		orgId: text('org_id')
+			.notNull()
+			.references(() => organizations.id, { onDelete: 'cascade' }),
+		name: text('name').notNull(),
+		enabled: boolean('enabled').notNull().default(true),
+		createdAt: ts('created_at').notNull().defaultNow(),
+		changedAt: ts('changed_at').notNull(),
+		revision: text('revision').notNull(),
+		epoch: integer('epoch').notNull().default(0),
+		cursor: bigint('cursor', { mode: 'number' }).notNull().default(0),
+		anchor: text('anchor').notNull().default(''),
+		startedAt: bigint('started_at', { mode: 'number' }).notNull().default(0),
+		lastReadAt: ts('last_read_at'),
+		state: text('state').notNull().default('waiting')
+	},
+	(t) => [index('chat_archive_sources_org_idx').on(t.orgId)]
+);
+
+export const chatMessages = pgTable(
+	'chat_messages',
+	{
+		id: bigserial('id', { mode: 'number' }).primaryKey(),
+		orgId: text('org_id').notNull(),
+		serverId: text('server_id')
+			.notNull()
+			.references(() => chatArchiveSources.serverId, { onDelete: 'cascade' }),
+		epoch: integer('epoch').notNull(),
+		seq: bigint('seq', { mode: 'number' }).notNull(),
+		kind: text('kind').notNull().default('message'),
+		at: ts('at').notNull(),
+		steamId: text('steam_id'),
+		speaker: text('speaker').notNull(),
+		channel: text('channel').notNull(),
+		faction: text('faction').notNull(),
+		body: text('body').notNull(),
+		ping: boolean('ping').notNull().default(false)
+	},
+	(t) => [
+		uniqueIndex('chat_messages_seq_idx').on(t.serverId, t.epoch, t.seq, t.kind),
+		index('chat_messages_server_time_idx').on(t.serverId, t.at, t.id),
+		index('chat_messages_org_time_idx').on(t.orgId, t.at, t.id),
+		index('chat_messages_player_time_idx').on(t.orgId, t.steamId, t.at, t.id),
+		index('chat_messages_text_idx').using('gin', t.body.op('gin_trgm_ops')),
+		index('chat_messages_name_idx').using('gin', t.speaker.op('gin_trgm_ops'))
+	]
+);
+
 export const matches = pgTable(
 	'matches',
 	{
