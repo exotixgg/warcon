@@ -79,8 +79,10 @@ export const load: LayoutServerLoad = async ({ params, locals }) => {
 			const read = (await gateway().run(env, row, 'catalog', {})) as Catalog;
 			let served = features;
 			try {
-				served = ((await gateway().run(env, row, 'capabilities', {})) as { features: Features })
-					.features;
+				const reply = (await gateway().run(env, row, 'capabilities', {})) as {
+					features?: Features;
+				} | null;
+				served = reply?.features ?? features;
 			} catch {
 				/* older plugin builds have no capabilities route */
 			}
