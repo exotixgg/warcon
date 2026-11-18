@@ -1,9 +1,6 @@
 <script lang="ts">
-	// The in-game chat as players type it (Season 3), for those who hold Read chat, under the
-	// game's own chat terms. The lines are read from the game through the panel every few seconds
-	// while Live RCON is open. Its buffer is independent of the optional moderation archive, and
-	// leaving the tab forgets them. Every read is checked by the action it goes through
-	// (chatTerms, chat: Read chat; chatTermsAccept: an owner of the organisation, in person).
+	import { untrack } from 'svelte';
+	import type { LiveChatLine } from '$lib/chat-archive';
 	import { page } from '$app/state';
 	import { invalidateAll } from '$app/navigation';
 	import ChatHistory from '$lib/components/ChatHistory.svelte';
@@ -11,12 +8,10 @@
 	import { poll } from '$lib/poll';
 	import { toast } from '$lib/toast.svelte';
 	import { confirmDialog } from '$lib/confirm.svelte';
-	import { matches } from '$lib/table.svelte';
 	import { fmtTime } from '$lib/format';
 	import { identity, throttled } from '$lib/health.svelte';
 	import {
 		CHAT_PAGE,
-		shownName,
 		takeRead,
 		termsBlocks,
 		type ChatLine,
@@ -24,26 +19,21 @@
 		type ChatTerms
 	} from '$lib/chat-read';
 	import Badge from '$lib/components/Badge.svelte';
-	import FactionChip from '$lib/components/FactionChip.svelte';
 	import type { FactionScore, LiveView } from '$lib/types';
 	import type { PageProps } from './$types';
 
 	let { data }: PageProps = $props();
 	let id = $derived(data.server.id);
 	let manager = $derived(data.server.manager);
-	let selectedView = $state<{ id: string; history: boolean } | null>(null);
-	let history = $derived(
-		selectedView?.id === id
-			? selectedView.history
-			: data.archiveExists || page.url.searchParams.has('around')
-	);
+	let scope = $state(untrack(() => (page.url.searchParams.get('scope') === 'org' ? '' : id)));
+	const around = $derived(page.url.searchParams.get('around') ?? '');
+	const showLive = $derived(scope === id && !around && data.reachable);
 	let configBusy = $state(false);
 	async function setArchive(enabled: boolean) {
 		configBusy = true;
 		try {
 			await api('PUT', `/api/servers/${encodeURIComponent(id)}/chat-archive`, { enabled });
 			await invalidateAll();
-			selectedView = { id, history: true };
 			toast(enabled ? 'Chat collection enabled.' : 'Chat collection paused.', 'ok');
 		} catch (e) {
 			toast(errorMessage(e), 'err');
@@ -73,7 +63,7 @@
 	let closed = $state<'' | 'unserved' | 'forbidden' | 'gone' | 'stopped'>('');
 	let problem = $state('');
 	/** newest first */
-	let lines = $state<ChatLine[]>([]);
+	let lines = $state<LiveChatLine[]>([]);
 	let loaded = $state(false);
 	let busy = $state(false);
 	/** the version an owner accepted here that the server said has yet to take effect */
@@ -83,8 +73,6 @@
 	let fails = 0;
 	let notBefore = 0;
 
-	let channel = $state('');
-	let search = $state('');
 	let picked = $state<ChatLine | null>(null);
 	let showTerms = $state(false);
 
@@ -101,18 +89,6 @@
 			.catch(() => (scores = null));
 	});
 
-	let channels = $derived([...new Set(lines.map((l) => l.channel).filter(Boolean))].sort());
-	// the channel picked stays in the list after its last line has gone
-	let channelOptions = $derived(
-		channel && !channels.includes(channel) ? [...channels, channel].sort() : channels
-	);
-	let rows = $derived(
-		lines.filter(
-			(l) =>
-				(!channel || l.channel === channel) &&
-				matches(search, l.name, l.hiddenName, l.text, l.typed, l.steamId)
-		)
-	);
 	let blocks = $derived(terms ? termsBlocks(terms.text) : []);
 
 	/** Drops what the tab holds, and the terms too when they may no longer stand. */
@@ -120,7 +96,6 @@
 		lines = [];
 		latest = 0;
 		picked = null;
-		channel = '';
 		loaded = false;
 		if (andTerms) terms = null;
 	}
@@ -178,7 +153,10 @@
 			// the game numbers its lines from 1 again after a restart: start over with it
 			if (next.restarted) startOver(false);
 			else {
-				lines = next.lines;
+				const observed = new Date().toISOString();
+				lines = (next.lines as LiveChatLine[]).map((l) =>
+					l.at || l.observedAt ? l : { ...l, observedAt: observed }
+				);
 				latest = next.latest;
 				loaded = true;
 			}
@@ -211,7 +189,7 @@
 		if (!closed && terms?.accepted) await readChat();
 	}
 	$effect(() => {
-		if (!history) return poll(tick, EVERY_MS);
+		if (showLive) return poll(tick, EVERY_MS);
 	});
 
 	function tryAgain() {
@@ -251,15 +229,6 @@
 		await readTerms();
 		if (!closed && terms?.accepted) await readChat();
 	}
-
-	const clock = (iso: string | null) =>
-		iso
-			? new Date(iso).toLocaleTimeString(undefined, {
-					hour: '2-digit',
-					minute: '2-digit',
-					second: '2-digit'
-				})
-			: '—';
 </script>
 
 {#snippet termsText()}
@@ -278,257 +247,168 @@
 	</div>
 {/snippet}
 
-{#snippet words(l: ChatLine)}
-	{#if l.ping}<Badge class="mr-1" title="A ping callout, not typed chat">ping</Badge
-		>{/if}{l.text}{#if l.typed}<Badge
-			tone="warn"
-			class="ml-1"
-			title="The game's chat filter changed this line">filtered</Badge
-		>{/if}
-{/snippet}
-
-<div class="mb-3 flex flex-wrap items-center gap-2">
-	<button
-		class="btn btn-sm"
-		class:btn-primary={history}
-		onclick={() => (selectedView = { id, history: true })}>Chat history</button
-	>
-	<button
-		class="btn btn-sm"
-		class:btn-primary={!history}
-		onclick={() => (selectedView = { id, history: false })}>Live RCON</button
-	>
-	<a
-		class="btn btn-sm"
-		target="_blank"
-		rel="noopener"
-		href="/orgs/{encodeURIComponent(data.server.orgId)}/chat">Open org chat ↗</a
-	>
-	{#if manager}
+{#snippet settings()}
+	{#if manager && scope === id}
 		<button
-			class="ml-auto btn btn-sm"
+			class="btn btn-sm"
 			disabled={configBusy}
 			onclick={() => setArchive(!data.archiveEnabled)}
-			>{data.archiveEnabled ? 'Pause collection' : 'Enable indefinite chat history'}</button
 		>
+			{data.archiveEnabled ? 'Pause collection' : 'Enable indefinite chat history'}
+		</button>
 	{/if}
-</div>
-{#if history}
-	{#key id + page.url.search}
-		<ChatHistory
-			orgId={data.server.orgId}
-			serverId={id}
-			around={page.url.searchParams.get('around') ?? ''}
-		/>
-	{/key}
-{:else if closed === 'unserved'}
-	<div class="panel">
-		<span class="label-sm">Chat</span>
-		<p class="text-[13.5px]">
-			This server's build does not serve the in-game chat. It came with Season 3: once the server
-			runs that build, the chat shows here.
-		</p>
-	</div>
-{:else if closed === 'forbidden'}
-	<div class="panel">
-		<span class="label-sm">Chat</span>
-		<p class="text-[13.5px]">
-			Reading the in-game chat needs <b>Read chat</b> on this server, which an owner of
-			{data.server.orgName} gives to a role.
-		</p>
-	</div>
-{:else if closed === 'gone'}
-	<div class="panel">
-		<span class="label-sm">Chat</span>
-		<p class="text-[13.5px]">This server is no longer one you can open.</p>
-	</div>
-{:else if closed === 'stopped'}
-	<div class="panel">
-		<span class="label-sm">Chat</span>
-		<div class="callout border-danger/30 bg-danger/12">{problem}</div>
-		<p class="note">
-			The chat is not being read: asking again would only be refused again, and each refusal is
-			recorded.
-		</p>
-		<button class="mt-3 btn btn-sm" onclick={tryAgain}>Try again</button>
-	</div>
-{:else if terms && !terms.accepted}
-	<div class="max-w-[760px] panel">
-		<div class="mb-3 flex flex-wrap items-center gap-3">
-			<span class="mr-auto label-sm mb-0">Chat terms</span>
-			<Badge tone="warn">not accepted</Badge>
-			<span class="font-mono text-[12px] text-mist-400">version {terms.requiredVersion}</span>
-		</div>
-		<p class="mb-3 text-[13.5px] leading-relaxed">
-			The game shows a server's chat only once the terms below have been accepted for it. Until then
-			it serves no chat, and it holds back its event feed as well: no kills reach the panel, so the
-			kill feed and the rules that go by it stand still.
-		</p>
-		<div class="rounded-ctl border border-black bg-ink-950 p-4">
-			{@render termsText()}
-		</div>
-		{#if terms.cut}
-			<p class="note">
-				The server sent more text than the panel shows, so these are not its whole terms and they
-				are not accepted from here. Read and accept them in the official RCON console.
+{/snippet}
+
+{#snippet notice()}
+	{#if !data.reachable}
+		<p class="callout">Live chat unavailable. {data.problem}</p>
+	{:else if closed === 'unserved'}
+		<div class="panel">
+			<span class="label-sm">Chat</span>
+			<p class="text-[13.5px]">
+				This server's build does not serve the in-game chat. It came with Season 3: once the server
+				runs that build, the chat shows here.
 			</p>
-		{:else if pending === terms.requiredVersion}
-			<p class="note">
-				Accepted here just now. The server says the acceptance has yet to take effect; this tab
-				looks again every few seconds.
-			</p>
-		{:else if manager}
-			<div class="mt-4 flex flex-wrap items-center gap-3">
-				<button class="btn btn-primary" disabled={busy} onclick={accept}>Accept the terms</button>
-				<span class="text-[12.5px] text-mist-400"
-					>For {data.server.orgName}, as an owner of it. The terms are the game's own, as this
-					server sent them.</span
-				>
-			</div>
-		{:else}
-			<p class="note">
-				An owner of {data.server.orgName} accepts them here. It is theirs to do: the terms are an agreement
-				of whoever runs the server.
-			</p>
-		{/if}
-	</div>
-{:else}
-	<div class="panel">
-		<div class="mb-3 flex flex-wrap items-center gap-3">
-			<span class="label-sm mb-0">Chat</span>
-			<select class="input w-36" aria-label="Channel" bind:value={channel}>
-				<option value="">All channels</option>
-				{#each channelOptions as c (c)}<option value={c}>{c}</option>{/each}
-			</select>
-			<input
-				class="input w-full sm:w-64"
-				type="search"
-				placeholder="Filter by name, text or SteamID…"
-				aria-label="Filter chat lines"
-				bind:value={search}
-			/>
-			<span class="ml-auto text-[12.5px] text-mist-600"
-				>{search.trim() || channel ? `${rows.length} of ` : ''}{lines.length}
-				{lines.length === 1 ? 'line' : 'lines'} (newest first)</span
-			>
 		</div>
-		{#if problem}
+	{:else if closed === 'forbidden'}
+		<div class="panel">
+			<span class="label-sm">Chat</span>
+			<p class="text-[13.5px]">
+				Reading the in-game chat needs <b>Read chat</b> on this server, which an owner of
+				{data.server.orgName} gives to a role.
+			</p>
+		</div>
+	{:else if closed === 'gone'}
+		<div class="panel">
+			<span class="label-sm">Chat</span>
+			<p class="text-[13.5px]">This server is no longer one you can open.</p>
+		</div>
+	{:else if closed === 'stopped'}
+		<div class="panel">
+			<span class="label-sm">Chat</span>
 			<div class="callout border-danger/30 bg-danger/12">{problem}</div>
-		{/if}
-		<div class="max-h-[62vh] table-wrap overflow-y-auto">
-			<!-- at phone width this table keeps to its wrapper, so the words wrap under the name
-			     where other tables scroll sideways -->
-			<table class="max-md:w-full!">
-				<thead
-					><tr
-						><th>Time</th><th class="hidden sm:table-cell">Channel</th><th>Player</th><th
-							class="hidden sm:table-cell">Message</th
-						></tr
-					></thead
-				>
-				<tbody>
-					{#each rows as l (l.seq)}
-						<tr
-							class="clickable {picked?.seq === l.seq ? 'selected' : ''}"
-							onclick={() => (picked = picked?.seq === l.seq ? null : l)}
-						>
-							<td class="font-mono text-[12px] whitespace-nowrap text-mist-400" title={l.at ?? ''}
-								>{clock(l.at)}</td
-							>
-							<td class="hidden whitespace-nowrap sm:table-cell">{l.channel || '—'}</td>
-							<td class="sm:whitespace-nowrap">
-								<span class="inline-flex items-center gap-2">
-									<FactionChip faction={l.faction} {scores} />
-									<span class="font-medium">{shownName(l)}</span>
-									{#if l.anonymous}<Badge
-											tone="info"
-											title="Anonymous mode: other players see only this name">anon</Badge
-										>{/if}
-								</span>
-								<!-- a phone has no room for the two columns: the channel and the words go here -->
-								<span class="mt-1 block break-words sm:hidden"
-									><span class="text-mist-400">{l.channel || '—'} ·</span>
-									{@render words(l)}</span
-								>
-							</td>
-							<td class="hidden max-w-[560px] break-words sm:table-cell">{@render words(l)}</td>
-						</tr>
-					{:else}
-						<tr
-							><td colspan="4" class="py-6 text-center text-mist-600"
-								>{!loaded
-									? problem
-										? 'No chat to show.'
-										: 'Loading…'
-									: lines.length
-										? 'Nothing matches.'
-										: 'Nobody has said anything on this map yet.'}</td
-							></tr
-						>
-					{/each}
-				</tbody>
-			</table>
+			<p class="note">
+				The chat is not being read: asking again would only be refused again, and each refusal is
+				recorded.
+			</p>
+			<button class="mt-3 btn btn-sm" onclick={tryAgain}>Try again</button>
 		</div>
-		{#if picked}
-			<div class="mt-3 rounded-ctl border border-black bg-ink-950 p-4 text-[13px]">
-				<div class="mb-2 flex flex-wrap items-center gap-3">
-					<span class="label-sm mb-0">Line {picked.seq}</span>
-					<span class="text-mist-400">{picked.at ? fmtTime(picked.at) : '—'}</span>
-					<button class="ml-auto btn btn-sm" onclick={() => (picked = null)}>Close</button>
-				</div>
-				<dl class="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-[auto_1fr]">
-					<dt class="text-mist-400">Player</dt>
-					<dd>
-						{picked.name || '—'}
-						{#if picked.steamId}
-							<a
-								class="ml-2 text-accent underline"
-								href="/server/{encodeURIComponent(id)}/players/{encodeURIComponent(picked.steamId)}"
-								>Player page</a
-							>
-						{/if}
-					</dd>
-					<dt class="text-mist-400">Hidden name</dt>
-					<dd>
-						{#if picked.hiddenName}{picked.hiddenName}
-							<span class="text-mist-400"
-								>{picked.anonymous
-									? '· anonymous mode: the only name other players see'
-									: '· not in use: other players see their own name'}</span
-							>{:else}<span class="text-mist-400">none sent</span>{/if}
-					</dd>
-					<dt class="text-mist-400">SteamID</dt>
-					<dd class="font-mono text-[12.5px]">
-						{#if picked.steamId}{picked.steamId}{:else}<span class="font-sans text-mist-400"
-								>none: the game gave this player no platform id</span
-							>{/if}
-					</dd>
-					<dt class="text-mist-400">Faction · channel</dt>
-					<dd>{picked.faction || '—'} · {picked.channel || '—'}{picked.ping ? ' · ping' : ''}</dd>
-					<dt class="text-mist-400">Seen by players</dt>
-					<dd class="break-words">{picked.text}</dd>
-					{#if picked.typed}
-						<dt class="text-mist-400">Typed</dt>
-						<dd class="break-words">{picked.typed}</dd>
-					{/if}
-				</dl>
+	{:else if terms && !terms.accepted}
+		<div class="max-w-[760px] panel">
+			<div class="mb-3 flex flex-wrap items-center gap-3">
+				<span class="mr-auto label-sm mb-0">Chat terms</span>
+				<Badge tone="warn">not accepted</Badge>
+				<span class="font-mono text-[12px] text-mist-400">version {terms.requiredVersion}</span>
 			</div>
-		{/if}
-		<p class="note">
-			Live from the game, which keeps the last lines of the map being played. The panel reads them
-			every few seconds while this tab is open. The server’s chat history shows messages retained
-			while collection is enabled.
-			{#if terms}
-				Shown under the game's chat terms, version {terms.acceptedVersion || terms.requiredVersion}:
-				<button class="text-accent underline" onclick={() => (showTerms = !showTerms)}
-					>{showTerms ? 'hide them' : 'read them'}</button
-				>.
-			{/if}
-		</p>
-		{#if showTerms && terms}
-			<div class="mt-2 max-w-[760px] rounded-ctl border border-black bg-ink-950 p-4">
+			<p class="mb-3 text-[13.5px] leading-relaxed">
+				The game shows a server's chat only once the terms below have been accepted for it. Until
+				then it serves no chat, and it holds back its event feed as well: no kills reach the panel,
+				so the kill feed and the rules that go by it stand still.
+			</p>
+			<div class="rounded-ctl border border-black bg-ink-950 p-4">
 				{@render termsText()}
 			</div>
+			{#if terms.cut}
+				<p class="note">
+					The server sent more text than the panel shows, so these are not its whole terms and they
+					are not accepted from here. Read and accept them in the official RCON console.
+				</p>
+			{:else if pending === terms.requiredVersion}
+				<p class="note">
+					Accepted here just now. The server says the acceptance has yet to take effect; this tab
+					looks again every few seconds.
+				</p>
+			{:else if manager}
+				<div class="mt-4 flex flex-wrap items-center gap-3">
+					<button class="btn btn-primary" disabled={busy} onclick={accept}>Accept the terms</button>
+					<span class="text-[12.5px] text-mist-400"
+						>For {data.server.orgName}, as an owner of it. The terms are the game's own, as this
+						server sent them.</span
+					>
+				</div>
+			{:else}
+				<p class="note">
+					An owner of {data.server.orgName} accepts them here. It is theirs to do: the terms are an agreement
+					of whoever runs the server.
+				</p>
+			{/if}
+		</div>
+	{:else if problem}
+		<div class="callout border-danger/30 bg-danger/12">{problem}</div>
+	{/if}
+{/snippet}
+{#snippet footer()}
+	{#if picked}
+		<div class="mt-3 rounded-ctl border border-black bg-ink-950 p-4 text-[13px]">
+			<div class="mb-2 flex flex-wrap items-center gap-3">
+				<span class="label-sm mb-0">Line {picked.seq}</span>
+				<span class="text-mist-400">{picked.at ? fmtTime(picked.at) : '—'}</span>
+				<button class="ml-auto btn btn-sm" onclick={() => (picked = null)}>Close</button>
+			</div>
+			<dl class="grid grid-cols-1 gap-x-6 gap-y-1.5 sm:grid-cols-[auto_1fr]">
+				<dt class="text-mist-400">Player</dt>
+				<dd>
+					{picked.name || '—'}
+					{#if picked.steamId}
+						<a
+							class="ml-2 text-accent underline"
+							href="/server/{encodeURIComponent(id)}/players/{encodeURIComponent(picked.steamId)}"
+							>Player page</a
+						>
+					{/if}
+				</dd>
+				<dt class="text-mist-400">Hidden name</dt>
+				<dd>
+					{#if picked.hiddenName}{picked.hiddenName}
+						<span class="text-mist-400"
+							>{picked.anonymous
+								? '· anonymous mode: the only name other players see'
+								: '· not in use: other players see their own name'}</span
+						>{:else}<span class="text-mist-400">none sent</span>{/if}
+				</dd>
+				<dt class="text-mist-400">SteamID</dt>
+				<dd class="font-mono text-[12.5px]">
+					{#if picked.steamId}{picked.steamId}{:else}<span class="font-sans text-mist-400"
+							>none: the game gave this player no platform id</span
+						>{/if}
+				</dd>
+				<dt class="text-mist-400">Faction · channel</dt>
+				<dd>{picked.faction || '—'} · {picked.channel || '—'}{picked.ping ? ' · ping' : ''}</dd>
+				<dt class="text-mist-400">Seen by players</dt>
+				<dd class="break-words">{picked.text}</dd>
+				{#if picked.typed}
+					<dt class="text-mist-400">Typed</dt>
+					<dd class="break-words">{picked.typed}</dd>
+				{/if}
+			</dl>
+		</div>
+	{/if}
+	<p class="note">
+		{#if terms}
+			Shown under the game's chat terms, version {terms.acceptedVersion || terms.requiredVersion}:
+			<button class="text-accent underline" onclick={() => (showTerms = !showTerms)}
+				>{showTerms ? 'hide them' : 'read them'}</button
+			>.
 		{/if}
-	</div>
-{/if}
+	</p>
+	{#if showTerms && terms}
+		<div class="mt-2 max-w-[760px] rounded-ctl border border-black bg-ink-950 p-4">
+			{@render termsText()}
+		</div>
+	{/if}
+{/snippet}
+
+<ChatHistory
+	orgId={data.server.orgId}
+	serverId={id}
+	bind:server={scope}
+	initialPlayer={page.url.searchParams.get('player') ?? ''}
+	{around}
+	live={showLive && terms?.accepted && !closed ? lines : []}
+	liveLoading={showLive && !loaded && !problem && !closed && (!terms || terms.accepted)}
+	{scores}
+	{settings}
+	{notice}
+	{footer}
+	inspect={(line) => (picked = picked?.seq === line.seq ? null : line)}
+/>

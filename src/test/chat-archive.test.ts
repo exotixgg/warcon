@@ -1,4 +1,5 @@
 import { beforeAll, afterAll, describe, expect, test } from 'bun:test';
+import { chatTimeline, type LiveChatLine } from '$lib/chat-archive';
 import { eq } from 'drizzle-orm';
 import {
 	chatArchiveSources as sources,
@@ -149,6 +150,47 @@ describe.skipIf(!hasTestDb)('moderation chat archive', () => {
 		expect((await read({ player: steam, range: 'all' })).lines).toHaveLength(4);
 		expect((await read({ q: '100%_1', range: 'all' })).lines).toHaveLength(2);
 		expect((await read({ q: '100__1', range: 'all' })).lines).toHaveLength(0);
+
+		const found = (await read({ any: '100%_2', channel: 'Global' })).lines;
+		expect(found).toHaveLength(2);
+		expect((await read({ any: 'pilot', channel: 'Squad' })).lines).toHaveLength(0);
+		expect((await read({ any: steam })).lines).toHaveLength(2);
+		const saved = found.find((l) => l.serverId === serverIds[0])!;
+		const live: LiveChatLine = {
+			seq: 2,
+			at: saved.at,
+			channel: 'Global',
+			faction: '',
+			steamId: steam,
+			name: 'Pilot',
+			hiddenName: '',
+			anonymous: false,
+			text: saved.body,
+			typed: null,
+			ping: false
+		};
+		const timeline = (rows: LiveChatLine[], channel = '') =>
+			chatTimeline(
+				found,
+				rows,
+				serverIds[0],
+				{ range: '1h', player: '', any: '', channel },
+				now.getTime(),
+				0
+			);
+		const merged = timeline([live, { ...live, seq: 3 }]);
+		expect(merged).toHaveLength(3);
+		expect(
+			timeline([{ ...live, at: null, observedAt: new Date(now.getTime() + 600000).toISOString() }])
+		).toHaveLength(2);
+		expect(merged.find((l) => l.id === saved.id)?.live?.seq).toBe(2);
+		expect(merged.find((l) => l.serverId === serverIds[1])?.live).toBeUndefined();
+		// A process restart reuses seq. Keep the new message even if the player repeats it.
+		expect(timeline([{ ...live, at: new Date(now.getTime() + 1000).toISOString() }])).toHaveLength(
+			3
+		);
+		expect(timeline([{ ...live, seq: 3, at: old.toISOString() }])).toHaveLength(2);
+		expect(timeline([{ ...live, seq: 3 }], 'Team')).toHaveLength(2);
 		const all = (await read({ range: 'all' })).lines;
 		const collected = [];
 		let next: string | null = null;
@@ -169,6 +211,14 @@ describe.skipIf(!hasTestDb)('moderation chat archive', () => {
 			(await read({ range: 'all', player: steam }, 'viewer')).lines.map((l) => l.serverId)
 		).toEqual([serverIds[0], serverIds[0]]);
 		await expect(read({ server: serverIds[1] }, 'viewer')).rejects.toThrow();
+		await env.db
+			.update(sources)
+			.set({ enabled: false, changedAt: old })
+			.where(eq(sources.serverId, serverIds[0]));
+		expect(
+			(await read({ server: serverIds[0] })).lines.filter((l) => l.kind === 'end')
+		).toHaveLength(1);
+		expect((await read({})).lines.filter((l) => l.kind === 'end')).toHaveLength(0);
 		await env.db.delete(servers).where(eq(servers.id, serverIds[1]));
 		expect((await read({ range: 'all', server: serverIds[1], player: steam })).lines).toHaveLength(
 			2

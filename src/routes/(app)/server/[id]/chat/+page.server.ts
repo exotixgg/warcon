@@ -14,7 +14,7 @@ export const load: PageServerLoad = async ({ params, locals }) => {
 			.select({ enabled: chatArchiveSources.enabled })
 			.from(chatArchiveSources)
 			.where(eq(chatArchiveSources.serverId, server.id));
-		return { archiveExists: !!source, archiveEnabled: source?.enabled ?? false };
+		return { archiveEnabled: source?.enabled ?? false };
 	} catch (err) {
 		const e = normalizeError(err);
 		if (e) error(e.status, e.message);

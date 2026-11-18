@@ -1,34 +1,64 @@
 <script lang="ts">
-	import { untrack } from 'svelte';
+	import { untrack, type Snippet } from 'svelte';
+	import type { FactionScore } from '$lib/types';
+	import FactionChip from './FactionChip.svelte';
+	import Badge from './Badge.svelte';
 	import { api, errorMessage } from '$lib/api';
 	import { poll } from '$lib/poll';
 	import { fmtTime } from '$lib/format';
 	import {
 		archiveRanges,
+		chatTimeline,
+		type LiveChatLine,
 		type ArchiveRange,
 		type ArchivePage,
 		type ArchiveLine,
 		type ChatSource
 	} from '$lib/chat-archive';
+
 	let {
 		orgId,
 		serverId = '',
+		homeId = '',
 		initialPlayer = '',
 		compact = false,
-		around = ''
+		around = '',
+		server = $bindable(''),
+		live = [],
+		liveLoading = false,
+		scores = null,
+		settings,
+		notice,
+		footer,
+		inspect
 	}: {
 		orgId: string;
 		serverId?: string;
+		homeId?: string;
 		initialPlayer?: string;
 		compact?: boolean;
 		around?: string;
+		server?: string;
+		live?: LiveChatLine[];
+		liveLoading?: boolean;
+		scores?: FactionScore[] | null;
+		settings?: Snippet;
+		notice?: Snippet;
+		footer?: Snippet;
+		inspect?: (line: LiveChatLine) => void;
 	} = $props();
 	let range = $state<ArchiveRange>(untrack(() => (initialPlayer ? 'all' : '1h')));
-	let player = $state(untrack(() => initialPlayer)),
-		draftPlayer = $state(untrack(() => initialPlayer));
-	let query = $state(''),
-		draftQuery = $state(''),
-		server = $state('');
+	let player = $state(untrack(() => initialPlayer));
+	let query = $state('');
+	let draft = $state('');
+	$effect(() => {
+		const value = draft.trim();
+		const timer = setTimeout(() => (query = value), 300);
+		return () => clearTimeout(timer);
+	});
+	let channel = $state('');
+	let now = $state(Date.now());
+	let scroller: HTMLDivElement;
 	let sources = $state<ChatSource[]>([]),
 		lines = $state<ArchiveLine[]>([]),
 		next = $state<string | null>(null);
@@ -39,10 +69,11 @@
 	let revision = $state(0);
 	let serial = 0;
 	const filters = $derived({
-		server: serverId || server,
+		server,
 		range,
 		player,
-		q: query,
+		any: query,
+		channel,
 		limit: compact ? '10' : '100',
 		around
 	});
@@ -68,12 +99,6 @@
 			}
 		return numbers;
 	});
-	function search() {
-		const target = draftPlayer.trim();
-		if (target && target !== player) range = 'all';
-		player = target;
-		query = draftQuery.trim();
-	}
 	function request(scope: string, params: typeof filters, before = '') {
 		return api<ArchivePage>('POST', `/api/orgs/${encodeURIComponent(scope)}/chat-history`, {
 			...params,
@@ -85,6 +110,7 @@
 			scope = orgId;
 		revision;
 		const version = ++serial;
+		scroller?.scrollTo({ top: 0 });
 		lines = [];
 		loaded = false;
 		error = '';
@@ -97,6 +123,7 @@
 					try {
 						const page = await request(scope, params);
 						if (version !== serial) return;
+						now = Date.now();
 						if (browsing) {
 							const allowed = new Set(page.servers.map((s) => s.id));
 							lines = lines.filter((l) => allowed.has(l.serverId));
@@ -151,170 +178,250 @@
 		}
 	}
 	const orgPath = $derived('/orgs/' + encodeURIComponent(orgId) + '/chat');
-	const focusedSource = $derived(sourceMap.get(serverId));
+
+	const focusedSource = $derived(sourceMap.get(server));
+	const allPath = $derived(
+		homeId || serverId
+			? '/server/' + encodeURIComponent(homeId || serverId) + '/chat?scope=org'
+			: orgPath
+	);
+	const channels = $derived(
+		[
+			...new Set(
+				[
+					'Global',
+					'Team',
+					'Squad',
+					'Proximity',
+					'Vehicle',
+					channel,
+					...lines.map((l) => l.channel),
+					...live.map((l) => l.channel)
+				].filter(Boolean)
+			)
+		].sort()
+	);
+	const visibleLive = $derived(
+		server && server === serverId && !around && sourceMap.has(server) && !error ? live : []
+	);
+	const entries = $derived(
+		chatTimeline(lines, visibleLive, serverId, filters, now, focusedSource?.epoch ?? null)
+	);
+	const clock = new Intl.DateTimeFormat(undefined, {
+		hour: '2-digit',
+		minute: '2-digit',
+		second: '2-digit'
+	});
+	const day = new Intl.DateTimeFormat(undefined, {
+		year: 'numeric',
+		month: 'short',
+		day: 'numeric'
+	});
 </script>
 
-<section class="my-3 panel">
-	<div class="mb-3 flex flex-wrap items-center gap-3">
-		<span class="mr-auto label-sm mb-0"
-			>{compact
-				? 'Recent chat'
-				: around
-					? 'Conversation context'
-					: serverId
-						? 'Server chat'
-						: 'All server chats'}</span
-		>
+<section class="my-3 min-w-0 panel" aria-label={compact ? 'Recent chat' : 'Chat'}>
+	<header class="flex flex-wrap items-center gap-2">
+		<h2 class="mr-auto label-sm mb-0">{compact ? 'Recent chat' : 'Chat'}</h2>
 		{#if compact}
-			<a class="btn btn-sm" href="{orgPath}?player={encodeURIComponent(initialPlayer)}"
-				>View all messages</a
+			<a
+				class="btn btn-sm"
+				href={allPath +
+					(allPath.includes('?') ? '&' : '?') +
+					'player=' +
+					encodeURIComponent(initialPlayer)}>View all messages</a
 			>
 		{:else if around}
 			<a class="btn btn-sm" href="/server/{encodeURIComponent(serverId)}/chat">Back to latest</a>
 		{:else}
-			<label class="text-xs text-mist-400"
-				>Time range
-				<select aria-label="Time range" class="ml-1 input w-auto" bind:value={range}>
-					{#each archiveRanges as r}<option value={r}>{r === 'all' ? 'All' : r}</option>{/each}
+			{#if serverId}
+				<div
+					class="inline-flex rounded-ctl border border-white/10 p-0.5"
+					role="group"
+					aria-label="Chat scope"
+				>
+					<button
+						class="btn btn-sm"
+						class:btn-primary={server === serverId}
+						aria-pressed={server === serverId}
+						onclick={() => (server = serverId)}>This server</button
+					>
+					<button
+						class="btn btn-sm"
+						class:btn-primary={!server}
+						aria-pressed={!server}
+						onclick={() => (server = '')}>All servers</button
+					>
+				</div>
+			{:else}
+				<select aria-label="Server" class="input w-auto" bind:value={server}
+					><option value="">All servers</option>
+					{#each sources as s}<option value={s.id}>#{numbers.get(s.id)} · {s.name}</option>{/each}
 				</select>
-			</label>
+			{/if}
+			<select aria-label="Time range" class="input w-auto" bind:value={range}>
+				{#each archiveRanges as r}<option value={r}>{r === 'all' ? 'All time' : r}</option>{/each}
+			</select>
+			{#if server === serverId && serverId}{@render settings?.()}{/if}
+			{#if !server}<a
+					class="btn btn-sm"
+					href={allPath}
+					target="_blank"
+					rel="noopener"
+					aria-label="Open all servers in a new window">Open window ↗</a
+				>{/if}
 		{/if}
-	</div>
+	</header>
 	{#if !compact && !around}
 		<form
-			class="mb-3 flex flex-wrap items-end gap-2"
+			class="mt-3 flex flex-wrap items-center gap-2"
 			onsubmit={(e) => {
 				e.preventDefault();
-				search();
+				query = draft.trim();
 			}}
 		>
-			{#if !serverId}
-				<label class="text-xs text-mist-400"
-					>Server
-					<select aria-label="Server" class="block input" bind:value={server}>
-						<option value="">All permitted servers</option>
-						{#each sources as s}<option value={s.id}
-								>#{numbers.get(s.id)} · {s.name}{s.retired ? ' (retired)' : ''}</option
-							>{/each}
-					</select>
-				</label>
+			<select aria-label="Channel" class="input w-auto" bind:value={channel}>
+				<option value="">All channels</option>{#each channels as c}<option value={c}>{c}</option
+					>{/each}
+			</select>
+
+			{#if player}
+				<button
+					class="btn btn-sm"
+					type="button"
+					aria-label="Remove player filter"
+					onclick={() => (player = '')}>Player {player} ×</button
+				>
 			{/if}
-			<label class="text-xs text-mist-400"
-				>Player or SteamID<input
-					class="block input"
-					bind:value={draftPlayer}
-					maxlength="100"
-				/></label
-			>
-			<label class="text-xs text-mist-400"
-				>Message contains<input
-					class="block input"
-					bind:value={draftQuery}
-					maxlength="500"
-				/></label
-			>
-			<button class="btn btn-sm" type="submit">Search</button>
+			<input
+				class="input min-w-32 flex-1"
+				type="search"
+				aria-label="Search chat"
+				placeholder="Search player, SteamID or message…"
+				maxlength="500"
+				bind:value={draft}
+			/>
 		</form>
 	{/if}
-	{#if focusedSource}
-		<p class="note mb-2">
-			{focusedSource.enabled
-				? focusedSource.state === 'ready'
-					? 'Collecting'
-					: focusedSource.state === 'terms'
-						? 'Waiting for chat terms'
-						: focusedSource.state === 'unavailable'
-							? 'RCON unavailable'
-							: 'Waiting for first read'
-				: 'Collection off'}{focusedSource.lastRead
-				? ' · Last read ' + fmtTime(focusedSource.lastRead)
-				: ''}
-		</p>
-	{:else if !compact && sources.length}
-		<div class="mb-3 flex flex-wrap gap-2 text-xs text-mist-400">
-			{#each sources as s}<span title={s.lastRead ? 'Last read ' + fmtTime(s.lastRead) : s.state}
-					><b class="font-mono">#{numbers.get(s.id)}</b>
-					{s.name}{s.retired
-						? ' · retired'
-						: !s.enabled
-							? ' · off'
-							: s.state === 'ready'
-								? ''
-								: ' · ' + s.state}</span
-				>{/each}
+	{#if !compact && (!server || focusedSource)}
+		<div class="my-2 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-mist-400">
+			{#if focusedSource}
+				<span
+					>{focusedSource.enabled
+						? focusedSource.state === 'ready'
+							? 'History on'
+							: focusedSource.state === 'terms'
+								? 'History waiting for chat terms'
+								: focusedSource.state === 'unavailable'
+									? 'History waiting for RCON'
+									: 'History waiting for first read'
+						: 'History off'}</span
+				>
+			{:else}
+				{#each sources as s (s.id)}<span
+						><b class="font-mono">#{numbers.get(s.id)}</b>
+						{s.name}{s.retired ? ' · retired' : !s.enabled ? ' · history off' : ''}</span
+					>{/each}
+			{/if}
 		</div>
 	{/if}
-	{#if error}<p class="callout">{error}</p>
-	{:else if !loaded}<p class="note">Loading chat…</p>
-	{:else if !lines.length}<p class="note">
-			{compact ? 'No archived messages from this player.' : 'No chat entries match these filters.'}
-		</p>
-	{:else}
-		<div class="table-wrap">
-			<table>
-				<thead
-					><tr
-						><th>Time</th>{#if !serverId}<th>Server</th>{/if}<th>Player / round</th><th>Message</th
-						></tr
-					></thead
-				>
-				<tbody>
-					{#each lines as l (l.kind + l.id)}
-						{@const source = sourceMap.get(l.serverId)}
-						{@const path = '/server/' + encodeURIComponent(l.serverId)}
-						<tr>
-							<td class="font-mono text-xs whitespace-nowrap text-mist-400">
-								{#if l.kind === 'message' && !source?.retired && !around}
+	{#if server && server === serverId && !around}{@render notice?.()}{/if}
+	<div
+		class="mt-2 max-h-[62vh] overflow-y-auto rounded-ctl border border-white/10 bg-ink-950"
+		bind:this={scroller}
+	>
+		{#if error}<p class="callout">{error}</p>
+		{:else if !loaded || (!entries.length && liveLoading)}<p class="p-4 text-sm text-mist-400">
+				Loading chat…
+			</p>
+		{:else if !entries.length}<p class="p-4 text-sm text-mist-400">
+				{compact ? 'No archived messages from this player.' : 'No messages in this view.'}
+			</p>
+		{:else}
+			<ol class="m-0 list-none p-0">
+				{#each entries as entry, i (entry.serverId + ':' + entry.kind + ':' + entry.id)}
+					{@const source = sourceMap.get(entry.serverId)}
+					{@const path = '/server/' + encodeURIComponent(entry.serverId)}
+					{@const date = new Date(entry.at)}
+					<li class="border-b border-white/5 last:border-b-0">
+						{#if !i || day.format(date) !== day.format(new Date(entries[i - 1].at))}
+							<div
+								class="border-b border-white/10 bg-white/5 px-3 py-1 font-mono text-[11px] text-mist-400"
+							>
+								{day.format(date)}
+							</div>
+						{/if}
+						<div class="flex flex-wrap items-baseline gap-x-2 gap-y-0.5 px-3 py-2 text-[13px]">
+							<time
+								datetime={entry.at}
+								class="font-mono text-xs text-mist-400"
+								title={fmtTime(entry.at)}
+							>
+								{#if entry.kind === 'message' && !source?.retired && !around && !entry.id.startsWith('live-')}
 									<a
 										class="hover:underline"
-										title="Open surrounding conversation"
-										href="{path}/chat?around={encodeURIComponent(l.at)}">{fmtTime(l.at)}</a
+										title="View conversation around this message"
+										href="{path}/chat?around={encodeURIComponent(entry.at)}">{clock.format(date)}</a
 									>
-								{:else}{fmtTime(l.at)}{/if}
-							</td>
-							{#if !serverId}<td title={source?.name} class="font-mono whitespace-nowrap"
-									>#{numbers.get(l.serverId)}
-									<span class="hidden text-xs text-mist-400 lg:inline">{source?.name}</span></td
+								{:else}{clock.format(date)}{/if}
+							</time>
+							{#if !server}<span
+									class="rounded-sm bg-white/10 px-1 font-mono text-xs"
+									title={source?.name}>#{numbers.get(entry.serverId)}</span
 								>{/if}
-							{#if l.kind === 'message'}
-								<td
-									>{#if l.steamId}<a
-											class="text-accent hover:underline"
-											href={source?.retired
-												? orgPath + '?player=' + encodeURIComponent(l.steamId)
-												: path + '/players/' + l.steamId}>{l.speaker}</a
-										>{:else}{l.speaker}{/if}
-									{#if l.channel}<span class="ml-1 text-xs text-mist-400">{l.channel}</span
-										>{/if}</td
+							{#if entry.kind === 'message'}
+								{#if entry.channel}<span class="text-xs text-mist-400">{entry.channel}</span>{/if}
+								{#if entry.faction}<span class="text-xs"
+										><FactionChip
+											faction={entry.faction}
+											scores={entry.serverId === serverId ? scores : null}
+										/></span
+									>{/if}
+								{#if entry.steamId}
+									<a
+										class="font-semibold text-accent hover:underline"
+										href={source?.retired
+											? orgPath + '?player=' + entry.steamId
+											: path + '/players/' + entry.steamId}>{entry.speaker}</a
+									>
+								{:else}<strong>{entry.speaker}</strong>{/if}
+								{#if entry.live?.anonymous}<Badge tone="info">anon</Badge>{/if}
+								{#if entry.ping}<Badge>ping</Badge>{/if}
+								{#if entry.live?.typed}<Badge tone="warn">filtered</Badge>{/if}
+								<span class="min-w-0 [overflow-wrap:anywhere] break-words whitespace-pre-wrap"
+									>{entry.body}</span
 								>
-								<td class="break-words whitespace-pre-wrap">{l.body}</td>
+								{#if entry.live && inspect}
+									{@const line = entry.live}
+									<button
+										class="ml-auto text-xs text-mist-400 hover:underline"
+										aria-label="Inspect chat line {line.seq}"
+										onclick={() => inspect?.(line)}>Details</button
+									>
+								{/if}
 							{:else}
-								<td class="font-semibold text-mist-400"
-									>{l.kind === 'gap'
-										? 'Collection gap'
-										: l.kind === 'start'
-											? 'Round started'
-											: 'Round ended'}</td
+								<span class="font-semibold text-mist-400"
+									>{entry.kind === 'start'
+										? 'Round started'
+										: entry.kind === 'end'
+											? 'Round ended'
+											: 'Collection gap'}</span
 								>
-								<td
-									>{#if l.kind !== 'gap' && !source?.retired}<a
-											class="text-accent hover:underline"
-											href="{path}/matches/{l.id}">{l.body || 'Match details'}</a
-										>{:else}{l.body}{/if}</td
-								>
+								{#if entry.kind !== 'gap' && !source?.retired}<a
+										class="text-accent hover:underline"
+										href="{path}/matches/{entry.id}">{entry.body || 'Match details'}</a
+									>{:else}{entry.body}{/if}
+								<span class="my-auto grow border-t border-white/15"></span>
 							{/if}
-						</tr>
-					{/each}
-				</tbody>
-			</table>
-		</div>
-	{/if}
-	{#if !compact && (next || browsing)}
-		<div class="mt-3 flex gap-2">
-			{#if next}<button class="btn btn-sm" disabled={moreBusy} onclick={older}>Load older</button
+						</div>
+					</li>
+				{/each}
+			</ol>
+			{#if !compact && next}<button class="m-2 btn btn-sm" disabled={moreBusy} onclick={older}
+					>Load older messages</button
 				>{/if}
-			{#if browsing}<button class="btn btn-sm" onclick={() => revision++}>Return to latest</button
-				>{/if}
-		</div>
-	{/if}
+		{/if}
+	</div>
+	{#if browsing}<button class="mt-2 btn btn-sm" onclick={() => revision++}>Return to latest</button
+		>{/if}
+	{#if server && server === serverId && !around && !error && focusedSource}{@render footer?.()}{/if}
 </section>
