@@ -1,8 +1,10 @@
 // A public career page: 404 unless leaderboards are on for the server. Steam personas come from
-// the cache only, so viewers can never spend the site's Steam quota.
+// the cache only, so viewers can never spend the site's Steam quota. Its last matches leave out
+// the ones the player played in the game's anonymous mode (loadCareer's publicView), and its most
+// killed and nemeses whoever is in that mode (publicCombat).
 import type { PageServerLoad } from './$types';
 import { getEnv } from '$lib/server/env';
-import { publicHeading, publicLoad, requirePublicServer } from '$lib/server/public';
+import { publicCombat, publicHeading, publicLoad, requirePublicServer } from '$lib/server/public';
 import { publicLeaderboardServers } from '$lib/server/leaderboard-servers';
 import { loadCareer, lastNameOf } from '$lib/server/leaderboards';
 import { combatSummary } from '$lib/server/players';
@@ -27,10 +29,11 @@ export const load: PageServerLoad = (event) =>
 				orgId: ps.org.id,
 				ids,
 				nameOf: new Map(orgServers.map((s) => [s.id, s.name])),
-				steamId
+				steamId,
+				publicView: true
 			}),
 			cachedProfiles(env, [steamId]),
-			combatSummary(env, ids, steamId)
+			combatSummary(env, ids, steamId).then((combat) => publicCombat(env, ids, combat))
 		]);
 		const steam = profiles.get(steamId);
 		return {

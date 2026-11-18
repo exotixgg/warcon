@@ -1,4 +1,3 @@
-import { legacySessions } from './legacy-sessions';
 // The totals' triggers (migrations 0038 and 0039) under the writes the random histories do not
 // reach, each checked against the all-time reads and the ranged ones (the day rows, from every
 // midnight of the history and a millisecond either side): one statement that closes a session and
@@ -24,6 +23,7 @@ import { eq, sql, type SQL as Query } from 'drizzle-orm';
 import type { Env } from '$lib/server/env';
 import { connect, runMigrations, type DbOrTx } from '$lib/server/db';
 import { matches, matchPlayers, playerSessions } from '$lib/server/db/schema';
+import { matchPlayersBefore56, playerSessionsBefore56 } from './schema-then';
 import {
 	acquireOrRenew,
 	isOwner,
@@ -759,7 +759,7 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 					seedSeconds: from * 10
 				});
 				await db
-					.insert(legacySessions)
+					.insert(playerSessionsBefore56)
 					.values([
 						s('a', P, 0, 1.5, 500),
 						s('a', P, 2, 3.25, 700),
@@ -813,7 +813,7 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 					killStreak: kills
 				});
 				await db
-					.insert(matchPlayers)
+					.insert(matchPlayersBefore56)
 					.values([
 						l(won.id, 'a', P, 'Valkyra', 5),
 						l(won.id, 'a', Q, 'White', 2),
@@ -825,9 +825,9 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 				// a negative streak merged the 0038 way where 0038 is in: a session closed first (the
 				// pair's row has no match yet), then a match ended with the player's line at -1
 				const [late] = await db
-					.insert(legacySessions)
+					.insert(playerSessionsBefore56)
 					.values(s('a', S, 4.5, null, 10))
-					.returning({ id: playerSessions.id });
+					.returning({ id: playerSessionsBefore56.id });
 				await db.execute(
 					sql`UPDATE player_sessions SET last_seen = ${at(5)}, left_at = ${at(5)} WHERE id = ${late.id}`
 				);
@@ -836,7 +836,7 @@ describe.skipIf(!hasTestDb)('player totals under every kind of write', () => {
 					.values({ serverId: 'a', startedAt: at(4.6), map: 'Europe' })
 					.returning({ id: matches.id });
 				await db
-					.insert(matchPlayers)
+					.insert(matchPlayersBefore56)
 					.values({ ...l(negative.id, 'a', S, 'Valkyra', 0), killStreak: -1, deathStreak: -2 });
 				await db.execute(sql`
 					UPDATE matches SET ended_at = ${at(5.5)}, final_scores = ${JSON.stringify(scores)}::jsonb,

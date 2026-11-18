@@ -1,3 +1,4 @@
+import { seenAs } from '$lib/anonymous';
 // A private snapshot of one completed match. No writes to matches, players or totals.
 import { and, desc, eq, gte, isNull } from 'drizzle-orm';
 import { mapName, prettify } from '$lib/format';
@@ -170,7 +171,8 @@ export function matchCardVars(
 		const id = k.victimSteamId === steamId ? k.killerSteamId : k.victimSteamId;
 		const observedName = k.victimSteamId === steamId ? k.killerName : k.victimName;
 		const rival = opponents.get(id) ?? { name: id, kills: 0, deaths: 0 };
-		rival.name = data.players.find((p) => p.steamId === id)?.name || observedName || rival.name;
+		const other = data.players.find((p) => p.steamId === id);
+		rival.name = other ? seenAs(other) : observedName || rival.name;
 		if (k.victimSteamId === steamId) rival.deaths++;
 		else rival.kills++;
 		opponents.set(id, rival);
@@ -192,11 +194,11 @@ export function matchCardVars(
 		match_rival: rival?.name ?? '',
 		match_rival_kills: rival?.kills ?? '',
 		match_rival_deaths: rival?.deaths ?? '',
-		leader_kills_name: killLeader.name,
+		leader_kills_name: seenAs(killLeader),
 		leader_kills_value: compactNumber(killLeader.kills),
-		leader_cash_name: cashLeader.name,
+		leader_cash_name: seenAs(cashLeader),
 		leader_cash_value: amount(cashLeader.cashDelta),
-		leader_streak_name: streakLeader?.name ?? '',
+		leader_streak_name: streakLeader ? seenAs(streakLeader) : '',
 		leader_streak_value: streakLeader ? records.get(streakLeader.steamId)!.killStreak : '',
 		next_map: next.nextMap,
 		next_weather: next.nextWeather

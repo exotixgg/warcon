@@ -29,6 +29,10 @@
 //                (weather-cycle.ts)
 //   death_whisper  whisper a player killed one of the rule's messages while they wait to respawn,
 //                at most once in a cooldown (death-whisper.ts, acted on in feed-events.ts)
+//   chat_command  answer a word a player types in the in-game chat ("!rules") with the rule's lines
+//   staff_call   send what a player types after "!admin" to the organisation's Discord
+//                (both chat-rules.ts; acted on as the worker reads the chat, chat-look.ts, in the
+//                same look and through no outbox row)
 // The worker evaluates them on every observation and writes the actions they want to the outbox
 // (outbox.ts delivers, and every delivery lands in the audit trail as category "trigger", but for a
 // Death whisper that went: $lib/rule-kinds TRAIL_FAILURES_ONLY). A dry
@@ -66,6 +70,12 @@ import {
 	type TriggerRow
 } from './db/schema';
 import { getProfiles, steamEnabled } from './steam';
+import {
+	seedingBotKickReady,
+	seedingBotKickTarget,
+	type SeedingBotKickConfig
+} from './seeding-bot-kick';
+import { settingsFingerprint } from './fingerprint';
 import { localSignals, orgServers, type LocalSignals } from './players';
 import { gateway } from './gateway';
 import type { SessionUser } from './access';
@@ -260,7 +270,19 @@ import {
 	type DeathWhisperConfig,
 	type WhisperedTracks
 } from './death-whisper';
+import {
+	chatWaitOf,
+	isChatKind,
+	listedWords,
+	wordClash,
+	type ChatCommandConfig,
+	type ChatRule,
+	type StaffCallConfig
+} from './chat-rules';
+import { COMMAND_PREFIX, commandsLine } from '$lib/chat-commands';
+import type { DbOrTx } from './db';
 import { mapName } from '$lib/format';
+import { seenAs } from '$lib/anonymous';
 import { statsIn, usesStats } from '$lib/placeholders';
 import { settings } from './settings';
 import { playerStats, riskPerformanceFor } from './leaderboards';
@@ -301,7 +323,8 @@ const shape = (t: TriggerRow): TriggerView => ({
 	createdAt: t.createdAt ? t.createdAt.toISOString() : null,
 	...(t.kind === 'afk_protection' ? { phase: afkPhase(t.state) } : {}),
 	...(t.kind === 'bounty' ? { bounty: openBounty(t) } : {}),
-	...(t.kind === 'live_name' ? { liveName: lastName(t.state) } : {})
+	...(t.kind === 'live_name' ? { liveName: lastName(t.state) } : {}),
+	...(isChatKind(t.kind) ? { chatWait: chatWaitOf(t.state) } : {})
 });
 
 /** A Live server name rule's last write and latest refusal, as its row shows them. */
@@ -349,7 +372,9 @@ async function triggerOf(env: Env, serverId: string, id: string): Promise<Trigge
 
 /**
  * A rule acts without anyone at the controls, so saving it needs the capability its author would
- * need to do the same by hand: a rule that kicks needs Kick, not only Automation.
+ * need to do the same by hand: a rule that kicks needs Kick, not only Automation. A chat rule has
+ * the panel read what players type, so it needs Read chat, which no built-in role starts with and
+ * no API key can hold ($lib/capabilities PEOPLE_ONLY): a key never saves, changes or dry-runs one.
  */
 const RULE_NEEDS: Record<
 	Exclude<TriggerKind, 'seed_reward' | 'kill_distance' | 'bounty' | 'afk_watch'>,
@@ -368,13 +393,16 @@ const RULE_NEEDS: Record<
 	risk_kick: ['players.kick', 'kicks players'],
 	name_filter: ['players.kick', 'kicks players'],
 	ping_kick: ['players.kick', 'kicks players'],
+	seeding_bot_kick: ['players.kick', 'kicks seeding accounts'],
 	team_kill: ['players.kick', 'kicks players'],
 	kill_rate: ['players.kick', 'flags players'],
 	two_teams: ['players.move', 'moves players between teams'],
 	afk_protection: ['players.kill', 'kills players'],
 	name_change: ['players.kick', 'flags or kicks players'],
 	rotation_shuffle: ['config.apply', 'rewrites the rotation in the config document'],
-	live_name: ['config.apply', 'writes the server name in the config document']
+	live_name: ['config.apply', 'writes the server name in the config document'],
+	chat_command: ['chat.read', 'reads the in-game chat'],
+	staff_call: ['chat.read', 'reads the in-game chat']
 };
 
 /** What a reserved slot a rule hands out needs: one here, or on the organisation's list. */
@@ -413,13 +441,18 @@ export function ruleNeeds(kind: TriggerKind, config: unknown): [Capability, stri
 /**
  * What else a rule needs when it also messages players: a Team balance rule with a whisper, an AFK
  * protection rule with a broadcast, a Kill distance rule's kill with its whisper, an AFK watch with
- * its warning.
+ * its warning, a Chat command (its reply), a Staff call that whispers anything back.
  */
 function ruleAlsoNeeds(kind: TriggerKind, config: unknown): [Capability, string] | null {
 	if (kind === 'seed_reward' && (config as SeedRewardConfig)?.noticeEnabled)
 		return ['chat.send', 'whispers players'];
 	if (kind === 'ping_kick' && (config as PingKickConfig)?.warningSeconds?.length)
 		return ['chat.send', 'whispers players'];
+	if (kind === 'chat_command') return ['chat.send', 'messages players'];
+	if (kind === 'staff_call') {
+		const c = config as Partial<StaffCallConfig> | null;
+		return str(c?.ack) || str(c?.usage) || str(c?.wait) ? ['chat.send', 'whispers players'] : null;
+	}
 	if (kind === 'kill_distance' && killDistanceAction(config) === 'kill') return RULE_KILL_NEEDS[1];
 	if (kind === 'afk_watch' && afkWatchWarns(config)) return ['chat.send', 'whispers players'];
 	if (kind === 'bounty' && bountyReward(config) === 'slot')
@@ -449,6 +482,44 @@ export function requireRuleCaps(
 	}
 }
 
+/** Saves to one server's rules take turns: what one finds, the next cannot change under it. */
+const lockRules = (tx: DbOrTx, serverId: string) =>
+	tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`triggers:${serverId}`}))`);
+
+/** The server's enabled chat rules, oldest first, as the chat step reads them. */
+export const chatRulesAmong = (rows: readonly TriggerRow[]): ChatRule[] =>
+	rows
+		.filter((r) => r.enabled && isChatKind(r.kind))
+		.sort((a, b) => (a.createdAt?.getTime() ?? 0) - (b.createdAt?.getTime() ?? 0))
+		.map((r) => ({
+			id: r.id,
+			name: r.name,
+			kind: r.kind as ChatRule['kind'],
+			config: r.config as ChatRule['config']
+		}));
+
+/**
+ * A word has one answer on a server: an enabled chat rule is not saved, or switched on, with a word
+ * another enabled chat rule of the server answers. Called with the server's rules locked.
+ */
+async function refuseWordClash(
+	tx: DbOrTx,
+	serverId: string,
+	rule: Pick<ChatRule, 'id' | 'kind' | 'config'>
+): Promise<void> {
+	const rows = await tx
+		.select()
+		.from(triggers)
+		.where(and(eq(triggers.serverId, serverId), eq(triggers.enabled, true)));
+	const clash = wordClash(rule, chatRulesAmong(rows));
+	if (clash)
+		throw new ApiError(
+			409,
+			`${COMMAND_PREFIX}${clash.word} is already answered by the rule "${clash.rule}" on this server; give this one another word, or switch that one off.`,
+			'duplicate'
+		);
+}
+
 export async function createTrigger(
 	env: Env,
 	req: Request,
@@ -465,8 +536,8 @@ export async function createTrigger(
 	const row = await env.db.transaction(async (tx) => {
 		// One rule of these kinds per server ($lib/rule-kinds says why). Saves to one server take turns,
 		// so two at once cannot both find none.
+		if (ONE_PER_SERVER.includes(kind) || isChatKind(kind)) await lockRules(tx, server.id);
 		if (ONE_PER_SERVER.includes(kind)) {
-			await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`triggers:${server.id}`}))`);
 			const [other] = await tx
 				.select({ name: triggers.name })
 				.from(triggers)
@@ -479,6 +550,8 @@ export async function createTrigger(
 					'duplicate'
 				);
 		}
+		if (isChatKind(kind) && body.enabled)
+			await refuseWordClash(tx, server.id, { id: '', kind, config: config as ChatRule['config'] });
 		const [inserted] = await tx
 			.insert(triggers)
 			.values({
@@ -550,11 +623,29 @@ export async function updateTrigger(
 	requireRuleCaps(row.kind, set.config ?? row.config, server, access);
 	if (!Object.keys(set).length) throw new ApiError(400, 'Nothing to update.');
 	set.updatedAt = new Date();
-	const [updated] = await env.db
-		.update(triggers)
-		.set(switchOn ? { ...set, state: switchOn } : set)
-		.where(eq(triggers.id, row.id))
-		.returning();
+	const write = (db: DbOrTx) =>
+		db
+			.update(triggers)
+			.set(switchOn ? { ...set, state: switchOn } : set)
+			.where(eq(triggers.id, row.id))
+			.returning();
+	// A chat rule that will be on is checked for a word another one answers, against the row as it
+	// stands once the server's saves have taken their turn (a switch-on beside an edit sees it).
+	const chatKind = isChatKind(row.kind) ? row.kind : null;
+	const [updated] = chatKind
+		? await env.db.transaction(async (tx) => {
+				await lockRules(tx, server.id);
+				const [now] = await tx.select().from(triggers).where(eq(triggers.id, row.id)).limit(1);
+				if (!now) throw new ApiError(404, 'Trigger not found.');
+				if (set.enabled ?? now.enabled)
+					await refuseWordClash(tx, server.id, {
+						id: row.id,
+						kind: chatKind,
+						config: (set.config ?? now.config) as ChatRule['config']
+					});
+				return write(tx);
+			})
+		: await write(env.db);
 	// Saved again with the same settings (a rename, say), what it queued still holds.
 	const settings = SETTINGS_KEYS[row.kind];
 	if (
@@ -623,6 +714,7 @@ export const SETTINGS_KEYS: Partial<Record<string, (config: unknown) => string>>
 	death_whisper: deathWhisperSettingsKey,
 	match_card: (c) => matchCardSettingsKey(c as MatchCardConfig),
 	ping_kick: pingSettingsKey,
+	seeding_bot_kick: settingsFingerprint,
 	two_teams: (c) => twoTeamsSettingsKey(c as TwoTeamsConfig),
 	kill_distance: (c) => killDistanceSettingsKey(c as KillDistanceConfig),
 	afk_protection: (c) => afkSettingsKey(c as AfkProtectionConfig),
@@ -662,6 +754,8 @@ export interface TickContext {
 	players: Player[];
 	/** true only when this observation fetched a fresh player list */
 	playersObserved: boolean;
+	/** Roster before this observation, absent before the first player look. */
+	previousPlayers?: Player[];
 	playersIntervalMs: number;
 	/** players with no open session before this observation (empty when joins are not trusted) */
 	joined: Player[];
@@ -923,6 +1017,9 @@ export async function evaluateTriggers(
 				case 'ping_kick':
 					await evalPingKick(ctx, row, row.config as PingKickConfig, out, read);
 					break;
+				case 'seeding_bot_kick':
+					await evalSeedingBotKick(env, ctx, row, row.config as SeedingBotKickConfig, out);
+					break;
 				case 'restart_notice':
 					evalRestartNotice(ctx, row, row.config as RestartNoticeConfig, out);
 					break;
@@ -964,6 +1061,10 @@ export async function evaluateTriggers(
 					break;
 				case 'live_name':
 					// Written at the look itself, after the rules (live-name-write.ts): no action is queued.
+					break;
+				case 'chat_command':
+				case 'staff_call':
+					// Acted on as the chat is read, after the look (chat-look.ts): no action is queued.
 					break;
 			}
 		} catch (err) {
@@ -1409,6 +1510,52 @@ async function evalNameFilter(
 			lastResult: n === 1 ? `${doing} ${last}` : `${doing} ${n} players`
 		});
 	}
+}
+
+async function evalSeedingBotKick(
+	env: Env,
+	ctx: TickContext,
+	row: TriggerRow,
+	cfg: SeedingBotKickConfig,
+	out: Evaluation
+) {
+	if (!ctx.playersObserved) return;
+	const target = seedingBotKickTarget(cfg, ctx.players);
+	if (!target) return;
+
+	// Observations and deliveries share the server lane. Check for an outstanding kick
+	// even after a restart or rule replacement.
+	const [last] = await env.db
+		.select({
+			state: outbox.state,
+			steamId: outbox.steamId
+		})
+		.from(outbox)
+		.where(and(eq(outbox.serverId, ctx.server.id), eq(outbox.triggerKind, row.kind)))
+		.orderBy(desc(outbox.createdAt), desc(outbox.id))
+		.limit(1);
+	if (!seedingBotKickReady(cfg, last, ctx.players, ctx.previousPlayers)) return;
+
+	out.intents.push({
+		trigger: row,
+		action: 'kick',
+		params: {
+			steamId: target.steamId,
+			minPlayers: cfg.minPlayers,
+			reason: 'Seeding complete. Freeing a slot for a player.',
+			rule: settingsFingerprint(cfg)
+		},
+		target: target.steamId,
+		steamId: target.steamId,
+		okMessage: `Kicked ${target.name} to free a seeding slot.`,
+		detail: { name: target.name, minPlayers: cfg.minPlayers },
+		dedupeKey: key(row, ctx.ts.getTime())
+	});
+	out.updates.push({
+		id: row.id,
+		lastFiredAt: ctx.ts,
+		lastResult: `Kicking ${target.name} to free a slot.`
+	});
 }
 
 async function evalPingKick(
@@ -2226,7 +2373,8 @@ export function bountyLapse(
 			map: map || null,
 			reward: rewardWords(cfg),
 			orgWide: cfg.reward === 'slot' && cfg.scope === 'org',
-			name: open.name,
+			// for players: the name the bounty was announced under ($lib/anonymous)
+			name: seenAs(open),
 			run: open.best,
 			why
 		}
@@ -2683,6 +2831,52 @@ export async function dryRun(
 		);
 		return result;
 	}
+	if (isChatKind(kind)) {
+		// The chat is kept nowhere, so there is no past line to act on again: this shows what the rule
+		// would send, with what only a live look knows as `…`.
+		const others = chatRulesAmong(
+			await env.db.select().from(triggers).where(eq(triggers.serverId, server.id))
+		);
+		const player = { name: 'Player', steamId: UNKNOWN };
+		if (kind === 'chat_command') {
+			const c = cfg as ChatCommandConfig;
+			// the server's words as they stand, and this rule's (a word it had before an edit included)
+			const words = listedWords([...others, { id: '', name: '', kind, config: c }]);
+			const own = {
+				commands: commandsLine(words),
+				teams: UNKNOWN,
+				next_map: UNKNOWN,
+				rotation: UNKNOWN,
+				rank: UNKNOWN,
+				top: UNKNOWN
+			};
+			// said to everyone, a reply has no org-wide stats: they stay as typed, here as on the server
+			const all = dryRunVars(server.name, player, own);
+			const filled = c.to === 'everyone' ? keptVars(all) : all;
+			for (const reply of c.replies)
+				note(
+					to,
+					`${COMMAND_PREFIX}${c.command} → ${c.to === 'everyone' ? 'everyone' : 'the player'}: ${renderTemplate(reply, filled, MAX_CHAT)}`
+				);
+		} else {
+			const c = cfg as StaffCallConfig;
+			const word = COMMAND_PREFIX + (c.commands[0] ?? c.reports[0]);
+			const say = (label: string, text: string, seconds: number | string) => {
+				if (text)
+					note(
+						to,
+						`${label}: ${renderTemplate(text, dryRunVars(server.name, player, { command: word, seconds }), MAX_CHAT)}`
+					);
+			};
+			say('once the call is on its way to Discord', c.ack, '');
+			say('nothing after the word', c.usage, '');
+			say('called again too soon', c.wait, c.cooldownSeconds);
+		}
+		result.notes.push(
+			'Nothing to replay: the chat is not kept, so no past line can be read again. This is what the rule would send; type the word on the server to try it.'
+		);
+		return result;
+	}
 	if (kind === 'welcome') {
 		const c = cfg as WelcomeConfig;
 		const rows = await joins(c.afterFaction);
@@ -2730,6 +2924,12 @@ export async function dryRun(
 	if (kind === 'two_teams') {
 		result.notes.push(
 			'Faction moves are not kept in the session history, so there is nothing to replay. Switch on Watch only to see live what the rule would move, under Actions, without moving anyone.'
+		);
+		return result;
+	}
+	if (kind === 'seeding_bot_kick') {
+		result.notes.push(
+			'Bot kicks use live rosters to check the player count and see when a slot fills again.'
 		);
 		return result;
 	}
