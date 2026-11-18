@@ -24,12 +24,19 @@
 		['/messages', 'Messages', 'owner'],
 		['/map-sets', 'Map sets', 'owner'],
 		['/players', 'Players', 'any'],
+		['/chat', 'Chat logs', 'archive'],
 		['/bans', 'Ban list', 'ban'],
 		['/reserved', 'Reserved slots', 'reserve']
 	] as const;
 	let tabs = $derived(
 		TABS.filter(
-			([, , who]) => who === 'any' || (who === 'owner' ? owner : data.listsRole.kinds.includes(who))
+			([, , who]) =>
+				who === 'any' ||
+				(who === 'archive'
+					? owner || data.orgServers.some((s) => s.caps.includes('chat.read'))
+					: who === 'owner'
+						? owner
+						: data.listsRole.kinds.includes(who))
 		)
 	);
 

@@ -1,5 +1,4 @@
-// Players' chat is read under the game's chat terms, which forbid recording, storing, exporting or
-// sharing it, so the panel's rule is that a chat line is written nowhere: it goes from the game to
+// With per-server archive collection off, a chat line is written nowhere. It goes from the game to
 // the page of whoever holds Read chat. chat.test.ts shows who may read it and that the audit trail
 // holds no line. This suite is the fence round the rule, there to fail when a later change starts
 // keeping chat without meaning to:
@@ -148,7 +147,7 @@ async function logOf(fn: () => Promise<void>): Promise<string[]> {
 	return logged;
 }
 
-describe.skipIf(!hasTestDb)('players’ chat is kept nowhere', () => {
+describe.skipIf(!hasTestDb)('players’ chat without archive collection is kept nowhere', () => {
 	let env: Env;
 	let w: World;
 	let spy: ReturnType<typeof spyOn>;
@@ -484,11 +483,13 @@ describe('players’ chat: the code that may touch it', () => {
 			// what counts as a command in one line, and whom a report names (a line's type alone)
 			'lib/chat-commands.ts',
 			'lib/server/actions.ts',
+			'lib/server/chat-archive-collect.ts',
 			// the worker's read for a server with a chat rule on: the page size and a read's type
 			'lib/server/chat-look.ts',
 			// the step that decides what one read brings (a line's type alone)
 			'lib/server/chat-rules.ts',
-			CHAT_TAB
+			CHAT_TAB,
+			'routes/api/servers/[id]/chat-archive/+server.ts'
 		]);
 	});
 
@@ -497,6 +498,7 @@ describe('players’ chat: the code that may touch it', () => {
 		// worker's chat stage (the Chat tab has a function of the same name, which asks the action)
 		expect(holding(/\breadChat\(/).filter((f) => f.startsWith('lib/server/'))).toEqual([
 			'lib/server/actions.ts',
+			'lib/server/chat-archive-collect.ts',
 			'lib/server/chat-look.ts'
 		]);
 		// the chat stage is run by the worker's look and by nothing else
@@ -532,11 +534,14 @@ describe('players’ chat: the code that may touch it', () => {
 		expect([...page.matchAll(/\brconPost(?:<[^(]*>)?\(([^)]*)\)/g)].map((m) => m[1])).toEqual([
 			"id, 'chatTermsAccept', { version }"
 		]);
-		// its other requests are reads: the terms, the lines, and the live view for the sides' colours
+		// Only the archive switch is written by this page's API calls. The live reads stay isolated.
 		expect([...page.matchAll(/\brconGet(?:<[^(]*>)?\(\s*id,\s*'(\w+)'/g)].map((m) => m[1])).toEqual(
 			['chatTerms', 'chat']
 		);
-		expect([...page.matchAll(/\bapi(?:<[^(]*>)?\(\s*'(\w+)'/g)].map((m) => m[1])).toEqual(['GET']);
+		expect([...page.matchAll(/\bapi(?:<[^(]*>)?\(\s*'(\w+)'/g)].map((m) => m[1])).toEqual([
+			'PUT',
+			'GET'
+		]);
 		expect(page).not.toMatch(/\bfetch\(/);
 	});
 });
