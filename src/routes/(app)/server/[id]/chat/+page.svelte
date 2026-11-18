@@ -29,12 +29,12 @@
 	const around = $derived(page.url.searchParams.get('around') ?? '');
 	const showLive = $derived(scope === id && !around && data.reachable);
 	let configBusy = $state(false);
-	async function setArchive(enabled: boolean) {
+	async function enableArchive() {
 		configBusy = true;
 		try {
-			await api('PUT', `/api/servers/${encodeURIComponent(id)}/chat-archive`, { enabled });
+			await api('PUT', `/api/servers/${encodeURIComponent(id)}/chat-archive`, { enabled: true });
 			await invalidateAll();
-			toast(enabled ? 'Chat collection enabled.' : 'Chat collection paused.', 'ok');
+			toast('Chat history enabled.', 'ok');
 		} catch (e) {
 			toast(errorMessage(e), 'err');
 		} finally {
@@ -248,13 +248,9 @@
 {/snippet}
 
 {#snippet settings()}
-	{#if manager && scope === id}
-		<button
-			class="btn btn-sm"
-			disabled={configBusy}
-			onclick={() => setArchive(!data.archiveEnabled)}
-		>
-			{data.archiveEnabled ? 'Pause collection' : 'Enable indefinite chat history'}
+	{#if manager && scope === id && !data.archiveEnabled}
+		<button class="btn btn-sm" disabled={configBusy} onclick={enableArchive}>
+			Enable indefinite chat history
 		</button>
 	{/if}
 {/snippet}
