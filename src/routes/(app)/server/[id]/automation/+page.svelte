@@ -896,8 +896,8 @@
 						: kind === 'bounty' || kind === 'afk_watch'
 							? 20
 							: kind === 'map_vote'
-							? MAP_VOTE_DEFAULTS.minPlayers
-							: 1
+								? MAP_VOTE_DEFAULTS.minPlayers
+								: 1
 			),
 			maxPlayers: typeof c.maxPlayers === 'number' ? c.maxPlayers : null,
 			afterMinutes: n('afterMinutes', 20),
