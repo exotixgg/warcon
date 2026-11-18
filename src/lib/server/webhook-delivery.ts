@@ -163,6 +163,7 @@ const ACTION_TITLES: Record<string, string> = {
 	'trigger.restart_notice': 'Trigger · restart notice',
 	'trigger.team_kill': 'Trigger · team kill limit',
 	'trigger.seed_reward': 'Trigger · seeding reward',
+	'trigger.seeding_bot_kick': 'Trigger · seeding bot kick',
 	'trigger.match_broadcast': 'Trigger · match broadcast',
 	'trigger.match_card': 'Trigger · match stats whisper',
 	'trigger.name_filter': 'Trigger · name filter',

@@ -25,6 +25,7 @@ import {
 	type StaffCallConfig
 } from './chat-rules';
 import { steamIdList } from './steam';
+import { validateSeedingBotKick, type SeedingBotKickConfig } from './seeding-bot-kick';
 import type { LiveNameConfig } from '$lib/live-name';
 import { causeTags } from './cause-tags';
 import { MAX_RESTART_LEAD_MINUTES, restartWindow, type RestartSchedule } from '$lib/uptime';
@@ -47,6 +48,7 @@ export const TRIGGER_KINDS: TriggerKind[] = [
 	'restart_notice',
 	'team_kill',
 	'seed_reward',
+	'seeding_bot_kick',
 	'match_broadcast',
 	'match_card',
 	'name_filter',
@@ -75,6 +77,7 @@ export const TRIGGER_LABELS: Record<TriggerKind, string> = {
 	restart_notice: 'Restart notice',
 	team_kill: 'Team kill limit',
 	seed_reward: 'Seeding reward',
+	seeding_bot_kick: 'Seeding bot kick',
 	match_broadcast: 'Match broadcast',
 	match_card: 'Match stats whisper',
 	name_filter: 'Name filter',
@@ -277,6 +280,7 @@ export type TriggerConfig =
 	| RestartNoticeConfig
 	| TeamKillConfig
 	| SeedRewardConfig
+	| SeedingBotKickConfig
 	| MatchBroadcastConfig
 	| MatchCardConfig
 	| NameFilterConfig
@@ -521,6 +525,8 @@ export function validateConfig(kind: TriggerKind, raw: unknown): TriggerConfig {
 			return validateTwoTeams(c);
 		case 'kill_distance':
 			return validateKillDistance(c);
+		case 'seeding_bot_kick':
+			return validateSeedingBotKick(c);
 		case 'afk_protection':
 			return validateAfkProtection(c);
 		case 'name_change':

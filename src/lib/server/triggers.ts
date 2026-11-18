@@ -70,6 +70,12 @@ import {
 	type TriggerRow
 } from './db/schema';
 import { getProfiles, steamEnabled } from './steam';
+import {
+	seedingBotKickReady,
+	seedingBotKickTarget,
+	type SeedingBotKickConfig
+} from './seeding-bot-kick';
+import { settingsFingerprint } from './fingerprint';
 import { localSignals, orgServers, type LocalSignals } from './players';
 import { gateway } from './gateway';
 import type { SessionUser } from './access';
@@ -387,6 +393,7 @@ const RULE_NEEDS: Record<
 	risk_kick: ['players.kick', 'kicks players'],
 	name_filter: ['players.kick', 'kicks players'],
 	ping_kick: ['players.kick', 'kicks players'],
+	seeding_bot_kick: ['players.kick', 'kicks seeding accounts'],
 	team_kill: ['players.kick', 'kicks players'],
 	kill_rate: ['players.kick', 'flags players'],
 	two_teams: ['players.move', 'moves players between teams'],
@@ -707,6 +714,7 @@ export const SETTINGS_KEYS: Partial<Record<string, (config: unknown) => string>>
 	death_whisper: deathWhisperSettingsKey,
 	match_card: (c) => matchCardSettingsKey(c as MatchCardConfig),
 	ping_kick: pingSettingsKey,
+	seeding_bot_kick: settingsFingerprint,
 	two_teams: (c) => twoTeamsSettingsKey(c as TwoTeamsConfig),
 	kill_distance: (c) => killDistanceSettingsKey(c as KillDistanceConfig),
 	afk_protection: (c) => afkSettingsKey(c as AfkProtectionConfig),
@@ -746,6 +754,8 @@ export interface TickContext {
 	players: Player[];
 	/** true only when this observation fetched a fresh player list */
 	playersObserved: boolean;
+	/** Roster before this observation, absent before the first player look. */
+	previousPlayers?: Player[];
 	playersIntervalMs: number;
 	/** players with no open session before this observation (empty when joins are not trusted) */
 	joined: Player[];
@@ -1006,6 +1016,9 @@ export async function evaluateTriggers(
 					break;
 				case 'ping_kick':
 					await evalPingKick(ctx, row, row.config as PingKickConfig, out, read);
+					break;
+				case 'seeding_bot_kick':
+					await evalSeedingBotKick(env, ctx, row, row.config as SeedingBotKickConfig, out);
 					break;
 				case 'restart_notice':
 					evalRestartNotice(ctx, row, row.config as RestartNoticeConfig, out);
@@ -1497,6 +1510,52 @@ async function evalNameFilter(
 			lastResult: n === 1 ? `${doing} ${last}` : `${doing} ${n} players`
 		});
 	}
+}
+
+async function evalSeedingBotKick(
+	env: Env,
+	ctx: TickContext,
+	row: TriggerRow,
+	cfg: SeedingBotKickConfig,
+	out: Evaluation
+) {
+	if (!ctx.playersObserved) return;
+	const target = seedingBotKickTarget(cfg, ctx.players);
+	if (!target) return;
+
+	// Observations and deliveries share the server lane. Check for an outstanding kick
+	// even after a restart or rule replacement.
+	const [last] = await env.db
+		.select({
+			state: outbox.state,
+			steamId: outbox.steamId
+		})
+		.from(outbox)
+		.where(and(eq(outbox.serverId, ctx.server.id), eq(outbox.triggerKind, row.kind)))
+		.orderBy(desc(outbox.createdAt), desc(outbox.id))
+		.limit(1);
+	if (!seedingBotKickReady(cfg, last, ctx.players, ctx.previousPlayers)) return;
+
+	out.intents.push({
+		trigger: row,
+		action: 'kick',
+		params: {
+			steamId: target.steamId,
+			minPlayers: cfg.minPlayers,
+			reason: 'Seeding complete. Freeing a slot for a player.',
+			rule: settingsFingerprint(cfg)
+		},
+		target: target.steamId,
+		steamId: target.steamId,
+		okMessage: `Kicked ${target.name} to free a seeding slot.`,
+		detail: { name: target.name, minPlayers: cfg.minPlayers },
+		dedupeKey: key(row, ctx.ts.getTime())
+	});
+	out.updates.push({
+		id: row.id,
+		lastFiredAt: ctx.ts,
+		lastResult: `Kicking ${target.name} to free a slot.`
+	});
 }
 
 async function evalPingKick(
@@ -2865,6 +2924,12 @@ export async function dryRun(
 	if (kind === 'two_teams') {
 		result.notes.push(
 			'Faction moves are not kept in the session history, so there is nothing to replay. Switch on Watch only to see live what the rule would move, under Actions, without moving anyone.'
+		);
+		return result;
+	}
+	if (kind === 'seeding_bot_kick') {
+		result.notes.push(
+			'Bot kicks use live rosters to check the player count and see when a slot fills again.'
 		);
 		return result;
 	}

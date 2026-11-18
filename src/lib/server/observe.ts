@@ -581,6 +581,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 	// Any failure may have been a restart onto a new build: re-read the identity on recovery.
 	const hadFailed = m.failures > 0;
 	const prevPlayersAt = m.playersAt;
+	const previousPlayers = prevPlayersAt ? m.players : undefined;
 	const prevStatusAt = m.statusAt;
 	m.failures = 0;
 	m.holdUntil = 0;
@@ -768,6 +769,7 @@ export async function observeServer(env: Env, m: ServerMemory, kinds: ObserveKin
 						matchCardLines: cardEnd ? [...cardTallies.values()].map(tallyRow) : [],
 						players: m.players,
 						playersObserved: players !== null,
+						previousPlayers,
 						playersIntervalMs: m.playersIntervalMs,
 						joined,
 						renamed: diff.renamed,

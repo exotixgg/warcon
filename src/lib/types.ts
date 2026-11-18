@@ -594,6 +594,7 @@ export type TriggerKind =
 	| 'restart_notice'
 	| 'team_kill'
 	| 'seed_reward'
+	| 'seeding_bot_kick'
 	| 'match_broadcast'
 	| 'match_card'
 	| 'name_filter'
