@@ -55,7 +55,7 @@ export const CAPABILITY_INFO: Record<Capability, CapabilityInfo> = {
 	},
 	'chat.read': {
 		label: 'Read chat',
-		hint: "Read the in-game chat as players type it, to moderate the server, once an owner has accepted the game's chat terms; and save the rules that answer what players type. Nothing of it is kept.",
+		hint: "Read the in-game chat as players type it, to moderate the server, once an owner has accepted the game's chat terms; and save the rules that answer what players type. Includes the private moderation history on each server granting this permission.",
 		group: 'read'
 	},
 	'chat.send': {

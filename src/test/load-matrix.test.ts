@@ -44,6 +44,8 @@ const MATRIX: Record<string, Policy> = {
 	'orgs/[id]/reserved/+page.server.ts': 'lists:reserve',
 	// "Group not found." is not a hidden answer: a group looked up before the role check fails it
 	'orgs/[id]/reserved/[groupId]/+page.server.ts': 'lists:reserve',
+	'orgs/[id]/chat/+page.server.ts': 'anyCap:chat.read',
+	'server/[id]/chat/+page.server.ts': 'cap:chat.read',
 	'orgs/[id]/players/+page.server.ts': 'lists',
 	'server/[id]/+layout.server.ts': 'cap:server.view',
 	'server/[id]/automation/+page.server.ts': 'cap:automation.manage',

@@ -1082,9 +1082,8 @@ export const ACTIONS: Record<string, ActionDef> = {
 
 /**
  * The chat lines after `after`, oldest first, `limit` at most: the one request that reads the chat
- * from the game. Two callers: the action above, for a reader's Chat tab, and the worker's chat
- * rules (chat-look.ts), which give the read less time than a request usually gets. Players'
- * messages: handed to the caller, and neither stored nor forwarded here.
+ * from the game. Used by the live reader, the chat rules and the independently enabled archive.
+ * No action auditing or forwarding of message content happens here.
  */
 export async function readChat(
 	c: WardogsClient,

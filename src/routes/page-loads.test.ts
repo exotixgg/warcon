@@ -28,6 +28,7 @@ const FAMILIES: { under: string; needs: RegExp; says: string }[] = [
 		needs: /requireServerCap\(|requireServerManager\(|orgRoleFor\(|await parent\(\)|parent\(\),/,
 		says: 'requireServerCap (or the layout through parent())'
 	},
+	{ under: 'orgs/[id]/chat/', needs: /chatSources\(/, says: 'server-scoped chat access' },
 	{
 		under: 'orgs/[id]/',
 		needs: /requireOrgRole\(|requireListsRole\(/,

@@ -269,7 +269,7 @@ routes:
   (the organisation's owners and the site owner, until an owner gives it to a role; no built-in
   role has it and an API key cannot hold it); accepting the terms is for an owner, in person, and
   the audit trail keeps who accepted which version; the lines are read every four seconds per
-  open tab, at the priority of the worker's own looks, and kept nowhere; the raw action refuses
+  open Live RCON tab at the priority of the worker's own looks. EXOTIX optionally archives displayed chat in a separate moderation reader; the raw action refuses
   `/v1/chat` and everything under it. The answers are read leniently, since no live one has been
   seen (a required version of 0, no `messages` beside a `latestSeq`, `seq` as digits). A game
   that numbers from the start again is told as the console tells it, by a `latestSeq` below the
